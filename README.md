@@ -38,6 +38,17 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
+## Cross-platform verification (PR #1)
+
+The CI workflow runs **Ubuntu + Windows**, Python **3.11 + 3.13**, without provider credentials. It verifies dependencies, unit tests, Git worktrees and native subprocess adapter communication.
+
+- Windows: `powershell -ExecutionPolicy Bypass -File .\\scripts\\verify-windows.ps1`
+- Linux: `bash scripts/verify-linux.sh`
+- To include authenticated headless CLI checks: add `-Live` (Windows) or `--live` (Linux).
+- Inspect available CLIs: `agent-office doctor`
+
+See [verification guide](docs/verification.md). Real Claude/Codex checks require those CLIs installed and authenticated on the target PC; CI mocks do not validate live provider behavior.
+
 ## Try it
 
 Default is **planning-only**, with edit permissions disabled.
@@ -56,6 +67,10 @@ agent-office run --repo . --allow-edits \
 By default development uses `claude` and review uses `codex`. Override with `--developer codex --reviewer claude`. A task is **not merged, pushed or deployed** even after the reviewer approves it. Inspect the generated worktree and branch first.
 
 **Important:** CLI sandbox modes are provider-specific; Claude's `acceptEdits` permission mode is **not a full OS/filesystem sandbox**. Prompts are not a security boundary. Only run trusted tasks on an appropriately isolated local account/environment, and do not expose sensitive credentials or production repositories. The default test command is `python -m pytest -q` (using the Agent Office Python interpreter). Changes to files outside the Git worktree can still be possible depending on CLI permissions and installed tools.
+
+## Security / platform note
+
+Tasks are transferred to CLI subprocesses through standard input rather than shell-interpolated command arguments. This helps with long prompts and Windows npm `.cmd` wrappers, but cannot eliminate every risk from third-party tools. On Windows, validate Codex's effective native sandbox before using `--allow-edits`. The worktree is not an operating-system sandbox.
 
 ## Roadmap
 

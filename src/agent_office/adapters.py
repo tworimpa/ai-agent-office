@@ -29,16 +29,18 @@ class CLIAdapter:
     def command(self, prompt: str, *, allow_edits: bool) -> list[str]:
         if self.engine == "claude":
             return [
-                "claude", "-p", prompt, "--output-format", "json",
+                "claude", "-p", "--output-format", "json",
                 "--permission-mode", "acceptEdits" if allow_edits else "plan",
                 "--max-turns", "16",
             ]
         return [
             "codex", "exec", "--json", "--sandbox",
-            "workspace-write" if allow_edits else "read-only", prompt,
+            "workspace-write" if allow_edits else "read-only", "-",
         ]
 
     def execute(self, prompt: str, *, workspace: Path, allow_edits: bool) -> AgentResult:
+        # Pass untrusted task text via stdin: safer for Windows .cmd launchers,
+        # long prompts, and special characters than putting it in argv.
         argv = self.command(prompt, allow_edits=allow_edits)
         executable = shutil.which(argv[0])
         if executable is None:
@@ -46,7 +48,7 @@ class CLIAdapter:
         argv[0] = executable
         try:
             completed = subprocess.run(
-                argv, cwd=workspace, capture_output=True, text=True,
+                argv, cwd=workspace, input=prompt, capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=self.timeout,
                 check=False,
             )

@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from .adapters import CLIAdapter, SUPPORTED_ENGINES
+from .diagnostics import doctor
 from .workflow import build_graph
 from .workspace import create_worktree
 
@@ -16,6 +17,10 @@ from .workspace import create_worktree
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-office")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    diag = sub.add_parser("doctor", help="Inspect Git, Python and installed agent CLIs")
+    diag.add_argument("--require", nargs="*", choices=SUPPORTED_ENGINES,
+                      default=list(SUPPORTED_ENGINES))
 
     run = sub.add_parser("run", help="Execute a task in a separate Git worktree")
     run.add_argument("--repo", type=Path, required=True, help="Path to Git repository root")
@@ -31,6 +36,8 @@ def make_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv)
+    if args.command == "doctor":
+        return doctor(args.require)
     if args.max_attempts < 1 or args.timeout < 1:
         print("max-attempts and timeout must be positive", file=sys.stderr)
         return 2

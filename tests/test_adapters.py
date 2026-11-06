@@ -7,13 +7,16 @@ from agent_office.adapters import CLIAdapter, parse_output
 
 def test_claude_command_read_only():
     command = CLIAdapter("claude").command("inspect", allow_edits=False)
-    assert command[:3] == ["claude", "-p", "inspect"]
+    assert command[:2] == ["claude", "-p"]
+    assert "inspect" not in command
     assert command[command.index("--permission-mode") + 1] == "plan"
 
 
 def test_codex_command_read_only():
     command = CLIAdapter("codex").command("inspect", allow_edits=False)
     assert command[command.index("--sandbox") + 1] == "read-only"
+    assert command[-1] == "-"
+    assert "inspect" not in command
 
 
 def test_codex_command_edit():
