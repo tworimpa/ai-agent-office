@@ -16,7 +16,7 @@ No separate Node server or npm install is needed to run the observer. Static ass
 
 This personal-PC server binds only 127.0.0.1 and offers fixed read-only routes. Host/Origin checks, no CORS, CSP, no-store, a fixed asset map and fixed error messages limit its HTTP surface. It is not a remotely hosted or multi-user service. Do not expose it through a reverse proxy or network forwarding as an authentication substitute.
 
-The server pins the selected database file identity. Replacing the DB while it is running requires stopping/restarting the observer; it will not silently switch to the new file. See [candidate results](ao-002-results.md) for verified environments, browser-check limits and three deferred HTTP edge cases. Use the verified port8765 or another non-default HTTP port.
+The server pins the selected database file identity. Replacing the DB while it is running requires stopping/restarting the observer; it will not silently switch to the new file. See [candidate results](ao-002-results.md) for verified environments, browser-check limits and the follow-up HTTP fixes.
 
 ## Live CLI acceptance
 

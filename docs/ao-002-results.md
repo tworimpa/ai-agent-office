@@ -49,17 +49,21 @@ A fresh reviewer checked through `2119f5a` and returned 'with fixes'. Four Impor
 
 There was no second independent reviewer approval. The author verified the fixes with RED→GREEN and the full local matrix above.
 
-## Deferred minor findings
+## Follow-up HTTP fixes
 
-- A corrupted stored payload JSON currently maps to HTTP400 rather than503. It is blocked, but error attribution is imprecise.
-- Browser-normalized Host/Origin for port80 is not accepted without explicit :80. Use the validated default port8765 or another non-default HTTP port.
-- TRACE uses the standard library's501 HTML response rather than the fixed JSON/CSP response used by supported routes and rejected write methods.
+The owner requested completing the PR/CI/merge workflow, and the three deferred findings were addressed before publication:
+
+- Corrupted stored event JSON returns503/STORE_IO rather than blaming the request with400.
+- Port80 accepts browser-normalized Host/Origin with or without explicit :80; foreign hosts and ports remain rejected.
+- TRACE/CONNECT/other unsupported methods return405 with the fixed JSON error, Allow, no-store and CSP headers.
+
+Seven failing cases demonstrated these defects before the changes; the port guard also retains two foreign-host rejection cases. A subsequent focused review found no Important/Critical issues and identified the505 protocol-error attribution, which was also reproduced RED and corrected to INVALID_ARGUMENT. Original matrix counts above describe the earlier verified candidate; the PR CI records the updated head and final counts.
 
 ## Implementation choices
 
 - Used Python stdlib/local assets rather than hosted infrastructure to fit the personal-PC readonly scope. External/multi-user serving would need a separate design.
 - Kept API/assets in one complete delivery commit rather than leaving an intermediate root404 server.
 - Added jsdom as a development-only dependency because actual browser access is disabled. Runtime Python/package use does not require Node/npm; DOM tests do not prove CSS rendering.
-- Retained the loopback observer for the user's manual inspection; it performs no worker actions. No remote push, new PR, merge or external hosting was performed for AO-002.
+- Retained the loopback observer for the user's manual inspection; it performs no worker actions. The owner's subsequent standing instruction authorizes publishing and CI-gated source merge via AGENTS.md; external hosting/deployment remains outside this scope.
 
 Receipts/test logs are retained privately under `E:\workspace\ai-agent-office-local\ao002-evidence\` and the Linux setup directory. See [observer guide](observer.md), [design](superpowers/specs/2026-11-06-ao-002-observer-design.md) and [implementation plan](superpowers/plans/2026-11-06-ao-002.md).

@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 import threading
 import os
+import socket
+from email.message import Message
+from types import SimpleNamespace
 import pytest
 from test_store import seeded, TASK, RUN
 
@@ -154,3 +157,59 @@ def test_replaced_database_is_not_silently_adopted(tmp_path):
             status, _, body = request(server, path)
             assert status == 503
             assert b'replacement data' not in body
+
+
+def test_corrupt_stored_event_is_a_service_error(tmp_path):
+    db = tmp_path / "db"
+    with seeded(db) as store:
+        store.connection.execute("UPDATE events SET payload_json='invalid JSON'")
+    with running(db) as server:
+        status, headers, body = request(server, f"/api/tasks/{TASK}/events")
+        assert status == 503
+        assert json.loads(body)["error"]["code"] == "STORE_IO"
+        assert headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.parametrize("host,origin,allowed", [("127.0.0.1","http://127.0.0.1",True),
+    ("localhost","http://localhost",True), ("127.0.0.1:80","http://127.0.0.1",True),
+    ("evil.example","http://evil.example",False), ("localhost:81","http://localhost:81",False)])
+def test_default_http_port_uses_browser_normalized_headers(host, origin, allowed):
+    from agent_office.observer import ObserverHandler
+    handler = object.__new__(ObserverHandler)
+    handler.server = SimpleNamespace(server_address=("127.0.0.1",80))
+    handler.headers = Message()
+    handler.headers["Host"] = host
+    handler.headers["Origin"] = origin
+    assert handler._allowed(True) is allowed
+
+
+@pytest.mark.parametrize("method", ["TRACE", "CONNECT", "UNSUPPORTED"])
+def test_unknown_methods_have_fixed_error_contract(tmp_path, method):
+    db = tmp_path / "db"
+    seeded(db).close()
+    with running(db) as server:
+        status, headers, body = request(server, "/api/tasks", method)
+        assert status == 405
+        assert headers["Allow"] == "GET, HEAD"
+        assert headers["Cache-Control"] == "no-store"
+        assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+        assert json.loads(body)["error"]["code"] == "METHOD_NOT_ALLOWED"
+
+
+def test_unsupported_http_version_is_not_reported_as_database_failure(tmp_path):
+    db = tmp_path / "db"
+    seeded(db).close()
+    before = db.read_bytes()
+    with running(db) as server:
+        with socket.create_connection(server.server_address, timeout=5) as client:
+            client.sendall(b"GET / HTTP/2.0\r\nHost: localhost\r\n\r\n")
+            chunks = []
+            while True:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        response = b"".join(chunks)
+        body = response.partition(b"\r\n\r\n")[2] if response.startswith(b"HTTP/") else response
+        assert json.loads(body)["error"]["code"] == "INVALID_ARGUMENT"
+    assert db.read_bytes() == before

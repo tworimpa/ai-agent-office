@@ -86,7 +86,7 @@ Tasks are transferred to CLI subprocesses through standard input rather than she
 
 ## Project rules
 
-- Never merge, publish, deploy or modify approval/security policy automatically.
+- Codex maintenance follows the owner's standing PR → latest-head CI → merge authorization in [AGENTS.md](AGENTS.md). Product workers still do not publish/merge their own work; deployment and security changes require separate authorization.
 - Isolate development to a worktree; never edit the running Agent Office installation in place.
 - Store per-task evidence including test results, git diffs and decision trail before promotion.
 - Keep agent roles separate from the selected CLI engines.

@@ -87,6 +87,8 @@ class ObserverHandler(BaseHTTPRequestHandler):
     def _allowed(self, api):
         port = self.server.server_address[1]
         hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if port == 80:
+            hosts.update(("127.0.0.1", "localhost"))
         host_values = self.headers.get_all("Host", [])
         if len(host_values) != 1 or host_values[0] not in hosts:
             return False
@@ -166,6 +168,8 @@ class ObserverHandler(BaseHTTPRequestHandler):
                           "next_after_seq": events[min(len(events), limit)-1].seq if events else cursor,
                           "has_more": len(events) > limit}
             self._reply(200, result)
+        except json.JSONDecodeError:
+            self._error(503, "STORE_IO")
         except (ValueError, OverflowError):
             self._error(400, "INVALID_ARGUMENT")
         except OfficeError as exc:
@@ -178,6 +182,12 @@ class ObserverHandler(BaseHTTPRequestHandler):
 
     def _write_not_allowed(self):
         self._error(405, "METHOD_NOT_ALLOWED")
+
+    def send_error(self, code, message=None, explain=None):
+        if code == 501:
+            self._write_not_allowed()
+        else:
+            self._error(int(code), "INVALID_ARGUMENT" if code < 500 or code == 505 else "STORE_IO")
 
     do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = _write_not_allowed
 
