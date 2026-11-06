@@ -37,7 +37,7 @@ def test_run_is_durable_with_exact_stage_sequence(tmp_path, monkeypatch, capsys,
             return AgentResult(0, "VERDICT: APPROVED" if self.engine == "codex" else "original response")
     monkeypatch.setattr(cli, "CLIAdapter", Fake)
     path = tmp_path / "db"
-    args = ["--db", str(path), "run", "--repo", str(repo), "--task", "한글 task", "--test-command", sys.executable, "-c", "pass"]
+    args = ["--db", str(path), "run", "--developer", "claude", "--reviewer", "codex", "--repo", str(repo), "--task", "한글 task", "--test-command", sys.executable, "-c", "pass"]
     # nargs='+' does not accept '-c'; use a real script instead.
     test_file = tmp_path / "check.py"
     test_file.write_text("pass\n")
@@ -144,7 +144,7 @@ def test_cli_retry_and_failure_outcomes(tmp_path, monkeypatch, capsys, case, exp
     reviewer = MockAdapter([AgentResult(1 if case == "review_fail" else 0, v) for v in verdicts])
     monkeypatch.setattr(cli, "CLIAdapter", lambda engine, **kwargs: developer if engine == "claude" else reviewer)
     db = tmp_path / "db"
-    exit_code = cli.main(["--db", str(db), "run", "--repo", str(repo), "--task", "x", "--allow-edits", "--test-command", sys.executable, str(script)])
+    exit_code = cli.main(["--db", str(db), "run", "--developer", "claude", "--reviewer", "codex", "--repo", str(repo), "--task", "x", "--allow-edits", "--test-command", sys.executable, str(script)])
     report = json.loads(capsys.readouterr().out)
     assert exit_code == (0 if expected == "READY_FOR_HUMAN_REVIEW" else 1)
     assert report["state"] == expected and report["attempts"] == attempts
