@@ -1,6 +1,6 @@
 # AI Agent Office
 
-**AO-001 candidate** — local-first orchestration of existing coding agent CLIs through LangGraph, with persisted tasks and phase events.
+**AO-002 candidate** — local-first orchestration of coding agent CLIs, persisted tasks/events and a read-only local observer.
 
 This is an early, deliberately limited command-line MVP. It does **not** implement the desktop office UI, a persistent job scheduler, automatic human-in-the-loop Q&A, unattended delegation, GitHub publishing, or self-updating. Those are planned features.
 
@@ -47,7 +47,9 @@ The CI workflow runs **Ubuntu + Windows**, Python **3.11 + 3.13**, without provi
 - To include authenticated headless CLI checks: add `-Live` (Windows) or `--live` (Linux).
 - Inspect available CLIs: `agent-office doctor`
 
-Task and event queries, explicit interruption marking and candidate DB paths are described in [storage guide](docs/storage.md). Use `--db` before the subcommand to keep development state separate from stable state. The office UI and automatic session resume are not implemented.
+Task and event queries, explicit interruption marking and candidate DB paths are described in [storage guide](docs/storage.md). Use `--db` before the subcommand to keep development state separate from stable state. Task execution controls and automatic session resume are not implemented.
+
+The AO-002 candidate adds a **local read-only observer**: `agent-office --db PATH serve --port 8765`. See [observer guide](docs/observer.md) for selection, timeline updates and actual CLI acceptance limits. It does not add task execution controls or automatic session resume.
 
 See [verification guide](docs/verification.md). Real Claude/Codex checks require those CLIs installed and authenticated on the target PC; CI mocks do not validate live provider behavior.
 
@@ -84,7 +86,7 @@ Tasks are transferred to CLI subprocesses through standard input rather than she
 
 ## Project rules
 
-- Never merge, publish, deploy or modify approval/security policy automatically.
+- Codex maintenance follows the owner's standing PR → latest-head CI → merge authorization in [AGENTS.md](AGENTS.md). Product workers still do not publish/merge their own work; deployment and security changes require separate authorization.
 - Isolate development to a worktree; never edit the running Agent Office installation in place.
 - Store per-task evidence including test results, git diffs and decision trail before promotion.
 - Keep agent roles separate from the selected CLI engines.

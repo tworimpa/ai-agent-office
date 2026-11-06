@@ -24,6 +24,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install project
         run: python -m pip install -e '.[dev]'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+      - name: Install frontend test dependencies
+        run: npm ci
+      - name: Frontend state and DOM tests
+        run: npm run test:web
       - name: Compile source
         run: python -m compileall -q src tests
       - name: Unit and subprocess smoke tests
