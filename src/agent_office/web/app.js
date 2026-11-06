@@ -168,10 +168,6 @@ async function poll() {
   const current = () => token === generation && !document.hidden;
   let stateKey = null, stateNotice = '';
   try {
-    if (!metaLoaded) {
-      const meta = await getJSON('/api/meta'); if (!current()) return;
-      setText('database', `연결된 기록 · ${meta.database}`); metaLoaded = true;
-    }
     try {
       const engines = await getJSON('/api/engines'); if (!current()) return;
       renderEngines(engines);
@@ -182,6 +178,10 @@ async function poll() {
       setText('engine-time', '진단 정보를 갱신하지 못했습니다. 표시된 진단 시점을 확인해 주세요.');
       if (!engineHadError) announce('에이전트 진단 정보를 갱신하지 못했습니다.');
       engineHadError = true;
+    }
+    if (!metaLoaded) {
+      const meta = await getJSON('/api/meta'); if (!current()) return;
+      setText('database', `연결된 기록 · ${meta.database}`); metaLoaded = true;
     }
     const result = await getJSON('/api/tasks'); if (!current()) return;
     tasks = result.tasks;

@@ -22,6 +22,8 @@ The observer collects known fixed version/help commands and Codex login status o
 
 No credential file or environment inventory is read. Only extracted semantic versions and authentication enums are exposed, not raw output, account details, executable paths or tokens. Antigravity help provides no standalone authentication-status command in the inspected CLI, so its login state remains unknown. IDE login and an executable being installed are not evidence of CLI authentication or successful file/tool execution.
 
+Vendor executable resolution uses explicit absolute PATH entries and excludes the current directory, blank and relative entries. A same-name launcher placed in the viewed repository is not implicitly selected. The status snapshot is fetched independently of database metadata so it remains visible if the DB becomes unavailable after server startup.
+
 The installed Windows probe found Codex0.163.0 with authenticated metadata and Antigravity1.4.2 with advertised headless flags. Antigravity auth and actual execution remain unverified. Existing WSL Codex read-only acceptance and Windows Core file-tool failure remain separate historical results; they do not mark the current host's engines automatically verified.
 
 Real acceptance must be separately authorized and use a bounded fixture with file/result checks. `-Live`/`--live` verification scripts are opt-in provider communication checks; inspect the returned task response and use independent evidence for task success. They are not run by CI or by engine-card polling.

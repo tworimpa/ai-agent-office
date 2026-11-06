@@ -15,19 +15,19 @@ async function until(check) {
   assert.ok(check(), 'UI did not reach expected state');
 }
 
-async function mount(t, suffix='') {
+async function mount(t, suffix='', options={}) {
   const dom = new JSDOM(html,{url:`http://127.0.0.1:8765/${suffix}`,pretendToBeVisual:true});
   const originals=Object.fromEntries(['window','document','location','history','fetch'].map(key=>[key,globalThis[key]]));
   Object.assign(globalThis,{window:dom.window,document:dom.window.document,location:dom.window.location,history:dom.window.history});
   const server={tasks:[task(a,r),task(b,s)],events:{[r]:[event(1,r),event(2,r)],[s]:[event(1,s)]},calls:[],fail:false,missing:null,hold:null,release:null,failEventsRun:null,
-    failEngines:false,engines:{checked_at:'2026-11-06T00:00:00Z',platform:'test',engines:[
+    failMeta:options.failMeta??false,failEngines:false,engines:{checked_at:'2026-11-06T00:00:00Z',platform:'test',engines:[
       {engine:'codex',label:'Codex',default_role:'developer',installed:true,version:'1.2.3',probe_status:'ok',auth_status:'authenticated',headless_support:true,execution_status:'not_checked'},
       {engine:'antigravity',label:'Antigravity',default_role:'reviewer',installed:true,version:'1.4.2',probe_status:'ok',auth_status:'unknown',headless_support:true,execution_status:'not_checked'}]}};
   globalThis.fetch=async path=>{
     server.calls.push(String(path));
     if(server.fail)throw new Error('offline');
     const url=new URL(path,dom.window.location.href);
-    if(url.pathname==='/api/meta')return Response.json({database:'test.sqlite3'});
+    if(url.pathname==='/api/meta')return server.failMeta ? Response.json({error:{code:'DB_NOT_FOUND'}},{status:503}) : Response.json({database:'test.sqlite3'});
     if(url.pathname==='/api/tasks')return Response.json({tasks:server.tasks});
     if(url.pathname==='/api/engines')return server.failEngines ? Response.json({error:{code:'STORE_IO'}},{status:503}) : Response.json(server.engines);
     const id=url.pathname.split('/')[3];
@@ -53,7 +53,7 @@ async function mount(t, suffix='') {
   });
   await import(`../../src/agent_office/web/app.js?test=${Math.random()}`);
   const get=id=>dom.window.document.getElementById(id);
-  await until(()=>get('connection').textContent.includes('기록 연결됨'));
+  if(options.wait!==false) await until(()=>get('connection').textContent.includes('기록 연결됨'));
   return {dom,server,get,refresh:()=>get('refresh').click()};
 }
 
@@ -174,4 +174,12 @@ test('engine-only failure does not hide tasks and unchanged snapshot recovery cl
   server.failEngines=false; refresh();
   await until(()=>get('engine-time').textContent.startsWith('시작 시 진단'));
   assert.ok(get('announcer').textContent.includes('복구'));
+});
+
+test('fresh page can show engine snapshot while database metadata is unavailable',async t=>{
+  const {server,get}=await mount(t,'',{failMeta:true,wait:false});
+  await until(()=>get('engine-cards').querySelectorAll('article').length===2);
+  await until(()=>!get('error').hidden);
+  assert.ok(server.calls.includes('/api/engines'));
+  assert.ok(get('engine-cards').textContent.includes('Antigravity'));
 });

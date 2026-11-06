@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from .engines import SUPPORTED_ENGINES
+from .engines import SUPPORTED_ENGINES, resolve_executable
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,7 @@ class CLIAdapter:
         # Pass untrusted task text via stdin: safer for Windows .cmd launchers,
         # long prompts, and special characters than putting it in argv.
         argv = self.command(prompt, allow_edits=allow_edits)
-        executable = shutil.which(argv[0])
+        executable = resolve_executable(argv[0])
         if executable is None:
             return AgentResult(127, f"Missing CLI: {argv[0]}. Install and authenticate it first.")
         argv[0] = executable
@@ -121,11 +121,12 @@ def parse_antigravity(output: str) -> AgentResult:
         whole = json.loads(output)
     except (ValueError, TypeError):
         whole = None
-    if isinstance(whole, dict) and "status" in whole:
+    if isinstance(whole, dict) and "event" not in whole and "result" not in whole and "status" in whole:
         results, tool_error = [whole], False
     else:
         results, tool_error = [], False
-        for line in output.splitlines():
+        records = [whole] if isinstance(whole, dict) else []
+        for line in ([] if records else output.split("\n")):
             if not line.strip():
                 continue
             try:
@@ -134,7 +135,13 @@ def parse_antigravity(output: str) -> AgentResult:
                 return invalid
             if not isinstance(event, dict):
                 return invalid
+            records.append(event)
+        for index, event in enumerate(records):
+            if event.get("event") not in ("init", "step_update", "result") or any(key in event for key in ("status", "response", "error")):
+                return invalid
             if event.get("event") == "result":
+                if index != len(records) - 1:
+                    return invalid
                 results.append(event.get("result"))
             if event.get("event") == "step_update":
                 step = event.get("step_update")
@@ -143,7 +150,7 @@ def parse_antigravity(output: str) -> AgentResult:
                 tool = step.get("tool_info")
                 if tool is not None and not isinstance(tool, dict):
                     return invalid
-                tool_error = tool_error or bool(tool and tool.get("error"))
+                tool_error = tool_error or bool(tool is not None and "error" in tool and tool["error"] is not None)
     if len(results) != 1 or not isinstance(results[0], dict):
         return invalid
     result = results[0]
@@ -151,7 +158,7 @@ def parse_antigravity(output: str) -> AgentResult:
     if status == "INTERRUPTED":
         return AgentResult(124, "Antigravity reported interruption.")
     response = result.get("response")
-    if status != "SUCCESS" or result.get("error") or tool_error or not isinstance(response, str) or not response.strip():
+    if status != "SUCCESS" or ("error" in result and result["error"] is not None) or tool_error or not isinstance(response, str) or not response.strip():
         return invalid
     session = result.get("conversation_id")
     if session is not None and not isinstance(session, str):

@@ -12,7 +12,7 @@ def result(status="SUCCESS",response="VERDICT: APPROVED",**extra):
 
 def test_antigravity_transports_one_literal_prompt_with_plan_and_sandbox(tmp_path, monkeypatch):
     prompt='한글 /model test & $(echo x) "quotes"'
-    monkeypatch.setattr("agent_office.adapters.shutil.which", lambda name: "fake-agy" if name=="agy" else None)
+    monkeypatch.setattr("agent_office.adapters.resolve_executable", lambda name: "fake-agy" if name=="agy" else None)
     def run(argv, **kwargs):
         assert prompt not in argv
         assert argv[0] == "fake-agy"
@@ -100,3 +100,21 @@ def test_default_engine_pair_is_persisted_and_journaled(tmp_path, monkeypatch, c
         assert (task.developer_engine,task.reviewer_engine)==('codex','antigravity')
         assert task.state=='READY_FOR_HUMAN_REVIEW'
         assert any(e.engine=='antigravity' and e.role=='reviewer' for e in store.list_events(task.task_id))
+
+
+@pytest.mark.parametrize('text',[
+    json.dumps({'event':'result','status':'SUCCESS','response':'VERDICT: APPROVED','result':result('ERROR')}),
+    json.dumps({'event':'result','result':result()})+'\n'+json.dumps({'event':'step_update','step_update':{}}),
+    json.dumps({'event':'result','result':result()})+'\n'+json.dumps(result('ERROR')),
+    json.dumps({'event':'step_update','step_update':{'tool_info':{'error':{}}}})+'\n'+json.dumps({'event':'result','result':result()}),
+])
+def test_mixed_envelopes_and_records_after_terminal_result_fail_closed(text):
+    from agent_office.adapters import parse_antigravity
+    assert parse_antigravity(text).returncode!=0
+
+
+def test_ndjson_line_separator_is_lf_not_unicode_inside_json_text():
+    from agent_office.adapters import parse_antigravity
+    text=json.dumps({'event':'init','init':{}})+'\n'+json.dumps({'event':'result','result':result(response='line\u2028text')},ensure_ascii=False)
+    answer=parse_antigravity(text)
+    assert answer.returncode==0 and answer.message=='line\u2028text'

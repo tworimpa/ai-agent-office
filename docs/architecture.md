@@ -58,4 +58,6 @@ Git worktrees isolate the *git working directory*; they do not isolate processes
 
 ## Next milestone
 
+The owner-selected initial engines are now Codex and Antigravity (`agy`), with default developer/reviewer roles respectively and explicit overrides. Legacy Claude remains compatible. Metadata status is an observer-startup snapshot; it is not a model-call or task-acceptance result. See [engine guide](engines.md).
+
 AO-002: add an office observation UI and verified additional CLI capabilities. Session continuation and unattended operation require separate designs and acceptance checks.

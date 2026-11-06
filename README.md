@@ -10,7 +10,7 @@ This is an early, deliberately limited command-line MVP. It does **not** impleme
 User task -> Agent Office CLI
             -> Git worktree (isolated working directory)
             -> LangGraph
-               -> Developer CLI (Claude Code or Codex)
+               -> Developer CLI (Codex / Antigravity; optional Claude)
                -> Local test command (allow-edits mode only)
                -> Reviewer CLI (read-only)
                -> [rework on failure, with a maximum attempt limit]
@@ -51,7 +51,7 @@ Task and event queries, explicit interruption marking and candidate DB paths are
 
 The AO-002 candidate adds a **local read-only observer**: `agent-office --db PATH serve --port 8765`. See [observer guide](docs/observer.md) for selection, timeline updates and actual CLI acceptance limits. It does not add task execution controls or automatic session resume.
 
-See [verification guide](docs/verification.md). Real Claude/Codex checks require those CLIs installed and authenticated on the target PC; CI mocks do not validate live provider behavior.
+See [verification guide](docs/verification.md). Real Codex/Antigravity checks require those CLIs installed and authenticated on the target PC; CI mocks do not validate live provider behavior.
 
 ## Try it
 

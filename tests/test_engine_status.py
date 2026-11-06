@@ -2,6 +2,8 @@ import json
 import subprocess
 from agent_office import cli
 import pytest
+import os
+from pathlib import Path
 
 
 def test_catalog_uses_only_metadata_commands_and_hides_raw_output(monkeypatch):
@@ -67,3 +69,30 @@ def test_engines_cli_does_not_open_database_or_return_vendor_account_data(tmp_pa
     assert cli.main(['--db',str(tmp_path/'db'),'engines'])==0
     assert json.loads(capsys.readouterr().out)==snapshot
     assert not (tmp_path/'db').exists()
+
+
+def test_repository_local_cli_shadow_is_never_executed_by_observer_metadata(tmp_path,monkeypatch):
+    from agent_office.engine_status import collect_engine_status
+    repo,trusted=tmp_path/'repo',tmp_path/'trusted'
+    repo.mkdir();trusted.mkdir()
+    names=['codex.cmd','agy.exe'] if os.name=='nt' else ['codex','agy']
+    for directory in (repo,trusted):
+        for name in names:
+            path=directory/name;path.write_text('fake metadata executable')
+            path.chmod(0o755)
+    if os.name=='nt':
+        for name in ('codex','agy'):
+            (trusted/name).write_text('#!/bin/sh\nnot a Windows executable')
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv('PATH',os.pathsep.join([str(repo),'.',str(trusted)]))
+    calls=[]
+    def run(argv,**kwargs):
+        calls.append(argv)
+        assert Path(argv[0]).parent==trusted, 'repository-local binary was selected'
+        if os.name=='nt':
+            assert Path(argv[0]).suffix.lower() in ('.cmd','.exe'), 'Unix shim selected on Windows'
+        text='1.4.2' if argv[1:]==['--version'] else 'Logged in using ChatGPT' if argv[1:]==['login','status'] else '--json --sandbox --input-format --output-format --mode --disable-slash-commands --print-timeout'
+        return subprocess.CompletedProcess(argv,0,text,'')
+    monkeypatch.setattr('agent_office.engine_status.subprocess.run',run)
+    assert all(item['installed'] for item in collect_engine_status()['engines'])
+    assert calls

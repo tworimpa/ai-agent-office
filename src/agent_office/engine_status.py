@@ -4,7 +4,7 @@ import re
 import shutil
 import subprocess
 import sys
-from .engines import ENGINE_COMMANDS, INITIAL_ENGINES
+from .engines import ENGINE_COMMANDS, INITIAL_ENGINES, resolve_executable
 
 FLAGS = {
     "codex": {"--json", "--sandbox"},
@@ -41,7 +41,7 @@ def collect_engine_status(timeout: int = 5) -> dict:
     entries = []
     for engine in INITIAL_ENGINES:
         command = ENGINE_COMMANDS[engine]
-        executable = shutil.which(command)
+        executable = resolve_executable(command)
         entry = {"engine": engine, "command": command, "label": "Codex" if engine == "codex" else "Antigravity",
                  "default_role": "developer" if engine == "codex" else "reviewer",
                  "installed": executable is not None, "version": None, "probe_status": "missing",
