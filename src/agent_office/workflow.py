@@ -33,6 +33,13 @@ class TaskState(TypedDict, total=False):
     review_output: str
 
 
+def parse_review_verdict(output: str) -> str:
+    lines = re.findall(r"(?im)^[ \t]*VERDICT:[ \t]*([^\r\n]*)", output)
+    if len(lines) == 1 and lines[0].strip().upper() in ("APPROVED", "CHANGES_REQUESTED"):
+        return lines[0].strip().upper()
+    return "UNKNOWN"
+
+
 def build_graph(adapters: dict[str, Adapter], *, checkpointer=None):
     def develop(state: TaskState) -> dict:
         count = state.get("attempts", 0) + 1
@@ -103,9 +110,9 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None):
         output = result.message
         if result.returncode != 0:
             status = "REVIEW_FAILED"
-        elif re.search(r"(?im)^VERDICT:\s*APPROVED\s*$", output):
+        elif parse_review_verdict(output) == "APPROVED":
             status = "READY_FOR_HUMAN_REVIEW"
-        elif re.search(r"(?im)^VERDICT:\s*CHANGES_REQUESTED\s*$", output):
+        elif parse_review_verdict(output) == "CHANGES_REQUESTED":
             status = "CHANGES_REQUESTED"
         else:
             status = "NEEDS_HUMAN_REVIEW"

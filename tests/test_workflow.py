@@ -1,4 +1,5 @@
 import sys
+import pytest
 from pathlib import Path
 
 from agent_office.adapters import AgentResult
@@ -85,3 +86,14 @@ def test_test_failure_stops_at_attempt_limit(tmp_path):
     result = graph.invoke(state)
     assert result["status"] == "TEST_FAILED"
     assert result["attempts"] == 2
+
+
+@pytest.mark.parametrize("verdict", [
+    "VERDICT: APPROVED\nVERDICT: CHANGES_REQUESTED",
+    "VERDICT: APPROVED\nVERDICT: APPROVED",
+    "VERDICT: UNKNOWN\nVERDICT: APPROVED",
+])
+def test_conflicting_or_multiple_verdicts_require_human(tmp_path, verdict):
+    graph = build_graph({"claude": MockAdapter([AgentResult(0, "done")]),
+                         "codex": MockAdapter([AgentResult(0, verdict)])})
+    assert graph.invoke(base_state(tmp_path))["status"] == "NEEDS_HUMAN_REVIEW"

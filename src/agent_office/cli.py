@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -62,6 +63,9 @@ def main(argv: list[str] | None = None) -> int:
             "status": "NEW",
         }
         result = graph.invoke(initial, config={"configurable": {"thread_id": str(uuid.uuid4())}})
+    except subprocess.CalledProcessError:
+        print("Agent Office error: Git operation failed", file=sys.stderr)
+        return 2
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"Agent Office error: {exc}", file=sys.stderr)
         return 2
