@@ -19,13 +19,17 @@ async function mount(t, suffix='') {
   const dom = new JSDOM(html,{url:`http://127.0.0.1:8765/${suffix}`,pretendToBeVisual:true});
   const originals=Object.fromEntries(['window','document','location','history','fetch'].map(key=>[key,globalThis[key]]));
   Object.assign(globalThis,{window:dom.window,document:dom.window.document,location:dom.window.location,history:dom.window.history});
-  const server={tasks:[task(a,r),task(b,s)],events:{[r]:[event(1,r),event(2,r)],[s]:[event(1,s)]},calls:[],fail:false,missing:null,hold:null,release:null,failEventsRun:null};
+  const server={tasks:[task(a,r),task(b,s)],events:{[r]:[event(1,r),event(2,r)],[s]:[event(1,s)]},calls:[],fail:false,missing:null,hold:null,release:null,failEventsRun:null,
+    failEngines:false,engines:{checked_at:'2026-11-06T00:00:00Z',platform:'test',engines:[
+      {engine:'codex',label:'Codex',default_role:'developer',installed:true,version:'1.2.3',probe_status:'ok',auth_status:'authenticated',headless_support:true,execution_status:'not_checked'},
+      {engine:'antigravity',label:'Antigravity',default_role:'reviewer',installed:true,version:'1.4.2',probe_status:'ok',auth_status:'unknown',headless_support:true,execution_status:'not_checked'}]}};
   globalThis.fetch=async path=>{
     server.calls.push(String(path));
     if(server.fail)throw new Error('offline');
     const url=new URL(path,dom.window.location.href);
     if(url.pathname==='/api/meta')return Response.json({database:'test.sqlite3'});
     if(url.pathname==='/api/tasks')return Response.json({tasks:server.tasks});
+    if(url.pathname==='/api/engines')return server.failEngines ? Response.json({error:{code:'STORE_IO'}},{status:503}) : Response.json(server.engines);
     const id=url.pathname.split('/')[3];
     const selected=server.tasks.find(item=>item.task_id===id);
     if(!selected || server.missing===id)return Response.json({error:{code:'NOT_FOUND'}},{status:404});
@@ -139,10 +143,35 @@ test('selected status transitions and reconnect announce once, not every poll',a
   const observer=new dom.window.MutationObserver(changes=>mutations.push(...changes));
   observer.observe(get('announcer'),{childList:true,subtree:true,characterData:true});
   const before=server.calls.length; refresh();
-  await until(()=>server.calls.length>=before+3);
+  await until(()=>server.calls.length>=before+4);
   await new Promise(resolve=>setTimeout(resolve,10));
   assert.equal(mutations.length,0); observer.disconnect();
   server.fail=true; refresh(); await until(()=>!get('error').hidden);
   server.fail=false; refresh(); await until(()=>get('error').hidden);
+  assert.ok(get('announcer').textContent.includes('복구'));
+});
+
+test('two initial engine cards separate metadata auth and actual verification',async t=>{
+  const {dom,server,get,refresh}=await mount(t);
+  const cards=dom.window.document.querySelectorAll('#engine-cards article');
+  assert.equal(cards.length,2);
+  assert.ok(cards[0].textContent.includes('Codex') && cards[0].textContent.includes('로그인 확인'));
+  assert.ok(cards[1].textContent.includes('Antigravity') && cards[1].textContent.includes('로그인 미확인'));
+  assert.ok([...cards].every(card=>card.textContent.includes('실제 작업 미검증')));
+  server.engines.engines[1]={...server.engines.engines[1],label:'<img src=x onerror=alert(1)>',auth_status:'not_authenticated'};
+  refresh();await until(()=>get('engine-cards').textContent.includes('로그인 안 됨'));
+  assert.equal(get('engine-cards').querySelector('img'),null);
+  assert.ok(get('engine-cards').textContent.includes('<img src=x onerror=alert(1)>'));
+});
+
+test('engine-only failure does not hide tasks and unchanged snapshot recovery clears warning',async t=>{
+  const {server,get,refresh}=await mount(t);
+  server.failEngines=true; refresh();
+  await until(()=>get('engine-time').textContent.includes('갱신하지 못'));
+  assert.ok(get('announcer').textContent.includes('진단'));
+  assert.equal(get('detail-content').hidden,false);
+  assert.equal(get('error').hidden,true);
+  server.failEngines=false; refresh();
+  await until(()=>get('engine-time').textContent.startsWith('시작 시 진단'));
   assert.ok(get('announcer').textContent.includes('복구'));
 });

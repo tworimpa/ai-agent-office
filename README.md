@@ -22,7 +22,7 @@ The orchestrator does not replace the internal agentic loops inside Claude Code 
 ## Requirements
 
 - Python 3.11+ and Git installed locally.
-- Claude Code and/or Codex CLI installed and authenticated for real runs.
+- Codex and Antigravity CLI (`agy`) installed/authenticated for real runs with the initial engine profile. Legacy Claude remains available through explicit role overrides.
 - Windows or Linux, with a local Git repository containing an initial commit.
 - The CLI you select must be on `PATH`.
 
@@ -68,7 +68,9 @@ agent-office run --repo . --allow-edits \
   --task "Add one focused regression test and explain what changed"
 ```
 
-By default development uses `claude` and review uses `codex`. Override with `--developer codex --reviewer claude`. A task is **not merged, pushed or deployed** even after the reviewer approves it. Inspect the generated worktree and branch first.
+By default development uses `codex` and review uses `antigravity` (`agy`). Roles remain independent: override with `--developer antigravity --reviewer codex`, or explicitly select legacy `claude`. Product workers do not merge/push/deploy their work. Codex's repository maintenance follows the owner's separate CI-gated workflow in AGENTS.md.
+
+Use `agent-office engines` for fixed metadata-only diagnostics. The observer shows a startup snapshot for the two initial engines. Installation, authentication, advertised headless flags and actual task acceptance are distinct; metadata never marks a live task verified. See [engine guide](docs/engines.md).
 
 **Important:** CLI sandbox modes are provider-specific; Claude's `acceptEdits` permission mode is **not a full OS/filesystem sandbox**. Prompts are not a security boundary. Only run trusted tasks on an appropriately isolated local account/environment, and do not expose sensitive credentials or production repositories. The default test command is `python -m pytest -q` (using the Agent Office Python interpreter). Changes to files outside the Git worktree can still be possible depending on CLI permissions and installed tools.
 

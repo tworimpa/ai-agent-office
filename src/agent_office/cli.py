@@ -33,6 +33,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser = OfficeParser(prog="agent-office")
     parser.add_argument("--db", type=Path, help="Local task database; use a separate candidate path")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("engines", help="Inspect the initial engine profile without model calls")
 
     diag = sub.add_parser("doctor", help="Inspect Git, Python and installed agent CLIs")
     diag.add_argument("--require", nargs="*", choices=SUPPORTED_ENGINES,
@@ -139,6 +140,10 @@ def main(argv: list[str] | None = None) -> int:
         args = make_parser().parse_args(argv)
         if args.command == "doctor":
             return doctor(args.require)
+        if args.command == "engines":
+            from .engine_status import collect_engine_status
+            print(json.dumps(collect_engine_status(), indent=2, ensure_ascii=False))
+            return 0
         if args.command == "run" and (not 1 <= args.max_attempts <= MAX_SQLITE_INT or args.timeout < 1):
             raise ValueError("Invalid budget")
         if hasattr(args, "task_id"):

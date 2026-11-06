@@ -109,4 +109,12 @@ h1{font-size:1.9rem}
 
 @media(pointer:coarse){button,input,select{min-block-size:44px}
 }
+.engines-section{margin-block-end:24px}
+.engine-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.engine-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:20px;min-inline-size:0}
+.engine-card hgroup{margin:0 0 16px}.engine-card h3{margin:0;font-size:1.05rem}.engine-card hgroup p{margin:4px 0 0}
+.engine-details{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:0}
+.engine-details>div{min-inline-size:0}.engine-details dd{font-size:.82rem}
+@media(max-width:900px){.engine-details{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){.engine-cards{grid-template-columns:minmax(0,1fr)}}
 
