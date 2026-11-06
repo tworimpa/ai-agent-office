@@ -4,6 +4,8 @@ Read `docs/CODEX_HANDOFF_2026-11-06.md` before working on the project. Also read
 
 This project runs on BOTH Windows and Linux. Use LangGraph as the outer coordinator of existing coding CLI agents (Claude Code, Codex, Gemini, Cline, Antigravity); each CLI retains its own agentic loop. Separate task roles from CLI engines. Communicate with the user in Korean.
 
+The owner-selected initial engine profile is Codex + Antigravity (`agy`): default developer=codex and reviewer=antigravity, with explicit role overrides. Retain legacy Claude compatibility; do not infer authentication or real-task acceptance from installation/help or mock tests. Metadata probes use only fixed known commands, never credential files or broad environment dumps.
+
 Keep stable runtime isolated from development candidates; use a separate worktree/branch for implementation. Git worktrees are not process/OS sandboxes. Do not deploy, change security policies, inspect private credentials, bypass sandbox/protection rules, or act on risk-sensitive approvals without explicit authorization.
 
 ## Standing owner authorization: complete PR and CI workflow
