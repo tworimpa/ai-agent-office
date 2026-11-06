@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -46,9 +47,15 @@ class CLIAdapter:
         if executable is None:
             return AgentResult(127, f"Missing CLI: {argv[0]}. Install and authenticate it first.")
         argv[0] = executable
+        # Python-based tools launched on Windows otherwise inherit a legacy
+        # console encoding even though the parent writes UTF-8 to stdin.
+        # For Node-based CLIs this has no behavioral effect.
+        env = os.environ.copy()
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         try:
             completed = subprocess.run(
-                argv, cwd=workspace, input=prompt, capture_output=True, text=True,
+                argv, cwd=workspace, input=prompt, env=env, capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=self.timeout,
                 check=False,
             )
