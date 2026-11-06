@@ -11,6 +11,7 @@ from .models import (ACTIVE, TERMINAL, STATES, OUTCOMES, TRANSITIONS, EVENT_TYPE
                      TaskRecord, RunRecord, EventRecord, TaskSpec, OwnerInfo, OfficeError, validate_id, validate_db_file, MAX_SQLITE_INT)
 from .workspace import Worktree
 from .events import snapshot_request, sanitize_payload, encode_payload
+from .engines import SUPPORTED_ENGINES
 
 SCHEMA = (
     "CREATE TABLE tasks(task_id TEXT PRIMARY KEY, project TEXT NOT NULL, request_snapshot TEXT NOT NULL, developer_engine TEXT NOT NULL, reviewer_engine TEXT NOT NULL, workspace TEXT NOT NULL, branch TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT, attempts INTEGER NOT NULL, max_attempts INTEGER NOT NULL, current_run_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
@@ -127,7 +128,7 @@ class TaskStore:
     def create_run(self, spec: TaskSpec, run_id: str, intent: Worktree, owner: OwnerInfo):
         validate_id(spec.task_id)
         validate_id(run_id)
-        if type(spec.max_attempts) is not int or not 1 <= spec.max_attempts <= MAX_SQLITE_INT or spec.developer_engine not in ("claude", "codex") or spec.reviewer_engine not in ("claude", "codex"):
+        if type(spec.max_attempts) is not int or not 1 <= spec.max_attempts <= MAX_SQLITE_INT or spec.developer_engine not in SUPPORTED_ENGINES or spec.reviewer_engine not in SUPPORTED_ENGINES:
             raise ValueError("Invalid task specification")
         stamp = now()
         with self._write():

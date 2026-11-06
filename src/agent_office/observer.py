@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+from copy import deepcopy
 from urllib.parse import parse_qs, urlsplit
 
 from .models import OfficeError, MAX_SQLITE_INT, validate_id
@@ -26,7 +27,7 @@ class ObserverServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, db_path: Path, port: int = 8765):
+    def __init__(self, db_path: Path, port: int = 8765, *, engine_snapshot: dict | None = None):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Invalid port")
         self.db_path = Path(db_path).expanduser().resolve()
@@ -37,6 +38,8 @@ class ObserverServer(ThreadingHTTPServer):
         with TaskStore(self.db_path, readonly=True):
             pass
         self._check_identity()
+        from .engine_status import collect_engine_status
+        self.engine_snapshot = deepcopy(engine_snapshot if engine_snapshot is not None else collect_engine_status())
         super().__init__(("127.0.0.1", port), ObserverHandler)
 
     def _check_identity(self):
@@ -134,6 +137,11 @@ class ObserverHandler(BaseHTTPRequestHandler):
                 with self.server.read_store():
                     pass
                 self._reply(200, {"mode": "read-only", "database": self.server.db_path.name, "task_limit": 200})
+                return
+            if parsed.path == "/api/engines":
+                if params:
+                    raise ValueError("Unexpected query")
+                self._reply(200, self.server.engine_snapshot)
                 return
             if parsed.path == "/api/tasks":
                 if params:

@@ -6,12 +6,13 @@ import json
 import shutil
 import subprocess
 import sys
+from .engines import ENGINE_COMMANDS, resolve_executable
 
 
 def doctor(required: list[str]) -> int:
     reports = []
     for name in ["git", *dict.fromkeys(required)]:
-        executable = shutil.which(name)
+        executable = resolve_executable(ENGINE_COMMANDS.get(name, name))
         if executable is None:
             reports.append({"name": name, "installed": False, "version": None})
             continue

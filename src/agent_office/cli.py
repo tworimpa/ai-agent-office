@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 
 from .adapters import CLIAdapter, SUPPORTED_ENGINES
+from .engines import INITIAL_ENGINES, DEFAULT_DEVELOPER, DEFAULT_REVIEWER
 from .diagnostics import doctor
 from .workflow import build_graph
 from .workspace import create_worktree, plan_worktree
@@ -32,16 +33,17 @@ def make_parser() -> argparse.ArgumentParser:
     parser = OfficeParser(prog="agent-office")
     parser.add_argument("--db", type=Path, help="Local task database; use a separate candidate path")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("engines", help="Inspect the initial engine profile without model calls")
 
     diag = sub.add_parser("doctor", help="Inspect Git, Python and installed agent CLIs")
     diag.add_argument("--require", nargs="*", choices=SUPPORTED_ENGINES,
-                      default=list(SUPPORTED_ENGINES))
+                      default=list(INITIAL_ENGINES))
 
     run = sub.add_parser("run", help="Execute a task in a separate Git worktree")
     run.add_argument("--repo", type=Path, required=True, help="Path to Git repository root")
     run.add_argument("--task", required=True, help="Development request in natural language")
-    run.add_argument("--developer", choices=SUPPORTED_ENGINES, default="claude")
-    run.add_argument("--reviewer", choices=SUPPORTED_ENGINES, default="codex")
+    run.add_argument("--developer", choices=SUPPORTED_ENGINES, default=DEFAULT_DEVELOPER)
+    run.add_argument("--reviewer", choices=SUPPORTED_ENGINES, default=DEFAULT_REVIEWER)
     run.add_argument("--allow-edits", action="store_true", help="Opt in to editing the isolated worktree")
     run.add_argument("--test-command", nargs="+", default=[sys.executable, "-m", "pytest", "-q"])
     run.add_argument("--max-attempts", type=int, default=2)
@@ -138,6 +140,10 @@ def main(argv: list[str] | None = None) -> int:
         args = make_parser().parse_args(argv)
         if args.command == "doctor":
             return doctor(args.require)
+        if args.command == "engines":
+            from .engine_status import collect_engine_status
+            print(json.dumps(collect_engine_status(), indent=2, ensure_ascii=False))
+            return 0
         if args.command == "run" and (not 1 <= args.max_attempts <= MAX_SQLITE_INT or args.timeout < 1):
             raise ValueError("Invalid budget")
         if hasattr(args, "task_id"):

@@ -41,7 +41,7 @@ bash scripts/verify-linux.sh
 bash scripts/verify-linux.sh --live
 ```
 
-The scripts install dependencies, compile sources, run pytest, inspect CLI executables. `-Live` / `--live` additionally invokes Claude Code and Codex read-only runs. The scripts do **not** auto-install or authenticate proprietary CLIs.
+The scripts install dependencies, compile sources, run pytest, inspect CLI executables. `-Live` / `--live` additionally invokes Codex and Antigravity planning-mode provider communication runs. The scripts do **not** auto-install or authenticate proprietary CLIs. Inspect provider responses separately from transport success; permission modes are provider-specific.
 
 ## Explicit edit-mode manual acceptance
 

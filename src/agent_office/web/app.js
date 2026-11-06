@@ -8,11 +8,35 @@ let tasks = [], journal = emptyEvents(), generation = 0;
 let busy = false, queued = false, timer = null, controller = null, lastSuccess = null;
 let eventRenderKey = '', metaLoaded = false;
 let lastAnnouncedState = null, hadError = false;
+let engineRenderKey = '';
+let engineHadError = false;
 const taskNodes = new Map();
 const timeFormat = new Intl.DateTimeFormat('ko-KR', {dateStyle:'short', timeStyle:'medium'});
 const timeLabel = value => { const date = new Date(value); return Number.isNaN(date.valueOf()) ? '시각 미상' : timeFormat.format(date); };
 const setText = (id, value) => { const node = $(id), text = String(value ?? '—'); if (node.textContent !== text) node.textContent = text; };
 const textNode = (tag, className, text='') => {const node = document.createElement(tag); node.className = className; node.textContent = text; return node;};
+
+function renderEngines(snapshot) {
+  if (!Array.isArray(snapshot.engines)) throw new Error('Invalid engine snapshot');
+  setText('engine-time', `시작 시 진단 · ${snapshot.platform} · ${timeLabel(snapshot.checked_at)}`);
+  const key = JSON.stringify(snapshot);
+  if (key === engineRenderKey) return;
+  const fragment = document.createDocumentFragment();
+  const authLabels = {authenticated:'로그인 확인', not_authenticated:'로그인 안 됨', unknown:'로그인 미확인'};
+  for (const engine of snapshot.engines) {
+    const card = textNode('article', 'engine-card');
+    const header = document.createElement('hgroup');
+    header.append(textNode('h3', '', engine.label),textNode('p','muted',engine.default_role === 'developer' ? '기본 개발 역할' : '기본 리뷰 역할'));
+    const details = textNode('dl','engine-details');
+    const fields = [['설치',engine.installed ? '설치 경로 확인' : '설치 안 됨'],['버전',engine.version ?? '버전 미확인'],
+      ['인증',authLabels[engine.auth_status] ?? '로그인 미확인'],['비대화식 프로토콜',engine.headless_support ? 'CLI 옵션 확인' : '지원 미확인'],
+      ['실제 작업','실제 작업 미검증'],['실행 진단',({ok:'메타데이터 응답',missing:'실행 파일 없음',timeout:'진단 시간 초과',error:'진단 오류',unsupported:'프로토콜 미지원'})[engine.probe_status] ?? '진단 미확인']];
+    for (const [label,value] of fields) {const pair=document.createElement('div'); pair.append(textNode('dt','',label),textNode('dd','',value)); details.append(pair);}
+    card.append(header,details); fragment.append(card);
+  }
+  $('engine-cards').replaceChildren(fragment);
+  engineRenderKey = key;
+}
 
 function rememberSelection() {
   const url = new URL(location.href);
@@ -144,6 +168,17 @@ async function poll() {
   const current = () => token === generation && !document.hidden;
   let stateKey = null, stateNotice = '';
   try {
+    try {
+      const engines = await getJSON('/api/engines'); if (!current()) return;
+      renderEngines(engines);
+      if (engineHadError) announce('에이전트 진단 정보 연결이 복구되었습니다.');
+      engineHadError = false;
+    } catch (error) {
+      if (!current()) return;
+      setText('engine-time', '진단 정보를 갱신하지 못했습니다. 표시된 진단 시점을 확인해 주세요.');
+      if (!engineHadError) announce('에이전트 진단 정보를 갱신하지 못했습니다.');
+      engineHadError = true;
+    }
     if (!metaLoaded) {
       const meta = await getJSON('/api/meta'); if (!current()) return;
       setText('database', `연결된 기록 · ${meta.database}`); metaLoaded = true;

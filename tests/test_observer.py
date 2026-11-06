@@ -15,7 +15,7 @@ from test_store import seeded, TASK, RUN
 @contextmanager
 def running(db):
     from agent_office.observer import ObserverServer
-    with ObserverServer(db, port=0) as server:
+    with ObserverServer(db, port=0, engine_snapshot={"checked_at":"2026-11-06T00:00:00Z","platform":"test","engines":[]}) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -213,3 +213,24 @@ def test_unsupported_http_version_is_not_reported_as_database_failure(tmp_path):
         body = response.partition(b"\r\n\r\n")[2] if response.startswith(b"HTTP/") else response
         assert json.loads(body)["error"]["code"] == "INVALID_ARGUMENT"
     assert db.read_bytes() == before
+
+
+def test_engine_snapshot_is_collected_once_not_on_page_poll(tmp_path,monkeypatch):
+    from agent_office.observer import ObserverServer
+    snapshot={"checked_at":"2026-11-06T00:00:00Z","platform":"test","engines":[]}
+    calls=[]
+    def collect():
+        calls.append(1)
+        return snapshot
+    monkeypatch.setattr('agent_office.engine_status.collect_engine_status',collect)
+    db=tmp_path/'db'; seeded(db).close()
+    before=db.read_bytes()
+    with ObserverServer(db,port=0) as server:
+        thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        try:
+            for _ in range(3):
+                status,_,body=request(server,'/api/engines')
+                assert status==200 and json.loads(body)==snapshot
+        finally:
+            server.shutdown();thread.join(timeout=5)
+    assert calls==[1] and db.read_bytes()==before

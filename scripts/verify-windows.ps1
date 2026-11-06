@@ -19,10 +19,10 @@ if ($LASTEXITCODE -ne 0) { throw "tests failed" }
 Write-Host "== Available CLI versions (not required for unit tests) =="
 & $PythonExe -m agent_office.cli doctor
 if ($Live) {
-  & $PythonExe -m agent_office.cli doctor --require claude codex
-  if ($LASTEXITCODE -ne 0) { throw "Install and authenticate Claude Code and Codex first" }
-  & $PythonExe -m agent_office.cli run --repo . --developer claude --task "Read this repository and propose one safe improvement. Do not modify files."
-  if ($LASTEXITCODE -ne 0) { throw "Claude Code live smoke failed" }
-  & $PythonExe -m agent_office.cli run --repo . --developer codex --task "Review the architecture in read-only mode. Do not modify files."
-  if ($LASTEXITCODE -ne 0) { throw "Codex live smoke failed" }
+  & $PythonExe -m agent_office.cli doctor --require codex antigravity
+  if ($LASTEXITCODE -ne 0) { throw "Install and authenticate Codex and Antigravity first" }
+  & $PythonExe -m agent_office.cli run --repo . --developer codex --task "Read this repository and propose one safe improvement. Do not modify files."
+  if ($LASTEXITCODE -ne 0) { throw "Codex live communication smoke failed" }
+  & $PythonExe -m agent_office.cli run --repo . --developer antigravity --task "Review the architecture in planning mode. Do not modify files."
+  if ($LASTEXITCODE -ne 0) { throw "Antigravity live communication smoke failed" }
 }

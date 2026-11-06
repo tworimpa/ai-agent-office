@@ -2,10 +2,11 @@
 import json
 import re
 from .models import STATES, OUTCOMES
+from .engines import SUPPORTED_ENGINES
 
 DOMAINS = {"phase": {"run", "workspace", "developer", "test", "review"},
            "role": {"developer", "tester", "reviewer"},
-           "engine": {"claude", "codex", None}, "state": STATES, "outcome": OUTCOMES}
+           "engine": {*SUPPORTED_ENGINES, None}, "state": STATES, "outcome": OUTCOMES}
 
 
 def snapshot_request(text: str) -> str:
