@@ -15,7 +15,15 @@ class Worktree:
     branch: str
 
 
-def create_worktree(repo: Path) -> Worktree:
+def plan_worktree(repo: Path, run_id: str) -> Worktree:
+    from .models import validate_id
+    validate_id(run_id)
+    repo = repo.expanduser().resolve()
+    short_name = re.sub(r"[^a-zA-Z0-9_-]", "-", repo.name)
+    return Worktree(repo.parent / f"{short_name}-agent-worktrees" / f"task-{run_id}", f"ao/task-{run_id}")
+
+
+def create_worktree(repo: Path, *, planned: Worktree | None = None) -> Worktree:
     repo = repo.expanduser().resolve()
     if not repo.is_dir():
         raise ValueError(f"Repository directory not found: {repo}")
@@ -29,8 +37,8 @@ def create_worktree(repo: Path) -> Worktree:
 
     short_name = re.sub(r"[^a-zA-Z0-9_-]", "-", repo.name)
     token = secrets.token_hex(5)
-    branch = f"ao/task-{token}"
-    path = repo.parent / f"{short_name}-agent-worktrees" / f"task-{token}"
+    branch = planned.branch if planned else f"ao/task-{token}"
+    path = planned.path if planned else repo.parent / f"{short_name}-agent-worktrees" / f"task-{token}"
     path.parent.mkdir(parents=True, exist_ok=True)
 
     subprocess.run(
