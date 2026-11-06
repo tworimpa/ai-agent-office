@@ -59,6 +59,8 @@ def make_parser() -> argparse.ArgumentParser:
     events.add_argument("--limit", type=int, default=100)
     recover = sub.add_parser("recover", help="Mark an interrupted run; never replay it")
     recover.add_argument("--run-id", required=True)
+    observer = sub.add_parser("serve", help="Open a loopback-only read-only observer")
+    observer.add_argument("--port", type=int, default=8765)
     return parser
 
 
@@ -147,6 +149,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "events" and not 0 <= args.after_seq <= MAX_SQLITE_INT:
             raise ValueError("Invalid cursor")
         db_path = resolve_db_path(args.db)
+        if args.command == "serve":
+            from .observer import serve
+            serve(db_path, args.port)
+            return 0
         if args.command in ("tasks", "events"):
             with TaskStore(db_path, readonly=True) as store:
                 if args.command == "tasks":

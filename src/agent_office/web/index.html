@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>작업 현황 · Agent Office</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#detail-heading">작업 상세로 이동</a>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">a<span>o</span></span><strong>Agent Office</strong><span class="edition">개인 작업실</span></div>
+    <span class="readonly">읽기 전용</span>
+  </header>
+  <main>
+    <div class="page-heading">
+      <div><p class="eyebrow">WORKSPACE / OVERVIEW</p><h1>작업 현황<span class="heading-dot" aria-hidden="true">.</span></h1><p class="intro">작업의 흐름과 에이전트가 남긴 기록을 한곳에서 확인하세요.</p></div>
+      <div class="sync-tools"><p id="connection" class="connection">기록에 연결하는 중</p><p id="last-update" class="muted">아직 갱신되지 않았습니다</p><button id="refresh" class="secondary" type="button">지금 새로고침 <span aria-hidden="true">↻</span></button></div>
+    </div>
+    <p id="error" class="error" role="alert" hidden></p>
+    <p id="announcer" class="visually-hidden" role="status" aria-live="polite"></p>
+    <div class="summary">
+      <div class="metric"><span>실행 중</span><strong id="count-active">—</strong><span class="metric-note">개발 · 테스트 · 리뷰</span></div>
+      <div class="metric"><span>확인할 작업</span><strong id="count-attention">—</strong><span class="metric-note">답변 · 복구 · 최종 검토</span></div>
+      <div class="metric"><span>실패한 작업</span><strong id="count-failed">—</strong><span class="metric-note">기록에서 원인을 확인하세요</span></div>
+      <div class="metric"><span>최근 작업</span><strong id="count-total">—</strong><span class="metric-note">최근 200건 기준</span></div>
+    </div>
+    <div class="workspace">
+      <section class="panel tasks-panel">
+        <div class="panel-heading"><h2 id="tasks-heading" tabindex="-1">작업 목록</h2><span id="list-count" class="muted">0건</span></div>
+        <div class="filters"><label for="search">작업 검색</label><input id="search" type="search" placeholder="요청, 프로젝트 또는 ID" autocomplete="off"><label for="filter">상태</label><select id="filter"><option value="all">모든 상태</option><option value="active">실행 중</option><option value="attention">확인 필요</option><option value="failed">실패</option><option value="plan">계획만 작성</option></select></div>
+        <p id="list-empty" class="empty">저장된 작업을 불러옵니다.</p>
+        <ul id="task-list" class="task-list" role="list"></ul>
+      </section>
+      <section class="panel detail-panel">
+        <div class="panel-heading"><h2 id="detail-heading" tabindex="-1">작업 상세</h2><span id="detail-badge" class="badge" hidden></span></div>
+        <p id="detail-empty" class="empty">목록에서 작업을 선택하면 상세 정보를 볼 수 있습니다.</p>
+        <div id="detail-content" hidden>
+          <p class="eyebrow">요청 요약</p><p id="request" class="request"></p>
+          <p id="plan-note" class="notice" hidden>계획만 작성한 작업입니다. 테스트와 리뷰를 통과했다는 의미는 아닙니다.</p>
+          <p id="recovery-note" class="notice" hidden>실행이 중단됐을 수 있습니다. 이 화면에서는 복구나 재실행을 하지 않습니다.</p>
+          <dl class="details">
+            <div><dt>개발 역할</dt><dd id="developer"></dd></div><div><dt>리뷰 역할</dt><dd id="reviewer"></dd></div>
+            <div><dt>시도 횟수</dt><dd id="attempts"></dd></div><div><dt>결과</dt><dd id="outcome"></dd></div>
+            <div class="wide"><dt>작업 ID</dt><dd id="task-id" class="mono"></dd></div>
+            <div class="wide"><dt>실행 ID</dt><dd id="run-id" class="mono"></dd></div>
+            <div class="wide"><dt>프로젝트</dt><dd id="project" class="mono"></dd></div>
+            <div class="wide"><dt>작업 경로</dt><dd id="workspace" class="mono"></dd></div>
+            <div class="wide"><dt>작업 브랜치</dt><dd id="branch" class="mono"></dd></div>
+            <div><dt>생성 시각</dt><dd id="created"></dd></div><div><dt>마지막 변경</dt><dd id="updated"></dd></div>
+          </dl>
+        </div>
+      </section>
+      <section class="panel timeline-panel">
+        <div class="panel-heading"><h2>실행 타임라인</h2><span id="event-count" class="muted">0개</span></div>
+        <p class="panel-caption">작업이 남긴 단계별 기록</p>
+        <p id="event-empty" class="empty">작업을 선택하면 실행 기록을 보여줍니다.</p>
+        <ol id="timeline" class="timeline" role="list"></ol>
+        <p id="event-limit" class="muted" hidden>최근 1,000개 기록을 표시합니다.</p>
+      </section>
+    </div>
+  </main>
+  <footer><span>Agent Office <span class="muted">/ 로컬 관찰 화면</span></span><span id="database" class="muted">작업 조회가 에이전트를 실행하지 않습니다.</span></footer>
+  <noscript>작업 현황을 보려면 브라우저에서 JavaScript를 켜 주세요.</noscript>
+</body>
+</html>
