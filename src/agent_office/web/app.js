@@ -7,6 +7,7 @@ let selected = validId(initial) ? initial : null;
 let tasks = [], journal = emptyEvents(), generation = 0;
 let busy = false, queued = false, timer = null, controller = null, lastSuccess = null;
 let eventRenderKey = '', metaLoaded = false;
+let lastAnnouncedState = null, hadError = false;
 const taskNodes = new Map();
 const timeFormat = new Intl.DateTimeFormat('ko-KR', {dateStyle:'short', timeStyle:'medium'});
 const timeLabel = value => { const date = new Date(value); return Number.isNaN(date.valueOf()) ? '시각 미상' : timeFormat.format(date); };
@@ -141,6 +142,7 @@ async function poll() {
   busy = true; queued = false;
   const token = generation;
   const current = () => token === generation && !document.hidden;
+  let stateKey = null, stateNotice = '';
   try {
     if (!metaLoaded) {
       const meta = await getJSON('/api/meta'); if (!current()) return;
@@ -154,8 +156,14 @@ async function poll() {
       const detail = await getJSON(`/api/tasks/${encodeURIComponent(selected)}`); if (!current()) return;
       const task = detail.task;
       if (task.task_id !== selected) throw new Error('Mismatched task');
-      if (journal.runId !== task.current_run_id) {journal = emptyEvents(); eventRenderKey = '';}
+      if (journal.runId !== task.current_run_id) {
+        journal = emptyEvents(); eventRenderKey = '';
+        $('timeline').replaceChildren(); setText('event-count', '0개'); $('event-limit').hidden = true;
+        $('event-empty').hidden = false; setText('event-empty', '이번 실행의 기록을 불러옵니다.');
+      }
       renderDetail(task);
+      stateKey = `${task.task_id}:${task.current_run_id}:${task.state}:${task.outcome}`;
+      stateNotice = `선택한 작업: ${stateLabel(task.state)}`;
       for (let page=0; page<10; page++) {
         const params = new URLSearchParams({run_id:task.current_run_id, after_seq:String(journal.cursor), limit:'100'});
         const data = await getJSON(`/api/tasks/${task.task_id}/events?${params}`); if (!current()) return;
@@ -169,8 +177,12 @@ async function poll() {
     $('connection').classList.remove('stale'); document.querySelector('.workspace').classList.remove('stale');
     setText('connection', '기록 연결됨 · 자동 갱신');
     setText('last-update', `최근 확인 ${timeLabel(lastSuccess)}`);
+    if (hadError) announce(`기록 연결이 복구되었습니다. ${stateNotice}`);
+    else if (stateKey && stateKey !== lastAnnouncedState) announce(stateNotice);
+    lastAnnouncedState = stateKey; hadError = false;
   } catch (error) {
     if (!current()) return;
+    hadError = true;
     const messages = {NOT_FOUND:'선택한 작업이나 실행 기록을 찾을 수 없습니다.', DB_NOT_FOUND:'연결된 기록 파일을 찾을 수 없습니다.',
       SCHEMA_UNSUPPORTED:'현재 기록 형식을 읽을 수 없습니다.', DB_BUSY:'기록을 사용 중입니다. 잠시 후 다시 확인합니다.'};
     const message = messages[error.code] ?? '기록을 갱신하지 못했습니다. 서버 연결을 확인해 주세요.';

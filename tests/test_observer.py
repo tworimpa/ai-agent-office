@@ -4,6 +4,7 @@ import http.client
 import json
 from pathlib import Path
 import threading
+import os
 import pytest
 from test_store import seeded, TASK, RUN
 
@@ -124,3 +125,32 @@ def test_static_assets_are_packaged_and_not_filesystem_browsing(tmp_path):
             assert status == 200 and body
             assert headers["Content-Type"].startswith(mime)
         assert request(server, "/web/../../cli.py")[0] == 404
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_root_task_link_survives_http_refresh(tmp_path, method):
+    db = tmp_path / "db"
+    seeded(db).close()
+    with running(db) as server:
+        status, headers, body = request(server, f"/?task={TASK}", method)
+        assert status == 200 and headers["Content-Type"].startswith("text/html")
+        if method == "GET":
+            assert b'<!doctype html>' in body
+        else:
+            assert body == b''
+        assert request(server, f"/?task={TASK}&task={TASK}")[0] == 400
+        assert request(server, "/?task=bad")[0] == 400
+
+
+def test_replaced_database_is_not_silently_adopted(tmp_path):
+    db, replacement = tmp_path / "db", tmp_path / "replacement"
+    seeded(db).close()
+    with seeded(replacement) as store:
+        store.connection.execute("UPDATE tasks SET request_snapshot='replacement data'")
+    with running(db) as server:
+        assert request(server, "/api/tasks")[0] == 200
+        os.replace(replacement, db)
+        for path in ("/api/meta", "/api/tasks", f"/api/tasks/{TASK}", f"/api/tasks/{TASK}/events"):
+            status, _, body = request(server, path)
+            assert status == 503
+            assert b'replacement data' not in body

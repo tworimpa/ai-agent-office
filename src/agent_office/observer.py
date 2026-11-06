@@ -1,8 +1,10 @@
 """Loopback-only read-only observer. No arbitrary filesystem or execution surface."""
 from dataclasses import asdict
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -28,9 +30,29 @@ class ObserverServer(ThreadingHTTPServer):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Invalid port")
         self.db_path = Path(db_path).expanduser().resolve()
+        try:
+            self._identity = self.db_path.stat()
+        except FileNotFoundError:
+            raise OfficeError("DB_NOT_FOUND") from None
         with TaskStore(self.db_path, readonly=True):
             pass
+        self._check_identity()
         super().__init__(("127.0.0.1", port), ObserverHandler)
+
+    def _check_identity(self):
+        try:
+            current = self.db_path.stat()
+        except FileNotFoundError:
+            raise OfficeError("DB_NOT_FOUND") from None
+        if not os.path.samestat(self._identity, current):
+            raise OfficeError("STORE_IO")
+
+    @contextmanager
+    def read_store(self):
+        self._check_identity()
+        with TaskStore(self.db_path, readonly=True) as store:
+            yield store
+            self._check_identity()
 
     def get_request(self):
         connection, address = super().get_request()
@@ -88,8 +110,13 @@ class ObserverHandler(BaseHTTPRequestHandler):
             if not self._allowed(api):
                 self._error(403, "FORBIDDEN")
                 return
+            params = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True, max_num_fields=10)
+            if any(len(value) != 1 for value in params.values()):
+                raise ValueError("Duplicate query")
             if parsed.path in ASSETS:
-                if parsed.query:
+                if parsed.path == "/" and set(params) == {"task"}:
+                    validate_id(params["task"][0])
+                elif params:
                     raise ValueError("Unexpected query")
                 asset, mime = ASSETS[parsed.path]
                 try:
@@ -99,20 +126,17 @@ class ObserverHandler(BaseHTTPRequestHandler):
                     return
                 self._reply(200, data, mime)
                 return
-            params = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True, max_num_fields=10)
-            if any(len(value) != 1 for value in params.values()):
-                raise ValueError("Duplicate query")
             if parsed.path == "/api/meta":
                 if params:
                     raise ValueError("Unexpected query")
-                with TaskStore(self.server.db_path, readonly=True):
+                with self.server.read_store():
                     pass
                 self._reply(200, {"mode": "read-only", "database": self.server.db_path.name, "task_limit": 200})
                 return
             if parsed.path == "/api/tasks":
                 if params:
                     raise ValueError("Unexpected query")
-                with TaskStore(self.server.db_path, readonly=True) as store:
+                with self.server.read_store() as store:
                     result = {"tasks": [asdict(task) for task in store.list_tasks(limit=200)], "limit": 200}
                 self._reply(200, result)
                 return
@@ -124,7 +148,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
             if not route[2]:
                 if params:
                     raise ValueError("Unexpected query")
-                with TaskStore(self.server.db_path, readonly=True) as store:
+                with self.server.read_store() as store:
                     result = {"task": asdict(store.get_task(task_id))}
             else:
                 if set(params) - {"run_id", "after_seq", "limit"}:
@@ -134,7 +158,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
                 limit = int(params.get("limit", ["100"])[0])
                 if not 0 <= cursor <= MAX_SQLITE_INT or not 1 <= limit <= 500:
                     raise ValueError("Invalid range")
-                with TaskStore(self.server.db_path, readonly=True) as store:
+                with self.server.read_store() as store:
                     task = store.get_task(task_id)
                     events = store.list_events(task_id, run_id=run_id, after_seq=cursor, limit=limit+1)
                 result = {"task_id": task_id, "run_id": run_id or task.current_run_id,

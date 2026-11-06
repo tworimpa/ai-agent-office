@@ -19,7 +19,7 @@ async function mount(t, suffix='') {
   const dom = new JSDOM(html,{url:`http://127.0.0.1:8765/${suffix}`,pretendToBeVisual:true});
   const originals=Object.fromEntries(['window','document','location','history','fetch'].map(key=>[key,globalThis[key]]));
   Object.assign(globalThis,{window:dom.window,document:dom.window.document,location:dom.window.location,history:dom.window.history});
-  const server={tasks:[task(a,r),task(b,s)],events:{[r]:[event(1,r),event(2,r)],[s]:[event(1,s)]},calls:[],fail:false,missing:null,hold:null,release:null};
+  const server={tasks:[task(a,r),task(b,s)],events:{[r]:[event(1,r),event(2,r)],[s]:[event(1,s)]},calls:[],fail:false,missing:null,hold:null,release:null,failEventsRun:null};
   globalThis.fetch=async path=>{
     server.calls.push(String(path));
     if(server.fail)throw new Error('offline');
@@ -34,6 +34,7 @@ async function mount(t, suffix='') {
       return Response.json({task:selected});
     }
     const run=url.searchParams.get('run_id');
+    if(server.failEventsRun===run)return Response.json({error:{code:'STORE_IO'}},{status:503});
     const cursor=Number(url.searchParams.get('after_seq'));
     const events=(server.events[run]??[]).filter(item=>item.seq>cursor);
     return Response.json({task_id:id,run_id:run,events,next_after_seq:events.at(-1)?.seq??cursor,has_more:false});
@@ -110,4 +111,38 @@ test('run change resets event cursor and old run data',async t=>{
   server.events[newRun]=[event(1,newRun)]; refresh();
   await until(()=>get('run-id').textContent===newRun && get('timeline').children.length===1);
   assert.ok(server.calls.some(path=>path.includes(`run_id=${newRun}&after_seq=0`)));
+});
+
+test('failed new-run events never show old-run events beside new detail',async t=>{
+  const {server,get,refresh}=await mount(t);
+  const newRun='4'.repeat(32);
+  server.tasks[0]={...server.tasks[0],current_run_id:newRun};
+  server.events[newRun]=[event(1,newRun)]; server.failEventsRun=newRun;
+  refresh(); await until(()=>!get('error').hidden);
+  assert.equal(get('run-id').textContent,newRun);
+  assert.equal(get('timeline').children.length,0);
+  assert.equal(get('event-count').textContent,'0개');
+  server.failEventsRun=null; refresh();
+  await until(()=>get('error').hidden);
+  assert.equal(get('timeline').children.length,1);
+});
+
+test('selected status transitions and reconnect announce once, not every poll',async t=>{
+  const {dom,server,get,refresh}=await mount(t);
+  server.tasks[0]={...server.tasks[0],state:'RUNNING',outcome:null}; refresh();
+  await until(()=>get('detail-badge').textContent==='개발 중');
+  assert.ok(get('announcer').textContent.includes('개발 중'));
+  server.tasks[0]={...server.tasks[0],state:'PLAN_ONLY',outcome:'PLAN_ONLY'}; refresh();
+  await until(()=>get('detail-badge').textContent==='계획만 작성');
+  assert.ok(get('announcer').textContent.includes('계획만 작성'));
+  const mutations=[];
+  const observer=new dom.window.MutationObserver(changes=>mutations.push(...changes));
+  observer.observe(get('announcer'),{childList:true,subtree:true,characterData:true});
+  const before=server.calls.length; refresh();
+  await until(()=>server.calls.length>=before+3);
+  await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(mutations.length,0); observer.disconnect();
+  server.fail=true; refresh(); await until(()=>!get('error').hidden);
+  server.fail=false; refresh(); await until(()=>get('error').hidden);
+  assert.ok(get('announcer').textContent.includes('복구'));
 });
