@@ -33,9 +33,25 @@ class TaskState(TypedDict, total=False):
     review_output: str
 
 
-def build_graph(adapters: dict[str, Adapter], *, checkpointer=None):
+def parse_review_verdict(output: str) -> str:
+    lines = re.findall(r"(?im)^[ \t]*VERDICT:[ \t]*([^\r\n]*)", output)
+    if len(lines) == 1 and lines[0].strip().upper() in ("APPROVED", "CHANGES_REQUESTED"):
+        return lines[0].strip().upper()
+    return "UNKNOWN"
+
+
+def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=None):
+    def emit(event, phase, count, *, state=None, engine=None, returncode=None):
+        if recorder is not None:
+            payload = {"phase": phase, "role": {"developer": "developer", "test": "tester", "review": "reviewer"}[phase], "engine": engine}
+            if returncode is not None:
+                payload["returncode"] = returncode
+            recorder.record(operation_key=f"{recorder.run_id}:{count}:{phase}:{event}", event_type=event,
+                            state=state, attempts=count, payload=payload)
+
     def develop(state: TaskState) -> dict:
         count = state.get("attempts", 0) + 1
+        emit("STAGE_STARTED", "developer", count, state="RUNNING", engine=state["developer"])
         prompt = (
             "You are the development worker for this repository. "
             "Stay within the Git worktree. Never commit, push, merge, deploy, "
@@ -49,10 +65,12 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None):
             prompt, workspace=Path(state["workspace"]),
             allow_edits=state["allow_edits"],
         )
+        emit("STAGE_COMPLETED" if result.returncode == 0 else "STAGE_FAILED", "developer", count,
+             engine=state["developer"], returncode=result.returncode)
         return {
             "attempts": count,
             "developer_output": result.message,
-            "status": "DEVELOPED" if result.returncode == 0 else "FAILED",
+            "status": "DEVELOPED" if result.returncode == 0 else "RECOVERY_REQUIRED" if result.returncode == 124 else "FAILED",
             "feedback": "" if result.returncode == 0 else result.message[:2000],
         }
 
@@ -65,6 +83,9 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None):
         return {"status": "PLAN_ONLY"}
 
     def test(state: TaskState) -> dict:
+        emit("STAGE_STARTED", "test", state["attempts"], state="TESTING")
+        timed_out = False
+        returncode = None
         try:
             completed = subprocess.run(
                 state["test_argv"], cwd=state["workspace"],
@@ -73,21 +94,33 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None):
             )
             output = (completed.stdout + "\n" + completed.stderr)[-6000:]
             passed = completed.returncode == 0
-        except (subprocess.TimeoutExpired, OSError) as exc:
+            returncode = completed.returncode
+        except subprocess.TimeoutExpired as exc:
+            passed = False
+            timed_out = True
+            output = str(exc)
+            returncode = 124
+        except OSError as exc:
             passed = False
             output = str(exc)
+        emit("STAGE_COMPLETED" if passed else "STAGE_FAILED", "test", state["attempts"], returncode=returncode)
+        if not passed and not timed_out and state["attempts"] < state["max_attempts"]:
+            emit("RETRY_SCHEDULED", "test", state["attempts"], state="RUNNING")
         return {
-            "status": "TEST_PASSED" if passed else "TEST_FAILED",
+            "status": "TEST_PASSED" if passed else "RECOVERY_REQUIRED" if timed_out else "TEST_FAILED",
             "test_output": output,
             "feedback": "" if passed else f"Tests failed:\n{output}",
         }
 
     def after_test(state: TaskState) -> str:
+        if state["status"] == "RECOVERY_REQUIRED":
+            return "end"
         if state["status"] == "TEST_PASSED":
             return "review"
         return "develop" if state["attempts"] < state["max_attempts"] else "end"
 
     def review(state: TaskState) -> dict:
+        emit("STAGE_STARTED", "review", state["attempts"], state="REVIEWING", engine=state["reviewer"])
         prompt = (
             "Review the requested changes without modifying files. "
             "Respond using a standalone line exactly 'VERDICT: APPROVED' "
@@ -101,14 +134,21 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None):
             prompt, workspace=Path(state["workspace"]), allow_edits=False,
         )
         output = result.message
-        if result.returncode != 0:
+        emit("STAGE_COMPLETED" if result.returncode == 0 else "STAGE_FAILED", "review", state["attempts"], engine=state["reviewer"], returncode=result.returncode)
+        if result.returncode == 124:
+            status = "RECOVERY_REQUIRED"
+        elif result.returncode != 0:
             status = "REVIEW_FAILED"
-        elif re.search(r"(?im)^VERDICT:\s*APPROVED\s*$", output):
+        elif result.truncated:
+            status = "NEEDS_HUMAN_REVIEW"
+        elif parse_review_verdict(output) == "APPROVED":
             status = "READY_FOR_HUMAN_REVIEW"
-        elif re.search(r"(?im)^VERDICT:\s*CHANGES_REQUESTED\s*$", output):
+        elif parse_review_verdict(output) == "CHANGES_REQUESTED":
             status = "CHANGES_REQUESTED"
         else:
             status = "NEEDS_HUMAN_REVIEW"
+        if status == "CHANGES_REQUESTED" and state["attempts"] < state["max_attempts"]:
+            emit("RETRY_SCHEDULED", "review", state["attempts"], state="RUNNING", engine=state["reviewer"])
         return {
             "status": status,
             "review_output": output,

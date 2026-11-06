@@ -1,6 +1,6 @@
 # AI Agent Office
 
-**AO-000 Bootstrap** — local-first orchestration of existing coding agent CLIs through LangGraph.
+**AO-001 candidate** — local-first orchestration of existing coding agent CLIs through LangGraph, with persisted tasks and phase events.
 
 This is an early, deliberately limited command-line MVP. It does **not** implement the desktop office UI, a persistent job scheduler, automatic human-in-the-loop Q&A, unattended delegation, GitHub publishing, or self-updating. Those are planned features.
 
@@ -47,6 +47,8 @@ The CI workflow runs **Ubuntu + Windows**, Python **3.11 + 3.13**, without provi
 - To include authenticated headless CLI checks: add `-Live` (Windows) or `--live` (Linux).
 - Inspect available CLIs: `agent-office doctor`
 
+Task and event queries, explicit interruption marking and candidate DB paths are described in [storage guide](docs/storage.md). Use `--db` before the subcommand to keep development state separate from stable state. The office UI and automatic session resume are not implemented.
+
 See [verification guide](docs/verification.md). Real Claude/Codex checks require those CLIs installed and authenticated on the target PC; CI mocks do not validate live provider behavior.
 
 ## Try it
@@ -75,8 +77,8 @@ Tasks are transferred to CLI subprocesses through standard input rather than she
 ## Roadmap
 
 - AO-000: LangGraph + Claude/Codex adapters + separate worktree + tests + human-reviewed result.
-- AO-001: persistent task database, event stream, and an Agent Office UI.
-- AO-002: Gemini/Cline/Antigravity adapters and skills registry.
+- AO-001: persistent task/run/event database, read-only queries and explicit recovery marking.
+- AO-002: office observation UI, Gemini/Cline/Antigravity adapters and skills registry.
 - AO-003: questions, approval inbox, session continuation, and delegated decisions within policy.
 - AO-004: supervised self-improvement, regression benchmarks, candidate builds and safe promotion.
 
