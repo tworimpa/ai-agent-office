@@ -17,6 +17,8 @@ Without --db, Windows uses `%LOCALAPPDATA%\AI-Agent-Office\stable\tasks.sqlite3`
 
 ## States and interruptions
 
+Database hard links are unsupported and rejected: aliases of one file must not acquire different run locks. Recovery opens existing databases only and validates the managed schema without initializing a foreign or empty file.
+
 `PLAN_ONLY` means no tests or reviewer ran. `READY_FOR_HUMAN_REVIEW` means the configured tests and advisory reviewer passed; it does not authorize merging or deployment. Ambiguous review is `WAITING_USER`; there is no answer/resume command in this milestone.
 
 The run lock is held before recording intent and through the final commit. Lock handles are not inherited by children. Persistent `<db>.locks/<run_id>.lock` files must not be deleted or replaced while using a database. Their presence alone does not mean a process is alive.
@@ -26,6 +28,8 @@ After coordinator interruption, first inspect tasks/events. Explicit `recover` t
 Worker returncode 124 and test timeout stop retries and require recovery review. Ctrl+C conservatively records interruption when possible and returns 130. An uncatchable kill leaves the last durable state for explicit recovery.
 
 ## Data, errors and retention
+
+SQLite integer budgets/cursors must fit the signed 64-bit range. An omitted run ID selects the task's current run; an explicitly empty ID is invalid. Truncated reviewer responses are treated as undecided because a trailing contradictory verdict may have been omitted.
 
 SQLite schema version is 1; newer or unrecognized schemas are rejected without migration. State/attempt/event sequence changes are committed together in short transactions. A failed start commit prevents external execution; a failed result commit stops the next stage and prevents a success report. A duplicate operation must match the full event and transition envelope to return the existing event.
 
