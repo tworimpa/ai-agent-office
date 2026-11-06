@@ -139,6 +139,8 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             status = "RECOVERY_REQUIRED"
         elif result.returncode != 0:
             status = "REVIEW_FAILED"
+        elif result.truncated:
+            status = "NEEDS_HUMAN_REVIEW"
         elif parse_review_verdict(output) == "APPROVED":
             status = "READY_FOR_HUMAN_REVIEW"
         elif parse_review_verdict(output) == "CHANGES_REQUESTED":

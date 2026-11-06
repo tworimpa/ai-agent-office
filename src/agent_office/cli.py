@@ -17,7 +17,7 @@ from .workflow import build_graph
 from .workspace import create_worktree, plan_worktree
 from .store import TaskStore
 from .events import RunRecorder
-from .models import TaskSpec, OwnerInfo, OfficeError, ACTIVE, validate_id
+from .models import TaskSpec, OwnerInfo, OfficeError, ACTIVE, validate_id, MAX_SQLITE_INT
 from .ownership import RunGuard, recover_run
 from .runtime_paths import resolve_db_path
 from dataclasses import asdict
@@ -136,15 +136,15 @@ def main(argv: list[str] | None = None) -> int:
         args = make_parser().parse_args(argv)
         if args.command == "doctor":
             return doctor(args.require)
-        if args.command == "run" and (args.max_attempts < 1 or args.timeout < 1):
+        if args.command == "run" and (not 1 <= args.max_attempts <= MAX_SQLITE_INT or args.timeout < 1):
             raise ValueError("Invalid budget")
         if hasattr(args, "task_id"):
             validate_id(args.task_id)
-        if getattr(args, "run_id", None):
+        if hasattr(args, "run_id") and args.run_id is not None:
             validate_id(args.run_id)
         if hasattr(args, "limit") and not 1 <= args.limit <= (500 if args.command == "events" else 200):
             raise ValueError("Invalid limit")
-        if args.command == "events" and args.after_seq < 0:
+        if args.command == "events" and not 0 <= args.after_seq <= MAX_SQLITE_INT:
             raise ValueError("Invalid cursor")
         db_path = resolve_db_path(args.db)
         if args.command in ("tasks", "events"):
@@ -163,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "recover":
             if not db_path.is_file():
                 raise OfficeError("DB_NOT_FOUND")
-            with TaskStore(db_path) as store:
+            with TaskStore(db_path, existing=True) as store:
                 run = recover_run(store, args.run_id, host_name=platform.node())
                 report = {"run_id": run.run_id, "state": run.state, "outcome": run.outcome}
             print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     except sqlite3.Error as exc:
         code = getattr(exc, "sqlite_errorcode", 0) & 255
         report_error("DB_BUSY" if code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) else "STORE_IO")
-    except ValueError:
+    except (ValueError, OverflowError):
         report_error("INVALID_ARGUMENT")
     except (OSError, RuntimeError):
         report_error("STORE_IO")

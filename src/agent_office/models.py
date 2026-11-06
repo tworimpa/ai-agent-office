@@ -12,6 +12,12 @@ TRANSITIONS = {
     "REVIEWING": {"RUNNING", "READY_FOR_HUMAN_REVIEW", "WAITING_USER"},
 }
 EVENT_TYPES = frozenset({"RUN_CREATED", "WORKSPACE_READY", "STAGE_STARTED", "STAGE_COMPLETED", "STAGE_FAILED", "RETRY_SCHEDULED", "RUN_FINISHED", "RECOVERY_REQUIRED"})
+MAX_SQLITE_INT = 2**63 - 1
+
+
+def validate_db_file(path):
+    if path.exists() and path.stat().st_nlink > 1:
+        raise ValueError("Hard-linked database paths are not supported")
 
 
 def validate_id(value: str) -> str:

@@ -29,7 +29,7 @@ def create_worktree(repo: Path, *, planned: Worktree | None = None) -> Worktree:
         raise ValueError(f"Repository directory not found: {repo}")
     result = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
-        cwd=repo, capture_output=True, text=True, check=True,
+        cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     )
     root = Path(result.stdout.strip()).resolve()
     if root != repo:
@@ -43,7 +43,7 @@ def create_worktree(repo: Path, *, planned: Worktree | None = None) -> Worktree:
 
     subprocess.run(
         ["git", "worktree", "add", "-b", branch, str(path), "HEAD"],
-        cwd=repo, check=True, capture_output=True, text=True,
+        cwd=repo, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return Worktree(path=path, branch=branch)
 
@@ -51,6 +51,6 @@ def create_worktree(repo: Path, *, planned: Worktree | None = None) -> Worktree:
 def git_summary(workspace: Path) -> str:
     result = subprocess.run(
         ["git", "status", "--short"], cwd=workspace,
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     return result.stdout[:4000] if result.returncode == 0 else "(git status unavailable)"

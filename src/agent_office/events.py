@@ -9,7 +9,7 @@ DOMAINS = {"phase": {"run", "workspace", "developer", "test", "review"},
 
 
 def snapshot_request(text: str) -> str:
-    text = re.sub(r'''(?i)(\b[\w]*(?:API_KEY|TOKEN|SECRET|PASSWORD)\b\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)''', r"\1[redacted]", text)
+    text = re.sub(r'''(?i)(["']?\b[\w]*(?:API_KEY|TOKEN|SECRET|PASSWORD)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)''', r"\1[redacted]", text)
     text = re.sub(r"(?i)(\bBearer\s+)[^\s,;]+", r"\1[redacted]", text)
     text = re.sub(r"\b(?:sk-ant-|sk-|ghp_|github_pat_)[A-Za-z0-9_-]+", "[redacted]", text)
     data = text.encode("utf-8")

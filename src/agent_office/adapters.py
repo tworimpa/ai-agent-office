@@ -18,6 +18,7 @@ class AgentResult:
     returncode: int
     message: str
     session_id: str | None = None
+    truncated: bool = False
 
 
 class CLIAdapter:
@@ -68,7 +69,7 @@ class CLIAdapter:
         if completed.returncode != 0:
             error = completed.stderr.strip() or message
             message = f"{self.engine} exited {completed.returncode}: {error[:3000]}"
-        return AgentResult(completed.returncode, message[:12000], session_id)
+        return AgentResult(completed.returncode, message[:12000], session_id, len(message) > 12000)
 
 
 def parse_output(engine: str, output: str) -> tuple[str, str | None]:

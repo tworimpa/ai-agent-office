@@ -2,7 +2,7 @@
 import errno
 import os
 from pathlib import Path
-from .models import ACTIVE, OfficeError, validate_id
+from .models import ACTIVE, OfficeError, validate_id, validate_db_file
 
 
 class RunBusyError(OfficeError):
@@ -13,10 +13,12 @@ class RunBusyError(OfficeError):
 class RunGuard:
     def __init__(self, db_path: Path, run_id: str):
         validate_id(run_id)
-        self.path = Path(str(Path(db_path).expanduser().resolve()) + ".locks") / (run_id + ".lock")
+        self.db_path = Path(db_path).expanduser().resolve()
+        self.path = Path(str(self.db_path) + ".locks") / (run_id + ".lock")
         self.fd = None
 
     def __enter__(self):
+        validate_db_file(self.db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
         os.set_inheritable(self.fd, False)

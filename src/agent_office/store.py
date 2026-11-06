@@ -8,7 +8,7 @@ import re
 import sqlite3
 
 from .models import (ACTIVE, TERMINAL, STATES, OUTCOMES, TRANSITIONS, EVENT_TYPES,
-                     TaskRecord, RunRecord, EventRecord, TaskSpec, OwnerInfo, OfficeError, validate_id)
+                     TaskRecord, RunRecord, EventRecord, TaskSpec, OwnerInfo, OfficeError, validate_id, validate_db_file, MAX_SQLITE_INT)
 from .workspace import Worktree
 from .events import snapshot_request, sanitize_payload, encode_payload
 
@@ -29,26 +29,27 @@ def encode(value):
 
 
 class TaskStore:
-    def __init__(self, db_path: Path, *, readonly: bool = False):
+    def __init__(self, db_path: Path, *, readonly: bool = False, existing: bool = False):
         self.path = Path(db_path).expanduser().resolve()
         self.readonly = readonly
-        if readonly and not self.path.is_file():
+        validate_db_file(self.path)
+        if (readonly or existing) and not self.path.is_file():
             raise OfficeError("DB_NOT_FOUND")
-        if not readonly:
+        if not readonly and not existing:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.path.as_uri() + ("?mode=ro" if readonly else "?mode=rwc"), uri=True, isolation_level=None, timeout=5)
+        self.connection = sqlite3.connect(self.path.as_uri() + ("?mode=ro" if readonly else "?mode=rw" if existing else "?mode=rwc"), uri=True, isolation_level=None, timeout=5)
         self.connection.row_factory = sqlite3.Row
         try:
             self.connection.execute("PRAGMA foreign_keys=ON")
             self.connection.execute("PRAGMA busy_timeout=5000")
             if readonly:
                 self.connection.execute("PRAGMA query_only=ON")
-            if readonly:
+            if readonly or existing:
                 self._check_schema()
             else:
                 with self._write():
                     version = self.connection.execute("PRAGMA user_version").fetchone()[0]
-                    if version == 0 and not self.connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchone():
+                    if version == 0 and not self.connection.execute("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchone():
                         for statement in SCHEMA:
                             self.connection.execute(statement)
                         self.connection.execute("PRAGMA user_version=1")
@@ -60,6 +61,11 @@ class TaskStore:
     def _check_schema(self):
         if self.connection.execute("PRAGMA user_version").fetchone()[0] != 1:
             raise OfficeError("SCHEMA_UNSUPPORTED")
+        for name, expected in zip(("tasks", "runs", "one_active_run", "events"), SCHEMA):
+            row = self.connection.execute("SELECT sql FROM sqlite_master WHERE name=?", (name,)).fetchone()
+            normalize = lambda sql: re.sub(r"\s+", "", sql).casefold()
+            if row is None or row[0] is None or normalize(row[0]) != normalize(expected):
+                raise OfficeError("SCHEMA_UNSUPPORTED")
 
     def close(self):
         self.connection.close()
@@ -110,10 +116,10 @@ class TaskStore:
 
     def list_events(self, task_id, *, run_id=None, after_seq=0, limit=100):
         self._limit(limit, 501)
-        if type(after_seq) is not int or after_seq < 0:
+        if type(after_seq) is not int or not 0 <= after_seq <= MAX_SQLITE_INT:
             raise ValueError("Invalid cursor")
         task = self.get_task(task_id)
-        run = self.get_run(run_id or task.current_run_id)
+        run = self.get_run(task.current_run_id if run_id is None else run_id)
         if run.task_id != task_id:
             raise ValueError("Run does not belong to task")
         return [self._event(row) for row in self.connection.execute("SELECT * FROM events WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?", (run.run_id, after_seq, limit))]
@@ -121,7 +127,7 @@ class TaskStore:
     def create_run(self, spec: TaskSpec, run_id: str, intent: Worktree, owner: OwnerInfo):
         validate_id(spec.task_id)
         validate_id(run_id)
-        if type(spec.max_attempts) is not int or spec.max_attempts < 1 or spec.developer_engine not in ("claude", "codex") or spec.reviewer_engine not in ("claude", "codex"):
+        if type(spec.max_attempts) is not int or not 1 <= spec.max_attempts <= MAX_SQLITE_INT or spec.developer_engine not in ("claude", "codex") or spec.reviewer_engine not in ("claude", "codex"):
             raise ValueError("Invalid task specification")
         stamp = now()
         with self._write():
