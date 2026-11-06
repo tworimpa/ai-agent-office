@@ -10,6 +10,7 @@ import sqlite3
 from .models import (ACTIVE, TERMINAL, STATES, OUTCOMES, TRANSITIONS, EVENT_TYPES,
                      TaskRecord, RunRecord, EventRecord, TaskSpec, OwnerInfo, OfficeError, validate_id)
 from .workspace import Worktree
+from .events import snapshot_request, sanitize_payload, encode_payload
 
 SCHEMA = (
     "CREATE TABLE tasks(task_id TEXT PRIMARY KEY, project TEXT NOT NULL, request_snapshot TEXT NOT NULL, developer_engine TEXT NOT NULL, reviewer_engine TEXT NOT NULL, workspace TEXT NOT NULL, branch TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT, attempts INTEGER NOT NULL, max_attempts INTEGER NOT NULL, current_run_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
@@ -126,7 +127,7 @@ class TaskStore:
         with self._write():
             if self.connection.execute("SELECT 1 FROM tasks WHERE task_id=?", (spec.task_id,)).fetchone():
                 raise ValueError("Task already exists; replay is not supported")
-            task = TaskRecord(spec.task_id, spec.project, spec.request_snapshot, spec.developer_engine, spec.reviewer_engine, str(intent.path), intent.branch, "QUEUED", None, 0, spec.max_attempts, run_id, stamp, stamp)
+            task = TaskRecord(spec.task_id, spec.project, snapshot_request(spec.request_snapshot), spec.developer_engine, spec.reviewer_engine, str(intent.path), intent.branch, "QUEUED", None, 0, spec.max_attempts, run_id, stamp, stamp)
             self.connection.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(asdict(task).values()))
             self.connection.execute("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)", (run_id, spec.task_id, owner.host_name, owner.owner_token, "QUEUED", None, 0, stamp, None, 1))
             self._record(run_id, operation_key=f"{run_id}:0:run:RUN_CREATED", event_type="RUN_CREATED", payload={"phase": "run"})
@@ -141,7 +142,8 @@ class TaskStore:
         task = self.get_task(run.task_id)
         if event_type not in EVENT_TYPES or not isinstance(operation_key, str) or not re.fullmatch(r"[A-Za-z0-9:_.-]{1,128}", operation_key):
             raise ValueError("Invalid event identity")
-        payload = dict(payload or {})
+        payload = sanitize_payload(payload if payload is not None else {})
+        encode_payload(payload)
         signature = encode(dict(event_type=event_type, state=state, outcome=outcome, attempts=attempts, payload=payload))
         previous = self.connection.execute("SELECT * FROM events WHERE run_id=? AND operation_key=?", (run_id, operation_key)).fetchone()
         if previous:
@@ -161,11 +163,14 @@ class TaskStore:
         expected = {"PLAN_ONLY": {"PLAN_ONLY"}, "READY_FOR_HUMAN_REVIEW": {"APPROVED"}, "WAITING_USER": {"REVIEW_UNDECIDED"}, "CANCELED": {"CANCELED"}, "RECOVERY_REQUIRED": {"INTERRUPTED"}, "FAILED": {"DEVELOPER_FAILED", "TEST_FAILED", "REVIEW_FAILED", "CHANGES_REQUESTED"}}
         if target in TERMINAL and outcome not in expected[target]:
             raise ValueError("Outcome does not match state")
+        for key, expected_value in (("state", target), ("attempt", count), ("outcome", outcome)):
+            if key in payload and payload[key] != expected_value:
+                raise ValueError("Metadata contradicts transition")
         stamp = now()
         payload.update(state=target, attempt=count)
         if outcome is not None:
             payload["outcome"] = outcome
         self.connection.execute("UPDATE tasks SET state=?, outcome=?, attempts=?, updated_at=? WHERE task_id=?", (target, outcome, count, stamp, run.task_id))
         self.connection.execute("UPDATE runs SET state=?, outcome=?, attempts=?, ended_at=?, next_seq=next_seq+1 WHERE run_id=?", (target, outcome, count, stamp if target in TERMINAL else None, run_id))
-        self.connection.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)", (run_id, run.next_seq, operation_key, event_type, payload.get("role"), payload.get("engine"), stamp, encode(payload), signature))
+        self.connection.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)", (run_id, run.next_seq, operation_key, event_type, payload.get("role"), payload.get("engine"), stamp, encode_payload(payload), signature))
         return self._event(self.connection.execute("SELECT * FROM events WHERE run_id=? AND seq=?", (run_id, run.next_seq)).fetchone())
