@@ -2,7 +2,10 @@ param([switch]$Live)
 $ErrorActionPreference = "Stop"
 Set-Location (Resolve-Path (Join-Path $PSScriptRoot ".."))
 
-py -3 -m venv .venv
+$PythonCommand = @(& (Join-Path $PSScriptRoot 'python-command.ps1'))
+$PythonArgs = @($PythonCommand | Select-Object -Skip 1)
+& $PythonCommand[0] @PythonArgs -m venv .venv
+if ($LASTEXITCODE -ne 0) { throw "venv creation failed" }
 $PythonExe = Join-Path (Get-Location) ".venv\Scripts\python.exe"
 & $PythonExe -m pip install --upgrade pip
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }

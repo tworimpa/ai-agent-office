@@ -29,7 +29,9 @@ Intake -> Planner -> Worker assignment -> CLI adapter
              Human-approved promotion
 ```
 
-**Not yet implemented:** planner, persisted job queue, checkpoint store, event streaming, question interception, session resume, automatic delegation, UI, GitHub PR automation, deploy management.
+**AO-001 candidate:** local SQLite task/run/phase-event journal, read-only task/event queries, per-run OS ownership and explicit interrupted-run marking. See [storage guide](storage.md). This is phase-event polling, not provider tool-call streaming.
+
+**Not yet implemented:** planner, automatic queue consumption, checkpoint resume, question interception, session resume, automatic delegation, UI, GitHub PR automation, deploy management.
 
 ## Worktree vs sandbox
 
@@ -56,4 +58,4 @@ Git worktrees isolate the *git working directory*; they do not isolate processes
 
 ## Next milestone
 
-AO-001: add SQLite persistence, resumable sessions, CLI event streams and a read-only dashboard before unattended operation.
+AO-002: add an office observation UI and verified additional CLI capabilities. Session continuation and unattended operation require separate designs and acceptance checks.

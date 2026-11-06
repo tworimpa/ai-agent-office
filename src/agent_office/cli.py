@@ -7,7 +7,6 @@ import json
 import sys
 import subprocess
 import uuid
-import os
 import platform
 import sqlite3
 from pathlib import Path
@@ -18,8 +17,10 @@ from .workflow import build_graph
 from .workspace import create_worktree, plan_worktree
 from .store import TaskStore
 from .events import RunRecorder
-from .models import TaskSpec, OwnerInfo, OfficeError, ACTIVE
-from .ownership import RunGuard
+from .models import TaskSpec, OwnerInfo, OfficeError, ACTIVE, validate_id
+from .ownership import RunGuard, recover_run
+from .runtime_paths import resolve_db_path
+from dataclasses import asdict
 
 
 class OfficeParser(argparse.ArgumentParser):
@@ -45,6 +46,19 @@ def make_parser() -> argparse.ArgumentParser:
     run.add_argument("--test-command", nargs="+", default=[sys.executable, "-m", "pytest", "-q"])
     run.add_argument("--max-attempts", type=int, default=2)
     run.add_argument("--timeout", type=int, default=900)
+    tasks = sub.add_parser("tasks", help="Read persisted tasks")
+    task_sub = tasks.add_subparsers(dest="task_command", required=True)
+    task_list = task_sub.add_parser("list")
+    task_list.add_argument("--limit", type=int, default=50)
+    task_show = task_sub.add_parser("show")
+    task_show.add_argument("task_id")
+    events = sub.add_parser("events", help="Read ordered events")
+    events.add_argument("task_id")
+    events.add_argument("--run-id")
+    events.add_argument("--after-seq", type=int, default=0)
+    events.add_argument("--limit", type=int, default=100)
+    recover = sub.add_parser("recover", help="Mark an interrupted run; never replay it")
+    recover.add_argument("--run-id", required=True)
     return parser
 
 
@@ -122,9 +136,38 @@ def main(argv: list[str] | None = None) -> int:
         args = make_parser().parse_args(argv)
         if args.command == "doctor":
             return doctor(args.require)
-        if args.max_attempts < 1 or args.timeout < 1:
+        if args.command == "run" and (args.max_attempts < 1 or args.timeout < 1):
             raise ValueError("Invalid budget")
-        db_path = args.db or (Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local"))) / "AI-Agent-Office/stable/tasks.sqlite3" if os.name == "nt" else Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "ai-agent-office/stable/tasks.sqlite3")
+        if hasattr(args, "task_id"):
+            validate_id(args.task_id)
+        if getattr(args, "run_id", None):
+            validate_id(args.run_id)
+        if hasattr(args, "limit") and not 1 <= args.limit <= (500 if args.command == "events" else 200):
+            raise ValueError("Invalid limit")
+        if args.command == "events" and args.after_seq < 0:
+            raise ValueError("Invalid cursor")
+        db_path = resolve_db_path(args.db)
+        if args.command in ("tasks", "events"):
+            with TaskStore(db_path, readonly=True) as store:
+                if args.command == "tasks":
+                    report = {"tasks": [asdict(task) for task in store.list_tasks(limit=args.limit)], "limit": args.limit} if args.task_command == "list" else {"task": asdict(store.get_task(args.task_id))}
+                else:
+                    task = store.get_task(args.task_id)
+                    events = store.list_events(args.task_id, run_id=args.run_id, after_seq=args.after_seq, limit=args.limit+1)
+                    report = {"task_id": args.task_id, "run_id": args.run_id or task.current_run_id,
+                              "events": [asdict(event) for event in events[:args.limit]],
+                              "next_after_seq": events[min(len(events), args.limit)-1].seq if events else args.after_seq,
+                              "has_more": len(events) > args.limit}
+            print(json.dumps(report, indent=2, ensure_ascii=False))
+            return 0
+        if args.command == "recover":
+            if not db_path.is_file():
+                raise OfficeError("DB_NOT_FOUND")
+            with TaskStore(db_path) as store:
+                run = recover_run(store, args.run_id, host_name=platform.node())
+                report = {"run_id": run.run_id, "state": run.state, "outcome": run.outcome}
+            print(json.dumps(report, indent=2, ensure_ascii=False))
+            return 0
         run_id = uuid.uuid4().hex
         with RunGuard(db_path, run_id), TaskStore(db_path) as store:
             report = execute_run(args, store, run_id)

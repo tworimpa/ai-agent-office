@@ -18,6 +18,12 @@ from test_workflow import MockAdapter, base_state
 
 @pytest.mark.parametrize("edits,expected,count", [(False, "PLAN_ONLY", 5), (True, "READY_FOR_HUMAN_REVIEW", 9)])
 def test_run_is_durable_with_exact_stage_sequence(tmp_path, monkeypatch, capsys, edits, expected, count):
+    from agent_office.runtime_paths import default_db_path
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "default"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "default"))
+    stable = default_db_path()
+    seeded(stable).close()
+    stable_before = stable.read_bytes()
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -48,6 +54,7 @@ def test_run_is_durable_with_exact_stage_sequence(tmp_path, monkeypatch, capsys,
         assert events[-1].event_type == "RUN_FINISHED"
         assert "original response" not in str(events)
     assert calls == (["claude", "codex"] if edits else ["claude"])
+    assert stable.read_bytes() == stable_before
     assert subprocess.check_output(["git", "status", "--porcelain"], cwd=repo) == b""
 
 
@@ -117,3 +124,64 @@ def test_coordinator_crash_never_replays_worker(tmp_path, window, worker_calls):
             except ProcessLookupError:
                 pass
         process.communicate(timeout=5)
+
+
+@pytest.mark.parametrize("case,expected,attempts,dev_count,review_count", [
+    ("test_fail", "FAILED", 2, 2, 0),
+    ("review_retry", "READY_FOR_HUMAN_REVIEW", 2, 2, 2),
+    ("ambiguous", "WAITING_USER", 1, 1, 1),
+    ("worker_fail", "FAILED", 1, 1, 0),
+    ("review_fail", "FAILED", 1, 1, 1),
+])
+def test_cli_retry_and_failure_outcomes(tmp_path, monkeypatch, capsys, case, expected, attempts, dev_count, review_count):
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "init"], cwd=repo, check=True)
+    script = tmp_path / "test.py"
+    script.write_text("raise SystemExit(1)" if case == "test_fail" else "pass")
+    developer = MockAdapter([AgentResult(127 if case == "worker_fail" else 0, "done")] * dev_count)
+    verdicts = ["VERDICT: CHANGES_REQUESTED", "VERDICT: APPROVED"] if case == "review_retry" else ["VERDICT: APPROVED\nVERDICT: CHANGES_REQUESTED"] if case == "ambiguous" else ["VERDICT: APPROVED"]
+    reviewer = MockAdapter([AgentResult(1 if case == "review_fail" else 0, v) for v in verdicts])
+    monkeypatch.setattr(cli, "CLIAdapter", lambda engine, **kwargs: developer if engine == "claude" else reviewer)
+    db = tmp_path / "db"
+    exit_code = cli.main(["--db", str(db), "run", "--repo", str(repo), "--task", "x", "--allow-edits", "--test-command", sys.executable, str(script)])
+    report = json.loads(capsys.readouterr().out)
+    assert exit_code == (0 if expected == "READY_FOR_HUMAN_REVIEW" else 1)
+    assert report["state"] == expected and report["attempts"] == attempts
+    assert len(developer.calls) == dev_count and len(reviewer.calls) == review_count
+    with TaskStore(db, readonly=True) as store:
+        assert store.get_task(report["task_id"]).state == expected
+
+
+@pytest.mark.parametrize("boundary", ["initial", "completed"])
+def test_cli_storage_failure_reports_error_without_success(tmp_path, monkeypatch, capsys, boundary):
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "init"], cwd=repo, check=True)
+    calls = []
+    class Fake:
+        def __init__(self, *args, **kwargs):
+            pass
+        def execute(self, *args, **kwargs):
+            calls.append(1)
+            return AgentResult(0, "done")
+    monkeypatch.setattr(cli, "CLIAdapter", Fake)
+    original = TaskStore.create_run
+    def create(store, *args, **kwargs):
+        if boundary == "initial":
+            raise OSError("private detail must not appear")
+        result = original(store, *args, **kwargs)
+        store.connection.execute("CREATE TRIGGER fail BEFORE INSERT ON events WHEN NEW.event_type='STAGE_COMPLETED' BEGIN SELECT RAISE(ABORT,'disk full'); END")
+        return result
+    monkeypatch.setattr(TaskStore, "create_run", create)
+    db = tmp_path / "db"
+    assert cli.main(["--db", str(db), "run", "--repo", str(repo), "--task", "x", "--allow-edits"]) == 2
+    output = capsys.readouterr()
+    assert not output.out
+    assert json.loads(output.err)["error"]["code"] == "STORE_IO"
+    assert len(calls) == (0 if boundary == "initial" else 1)
+    if boundary == "initial":
+        assert not (tmp_path / "repo-agent-worktrees").exists()
+    else:
+        with TaskStore(db, readonly=True) as store:
+            assert store.list_tasks()[0].state == "RUNNING"

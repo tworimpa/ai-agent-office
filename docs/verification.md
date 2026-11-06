@@ -73,4 +73,22 @@ Confirm: task worktree is created outside original checkout, new test is present
 
 ## Release gate
 
-PR #1 remains DRAFT until matrix CI is green **and** authenticated Windows/Linux smoke has been recorded. Human approval is required for merge or deployment.
+PR #1 was merged on explicit user instruction at c82482e. Authenticated provider smoke and isolated edit acceptance remain separate, unverified gates. Human approval is required for subsequent merge or deployment.
+
+## AO-001 candidate acceptance map
+
+The new candidate is verified without provider credentials. Actual model execution and write-mode provider acceptance remain unverified.
+
+| Acceptance | Test evidence |
+|---|---|
+| A01/A02 | test_run_is_durable_with_exact_stage_sequence: separate Git worktree, persisted state, exact five/nine events |
+| A03/A04/A05 | test_cli_retry_and_failure_outcomes; conflicting/multiple verdict regression cases |
+| A06 | test_timeout_never_retries_even_with_budget: developer/test/reviewer timeout, no extra calls |
+| A07/A08 | test_cli_storage_failure_reports_error_without_success; test_journal_failure_stops_external_execution |
+| A09/A10 | test_live_owner_is_protected_and_dead_owner_recovery_is_idempotent; four actual coordinator crash windows; query/recover CLI |
+| A11 | test_same_operation_is_idempotent_and_changed_target_rejected; rollback/concurrent sequence tests |
+| A12 | test_request_snapshot_masks_known_tokens_and_caps_utf8; Unicode/space database path |
+| A13 | missing DB/schema/invalid transition/query argument cases |
+| A14 | candidate default path/explicit path tests; doctor no DB access; stable separation regression |
+
+Final local matrix versions/results and review findings are recorded in docs/ao-001-results.md when verified. The repository CI still defines Windows/Ubuntu × Python 3.11/3.13; a local matrix pass does not establish a new GitHub Actions run.
