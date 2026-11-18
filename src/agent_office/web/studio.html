@@ -20,6 +20,10 @@
       <h1>로컬 작업실</h1>
       <a class="history-link" href="#history">실행 기록 보기 <span aria-hidden="true">↓</span></a>
     </header>
+    <nav class="host-picker" aria-label="실행 호스트">
+      <strong>실행 호스트</strong>
+      <ul id="hosts"></ul>
+    </nav>
     <div class="layout">
       <section class="card composer" aria-labelledby="compose-title">
         <div class="card-head"><h2 id="compose-title">새 작업</h2></div>
@@ -32,7 +36,7 @@
               <label for="paths">폴더 경로</label>
               <textarea id="paths" rows="3" required spellcheck="false" aria-describedby="paths-help"></textarea>
               <small id="paths-help">로컬 폴더의 절대 경로를 한 줄에 하나씩 입력하세요.</small>
-              <button id="register" type="submit" class="secondary">등록하기</button>
+              <button id="register" type="submit" class="secondary" disabled>등록하기</button>
               <p id="register-note" role="status" class="notice"></p>
             </form>
           </details>

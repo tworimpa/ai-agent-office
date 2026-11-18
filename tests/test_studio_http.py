@@ -17,8 +17,8 @@ from agent_office.studio_server import StudioServer
 
 
 @contextmanager
-def studio(db):
-    with StudioServer(db, port=0) as server:
+def studio(db, **options):
+    with StudioServer(db, port=0, **options) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -49,20 +49,28 @@ def request(server, path, payload=None, **headers):
         connection.close()
 
 
-def workers(tmp_path, monkeypatch):
+def workers(tmp_path, monkeypatch, *, edit_gate=None):
     bin_dir = tmp_path / "mock cli"
     bin_dir.mkdir()
+    gate = ""
+    if edit_gate is not None:
+        gate = (
+            f"gate = Path({str(edit_gate)!r})\n"
+            "with gate.with_suffix('.calls').open('a') as calls: calls.write('edit\\n')\n"
+            "while not gate.exists(): time.sleep(0.03)\n"
+        )
     for engine in ("codex", "agy"):
         worker = bin_dir / f"{engine}.py"
         worker.write_text(
             "from pathlib import Path\nimport json, sys, time\n"
             "prompt = sys.stdin.read()\n"
             "root = next(p for p in (Path.cwd(), *Path.cwd().parents) if (p / '.git').exists())\n" +
-            ("assert 'contracts' in prompt and 'web' in prompt\n"
+            (gate + "assert 'contracts' in prompt and 'web' in prompt\n"
              "if 'WAIT_FOR_STOP' in prompt:\n"
              "    (root / 'started').touch()\n"
              "    time.sleep(90)\n"
              "(root / 'web' / 'value.txt').write_text((root / 'contracts' / 'wanted.txt').read_text())\n"
+             "(root / 'contracts' / 'result.txt').write_text('contract applied')\n"
              "(root / 'web' / '신규.py').write_text('VERSION = 2', encoding='utf-8')\n"
              "(root / 'token.txt').write_text('private fixture', encoding='utf-8')\n"
              "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'fixture edit'}}))\n"
@@ -99,10 +107,10 @@ def project(tmp_path):
     return web, contracts
 
 
-def wait_for(server, run_id, states):
+def wait_for(server, run_id, states, *, api="/api"):
     end = time.monotonic() + 45
     while time.monotonic() < end:
-        status, data = request(server, f"/api/runs/{run_id}")
+        status, data = request(server, f"{api}/runs/{run_id}")
         assert status == 200, data
         run = data["run"]
         if run["state"] in states:

@@ -65,6 +65,11 @@ def make_parser() -> argparse.ArgumentParser:
     observer.add_argument("--port", type=int, default=8765)
     studio = sub.add_parser("studio", help="Open the local workspace and task controls")
     studio.add_argument("--port", type=int, default=8766)
+    studio.add_argument("--accept-remote", action="store_true",
+                        help="Enable the journal-specific peer API on this loopback studio")
+    studio.add_argument("--remote", nargs=3, action="append", default=[],
+                        metavar=("SSH_ALIAS", "STUDIO_PORT", "JOURNAL_ID"),
+                        help="Select an existing studio via OpenSSH (repeat for more hosts)")
     return parser
 
 
@@ -171,7 +176,9 @@ def main(argv: list[str] | None = None) -> int:
         db_path = resolve_db_path(args.db)
         if args.command == "studio":
             from .studio_server import serve_studio
-            serve_studio(db_path, args.port)
+            from .studio_ssh import RemoteHost
+            remotes = [RemoteHost(alias, int(port), journal) for alias, port, journal in args.remote]
+            serve_studio(db_path, args.port, remotes=remotes, accept_remote=args.accept_remote)
             return 0
         if args.command == "serve":
             from .observer import serve

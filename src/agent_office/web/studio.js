@@ -25,8 +25,11 @@ const outcomes = {
 };
 const testedOutcomes = new Set(['TEST_FAILED', 'REVIEW_FAILED', 'CHANGES_REQUESTED', 'REVIEW_UNDECIDED', 'APPROVED']);
 const evidence = ['developer_output', 'test_output', 'review_output', 'changes', 'diff'];
-const pendingKey = 'agent-office.studio.pending';
 const validId = value => typeof value === 'string' && /^[0-9a-f]{32}$/.test(value);
+const connectionErrors = {
+  JOURNAL_MISMATCH: '등록한 원격 실행 저널과 다릅니다.',
+  PEER_DISABLED: '원격 작업실의 연결 접수가 꺼져 있습니다.',
+};
 
 function badge(node, state) {
   const [label, tone] = states[state] ?? ['상태 미확인', 'neutral'];
@@ -42,6 +45,14 @@ export function mountStudio(win) {
     if (get(id).textContent !== message) get(id).textContent = message;
   };
   const fromAddress = () => new URL(win.location.href).searchParams.get('run');
+  const addressHost = () => {
+    const hosts = new URL(win.location.href).searchParams.getAll('host');
+    if (hosts.length === 0) return 'local';
+    return hosts.length === 1 && (hosts[0] === 'local' || validId(hosts[0])) ? hosts[0] : null;
+  };
+  const hostId = addressHost();
+  const pendingKey = hostId === 'local' ? 'agent-office.studio.pending' : 'agent-office.studio.pending.' + hostId;
+  let host = null, hosts = [], online = false, registering = false;
   let selected = validId(fromAddress()) ? fromAddress() : null;
   let workspaces = [];
   let runs = [];
@@ -62,7 +73,7 @@ export function mountStudio(win) {
     } catch { /* In-memory retries still use the same ID. */ }
   }
 
-  async function api(path, body) {
+  async function fetchJSON(path, body) {
     const controller = new win.AbortController();
     const timeout = win.setTimeout(() => controller.abort(), 15000);
     try {
@@ -77,10 +88,34 @@ export function mountStudio(win) {
         const hint = response.status < 500 && data.error?.message;
         const error = new Error(hint || '서버에서 요청을 처리하지 못했습니다.');
         error.status = response.status;
+        error.code = data.error?.code;
         throw error;
       }
       return data;
     } finally { win.clearTimeout(timeout); }
+  }
+
+  function api(path, body) {
+    if (!host || closed || hostId !== addressHost()) throw new Error('실행 호스트를 확인하세요.');
+    const prefix = hostId === 'local' ? '/api' : '/api/hosts/' + hostId;
+    return fetchJSON(prefix + path, body);
+  }
+
+  function renderHosts(list) {
+    host = list.find(item => item.id === hostId) ?? null;
+    if (JSON.stringify(hosts) !== JSON.stringify(list)) {
+      hosts = list;
+      get('hosts').replaceChildren(...hosts.map(item => {
+        const li = make('li'), link = make('a');
+        link.textContent = item.name;
+        link.href = item.id === 'local' ? '/' : '/?host=' + item.id;
+        if (item.id === hostId) link.setAttribute('aria-current', 'page');
+        li.append(link);
+        return li;
+      }));
+    }
+    say('paths-help', hostId === 'local' ? '로컬 폴더의 절대 경로를 한 줄에 하나씩 입력하세요.' :
+      (host?.name ?? '원격 호스트') + '에 있는 폴더의 절대 경로를 한 줄에 하나씩 입력하세요.');
   }
 
   const workspace = () => workspaces.find(item => item.id === get('workspace').value);
@@ -89,9 +124,12 @@ export function mountStudio(win) {
   const checkedExtras = () => [...get('extras').querySelectorAll(':checked')].map(box => Number(box.value));
 
   function controls() {
-    get('run-fields').disabled = !workspace() || starting || Boolean(pending);
-    get('start').disabled = starting || (!pending && !workspace());
-    say('start', starting ? '접수 확인 중…' : pending ? '같은 요청 다시 확인 ↗' : '작업 시작 ↗');
+    const unavailable = !host || !online;
+    get('register').disabled = unavailable || registering;
+    get('run-fields').disabled = unavailable || !workspace() || starting || Boolean(pending);
+    get('start').disabled = unavailable || starting || (!pending && !workspace());
+    get('stop').disabled = unavailable || stopping.has(selected);
+    say('start', starting ? '접수 확인 중…' : pending ? '접수 확인 후 같은 요청 재시도 ↗' : '작업 시작 ↗');
   }
 
   function renderExtras(checked = []) {
@@ -137,7 +175,7 @@ export function mountStudio(win) {
   async function loadCatalog(preferred) {
     const sequence = ++catalogSequence;
     try {
-      const {workspaces: list} = await api('/api/workspaces');
+      const {workspaces: list} = await api('/workspaces');
       if (closed || sequence !== catalogSequence) return;
       if (JSON.stringify(list) !== JSON.stringify(workspaces) || restoring || preferred) {
         workspaces = list;
@@ -190,13 +228,15 @@ export function mountStudio(win) {
     say('count', String(runs.length));
   }
 
-  function selectRun(id, writeAddress = true) {
+  function setSelection(id, writeAddress = true) {
     if (writeAddress) {
       const url = new URL(win.location.href);
-      url.searchParams.set('run', id);
+      if (id) url.searchParams.set('run', id);
+      else url.searchParams.delete('run');
       win.history.replaceState(null, '', url);
     }
     if (selected !== id) {
+      ++detailSequence;
       selected = id;
       get('detail-body').hidden = true;
       get('run-state').hidden = true;
@@ -205,6 +245,10 @@ export function mountStudio(win) {
       say('detail-note', id ? '실행 상세를 불러오는 중입니다.' : '목록에서 실행을 선택하세요.');
       renderRuns();
     }
+  }
+
+  function selectRun(id, writeAddress = true) {
+    setSelection(id, writeAddress);
     return loadDetail();
   }
 
@@ -234,7 +278,7 @@ export function mountStudio(win) {
       say('context-branch', run.branch ?? '—');
     }
     get('stop').hidden = !stoppable.has(run.state);
-    get('stop').disabled = stopping.has(run.id);
+    get('stop').disabled = !online || stopping.has(run.id);
     for (const field of evidence) say(field, run[field] || '기록된 내용이 없습니다.');
   }
 
@@ -242,15 +286,32 @@ export function mountStudio(win) {
     const sequence = ++detailSequence, id = selected;
     if (!id) return;
     try {
-      const {run} = await api('/api/runs/' + id);
+      const {run} = await api('/runs/' + id);
       if (run?.id !== id) throw new Error('잘못된 실행 응답');
       if (!closed && sequence === detailSequence) renderDetail(run);
     } catch (error) {
       if (closed || sequence !== detailSequence) return;
+      if (error.status === 404 && error.code === 'NOT_FOUND') {
+        get('detail-note').hidden = false;
+        get('detail-body').hidden = true;
+        get('run-state').hidden = true;
+        say('detail-note', pending?.id === id ? '작업 접수 결과를 기다리고 있습니다.' : '이 주소의 실행을 찾을 수 없습니다.');
+      } else disconnected(connectionErrors[error.code]);
+    }
+  }
+
+  function disconnected(message = '호스트 연결을 확인하세요.') {
+    ++detailSequence;
+    online = false;
+    controls();
+    say('connection', message);
+    get('connection').dataset.online = 'false';
+    get('list-note').hidden = false;
+    say('list-note', '실행 기록을 갱신하지 못했습니다. 새로고침하면 다시 연결합니다.');
+    if (selected) {
       get('detail-note').hidden = false;
-      get('detail-body').hidden = true;
-      get('run-state').hidden = true;
-      say('detail-note', error.status === 404 ? '이 주소의 실행을 찾을 수 없습니다.' : '실행 상세를 불러오지 못했습니다.');
+      say('detail-note', get('detail-body').hidden ? '연결 후 실행 상태를 확인할 수 있습니다.' :
+        '마지막으로 확인한 상태와 결과입니다. 연결 후 최신 내용을 표시합니다.');
     }
   }
 
@@ -258,24 +319,35 @@ export function mountStudio(win) {
     if (doc.hidden || closed) return;
     win.clearTimeout(timer);
     const sequence = ++listSequence;
-    const catalog = loadCatalog();
+    let catalog;
     try {
-      const {runs: list} = await api('/api/runs');
+      const directory = await fetchJSON('/api/hosts');
+      if (closed || sequence !== listSequence) return;
+      renderHosts(directory.hosts);
+      if (!host) {
+        disconnected('등록되지 않은 호스트');
+        say('list-note', '위 목록에서 실행 호스트를 선택하세요.');
+        return;
+      }
+      catalog = loadCatalog();
+      const {runs: list} = await api('/runs');
       if (closed || sequence !== listSequence) return;
       runs = list;
       renderRuns();
-      say('connection', '로컬 서버 연결됨');
+      online = true;
+      controls();
+      say('connection', host.name + ' 연결됨');
       get('connection').dataset.online = 'true';
       get('list-note').hidden = runs.length > 0;
       say('list-note', '아직 실행 기록이 없습니다. 새 작업을 시작해 보세요.');
-      if (!selected && runs.length) await selectRun(runs[0].id);
-      else await loadDetail();
-    } catch {
+      const recovered = await checkPending();
       if (closed || sequence !== listSequence) return;
-      say('connection', '연결 확인 필요');
-      get('connection').dataset.online = 'false';
-      get('list-note').hidden = false;
-      say('list-note', '실행 기록을 갱신하지 못했습니다.');
+      if (!selected && recovered) await selectRun(recovered.id);
+      else if (!selected && runs.length) await selectRun(runs[0].id);
+      else await loadDetail();
+    } catch (error) {
+      if (closed || sequence !== listSequence) return;
+      disconnected(connectionErrors[error.code]);
     } finally {
       await catalog;
       if (!closed && sequence === listSequence && !doc.hidden) timer = win.setTimeout(refresh, 3000);
@@ -288,9 +360,10 @@ export function mountStudio(win) {
     const name = get('name').value.trim();
     const paths = get('paths').value.split(/\r?\n/).map(path => path.trim()).filter(Boolean);
     if (!name || !paths.length) return say('register-note', '이름과 폴더 경로를 입력하세요.');
-    get('register').disabled = true;
+    registering = true;
+    controls();
     try {
-      const {workspace: added} = await api('/api/workspaces', {name, paths});
+      const {workspace: added} = await api('/workspaces', {name, paths});
       ++catalogSequence;
       workspaces = [...workspaces.filter(item => item.id !== added.id), added];
       renderCatalog(pending?.workspace_id ?? added.id);
@@ -302,13 +375,46 @@ export function mountStudio(win) {
       say('register-note', '');
     } catch (error) {
       say('register-note', error.status ? error.message : '등록 여부를 확인하려면 서버 연결 후 새로고침하세요.');
-    } finally { get('register').disabled = false; }
+    } finally { registering = false; controls(); }
   });
+
+  async function lookupRequest(id) {
+    try {
+      const {run} = await api('/runs/' + id);
+      if (run?.id !== id) throw new Error('잘못된 실행 응답');
+      return run;
+    } catch (error) {
+      if (error.status === 404 && error.code === 'NOT_FOUND') return null;
+      throw error;
+    }
+  }
+
+  function accepted(run) {
+    keepPending(null);
+    get('task').value = '';
+    say('start-note', '접수했습니다. 실행 상세에서 진행 상황을 확인하세요.');
+    runs = [run, ...runs.filter(item => item.id !== run.id)];
+    renderRuns();
+  }
+
+  async function checkPending() {
+    if (!pending || starting) return;
+    starting = true;
+    controls();
+    try {
+      const run = await lookupRequest(pending.id);
+      if (closed) return;
+      if (run) accepted(run);
+      else say('start-note', '아직 접수 기록이 없습니다. 같은 요청을 다시 보낼 수 있습니다.');
+      return run;
+    } finally { starting = false; controls(); }
+  }
 
   get('run-form').addEventListener('submit', async event => {
     event.preventDefault();
-    if (starting) return;
+    if (get('start').disabled) return;
     let request = pending;
+    const retrying = Boolean(pending);
     if (!request) {
       const task = get('task').value.trim();
       if (!workspace() || !task) return say('start-note', '작업공간을 선택하고 작업 요청을 입력하세요.');
@@ -324,37 +430,42 @@ export function mountStudio(win) {
       };
       keepPending(request);
     }
+    const previous = selected;
+    setSelection(request.id);
     starting = true;
     controls();
     say('start-note', '작업 접수를 확인하고 있습니다.');
+    let submitting = false;
     try {
-      const {run} = await api('/api/runs', request);
-      if (run.id !== request.id) throw new Error('잘못된 접수 응답');
-      keepPending(null);
-      get('task').value = '';
-      say('start-note', '접수했습니다. 실행 상세에서 진행 상황을 확인하세요.');
-      if (selected !== run.id) {
-        // A new run may not yet be in the list returned by a poll begun before submission.
-        runs = [run, ...runs.filter(item => item.id !== run.id)];
-        selectRun(run.id);
+      let run = retrying ? await lookupRequest(request.id) : null;
+      if (!run) {
+        submitting = true;
+        ({run} = await api('/runs', request));
       }
-      refresh();
+      if (closed) return;
+      if (run?.id !== request.id) throw new Error('잘못된 접수 응답');
+      accepted(run);
+      if (selected === run.id) await loadDetail();
     } catch (error) {
-      if (error.status >= 400 && error.status < 500) {
+      const rejected = (error.status === 400 && error.code === 'INVALID_ARGUMENT') ||
+        (error.status === 409 && ['REQUEST_CONFLICT', 'RUN_BUSY'].includes(error.code)) ||
+        (!retrying && error.status === 404 && error.code === 'NOT_FOUND');
+      if (submitting && rejected) {
         keepPending(null);
+        if (selected === request.id) setSelection(previous === request.id ? null : previous);
         say('start-note', error.message);
       } else say('start-note', '접수 결과를 확인하지 못했습니다. 같은 요청으로 다시 확인하세요.');
-    } finally { starting = false; controls(); }
+    } finally { starting = false; controls(); refresh(); }
   });
 
   get('stop').addEventListener('click', async () => {
     const id = selected;
-    if (!id || stopping.has(id) || get('stop').hidden) return;
+    if (!id || get('stop').disabled || get('stop').hidden) return;
     stopping.add(id);
     get('stop').disabled = true;
     say('stop-note', '중지 요청을 보내는 중입니다.');
     try {
-      await api('/api/runs/' + id + '/stop', {});
+      await api('/runs/' + id + '/stop', {});
       if (selected === id) say('stop-note', '중지 요청을 전달했습니다.');
     } catch (error) {
       if (selected === id) say('stop-note', error.status ? error.message : '중지 요청 결과를 확인하지 못했습니다.');
@@ -373,7 +484,15 @@ export function mountStudio(win) {
     if (doc.hidden) win.clearTimeout(timer);
     else refresh();
   });
-  win.addEventListener('popstate', () => { const id = fromAddress(); selectRun(validId(id) ? id : null, false); });
+  win.addEventListener('popstate', () => {
+    if (hostId !== addressHost()) {
+      closed = true;
+      win.location.reload();
+      return;
+    }
+    const id = fromAddress();
+    selectRun(validId(id) ? id : null, false);
+  });
   if (pending) say('start-note', '이전 작업의 접수 결과를 같은 요청으로 확인할 수 있습니다.');
   controls();
   refresh();
