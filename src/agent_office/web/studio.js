@@ -223,7 +223,7 @@ export function mountStudio(win) {
     say('outcome', outcomes[run.outcome] ?? (run.outcome ? '종료 결과를 확인할 수 없습니다.' : ''));
     get('diagnostic').hidden = !run.diagnostic;
     say('diagnostic', run.diagnostic || '');
-    const tested = Boolean(run.test_output) || testedOutcomes.has(run.outcome) || run.state === 'REVIEWING';
+    const tested = Boolean(run.test_output) || testedOutcomes.has(run.outcome) || ['TESTING', 'REVIEWING'].includes(run.state);
     get('test-command').hidden = !run.allow_edits || !tested;
     get('run-context').hidden = !Array.isArray(run.folders);
     if (Array.isArray(run.folders)) {

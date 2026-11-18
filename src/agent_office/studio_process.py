@@ -174,6 +174,7 @@ def supervise(db_path, run_id, payload):
         stopping = store.connection.execute(
             "SELECT stop_requested FROM studio_runs WHERE id=?", (run_id,)
         ).fetchone()[0]
+        success = False
         if not stopping:
             # Two complete develop/test/review attempts plus coordinator setup.
             budget = 2 * (900 + 300 + 900) + 60
@@ -186,7 +187,8 @@ def supervise(db_path, run_id, payload):
         # With developers/tests/reviewers gone, capture the stable worktree. Git
         # gets its own containment and deadline in case a configured helper hangs.
         preview_done = run_child("preview", db_path, run_id, b"preview\n", threading.Event(), timeout=5)
-        finish_drained(store, run_id, owner_lost=disconnected.is_set(), preview_finished=preview_done)
+        finish_drained(store, run_id, worker_succeeded=success and not disconnected.is_set(),
+                       preview_finished=preview_done)
 
 
 if __name__ == "__main__":

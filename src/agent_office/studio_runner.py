@@ -37,7 +37,7 @@ SOURCE = """ FROM studio_runs s JOIN runs r ON r.run_id=s.id JOIN tasks t ON t.t
 DETAIL = ",s.folders,s.developer_output,s.test_output,s.review_output,s.changes,s.diff,s.diagnostic"
 
 
-def finish_drained(store, run_id, *, owner_lost, preview_finished):
+def finish_drained(store, run_id, *, worker_succeeded, preview_finished):
     """Publish the result after all workers exit. Stop and finish race in SQLite."""
     with store._write():
         if store.get_run(run_id).state not in ACTIVE:
@@ -47,7 +47,7 @@ def finish_drained(store, run_id, *, owner_lost, preview_finished):
         ).fetchone()
         if row["stop_requested"]:
             state, outcome = "CANCELED", "CANCELED"
-        elif row["proposed_state"] and not owner_lost:
+        elif worker_succeeded and row["proposed_state"]:
             state, outcome = row["proposed_state"], row["proposed_outcome"]
         else:
             state, outcome = "RECOVERY_REQUIRED", "INTERRUPTED"

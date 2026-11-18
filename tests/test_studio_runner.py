@@ -191,21 +191,25 @@ def test_retry_does_not_publish_previous_review_or_test(tmp_path):
     assert outputs == {"developer_output": "second attempt failed", "test_output": "", "review_output": ""}
     assert result["test_output"] == result["review_output"] == ""
 
-@pytest.mark.parametrize("stop_first", [True, False])
-def test_stop_serializes_with_pending_completion(tmp_path, repo, monkeypatch, stop_first):
+@pytest.mark.parametrize(("stop_first", "worker_succeeded", "expected"), [
+    (True, False, "CANCELED"), (False, True, "PLAN_ONLY"), (False, False, "RECOVERY_REQUIRED")
+])
+def test_stop_serializes_with_pending_completion(tmp_path, repo, monkeypatch, stop_first, worker_succeeded, expected):
     from io import BytesIO
     from types import SimpleNamespace
     from agent_office.studio_runner import finish_drained
 
     db, rid = tmp_path / "db", uuid.uuid4().hex
     child = SimpleNamespace(stdin=BytesIO(), poll=lambda: None, wait=lambda timeout: 0)
-    monkeypatch.setattr("agent_office.studio_runner.subprocess.Popen", lambda *args, **kwargs: child)
     with closing(LocalRunner(db)) as runner, TaskStore(db) as store:
+        monkeypatch.setattr("agent_office.studio_runner.subprocess.Popen", lambda *args, **kwargs: child)
         runner.start(rid, uuid.uuid4().hex, repo, ["."], "plan", False)
         store.record_transition(rid, operation_key=f"{rid}:dev", event_type="STAGE_STARTED", state="RUNNING")
         store.connection.execute("UPDATE studio_runs SET proposed_state='PLAN_ONLY',proposed_outcome='PLAN_ONLY' WHERE id=?", (rid,))
         if stop_first:
             assert runner.stop(rid)["state"] == "STOP_REQUESTED"
-        finish_drained(store, rid, owner_lost=stop_first, preview_finished=False)
-        assert runner.stop(rid)["state"] == ("CANCELED" if stop_first else "PLAN_ONLY")
-        assert len([e for e in store.list_events(store.get_run(rid).task_id) if e.event_type == "RUN_FINISHED"]) == 1
+        finish_drained(store, rid, worker_succeeded=worker_succeeded, preview_finished=False)
+        assert runner.stop(rid)["state"] == expected
+        terminal = [e for e in store.list_events(store.get_run(rid).task_id)
+                    if e.event_type in {"RUN_FINISHED", "RECOVERY_REQUIRED"}]
+        assert len(terminal) == 1 and terminal[0].payload["state"] == expected
