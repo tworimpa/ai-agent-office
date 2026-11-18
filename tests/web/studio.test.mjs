@@ -7,6 +7,9 @@ import {mountStudio} from '../../src/agent_office/web/studio.js';
 const html = await readFile(new URL('../../src/agent_office/web/studio.html', import.meta.url), 'utf8');
 const workspace = {id: 'a'.repeat(32), name: '주문 서비스', folders: ['/개발/화면', '/개발/규격']};
 const runA = '1'.repeat(32), runB = '2'.repeat(32);
+const remote = 'b'.repeat(32);
+const hosts = [{id: 'local', name: '이 컴퓨터'}, {id: remote, name: '연구실'}];
+const remoteAPI = '/api/hosts/' + remote;
 const run = (id, state) => ({id, state, workspace_id: workspace.id, task: '주문 목록 확인'});
 
 async function waitFor(predicate) {
@@ -17,10 +20,11 @@ async function waitFor(predicate) {
   assert.ok(predicate(), '화면 상태 전환 시간 초과');
 }
 
-function mount(t, {workspaces = [workspace], runs = [], suffix = '', pending, route} = {}) {
+function mount(t, {workspaces = [workspace], runs = [], suffix = '', pending, pendingHost = 'local', route} = {}) {
   const dom = new JSDOM(html, {url: 'http://127.0.0.1:8766/' + suffix, pretendToBeVisual: true});
   const {window} = dom, doc = window.document;
-  if (pending) window.sessionStorage.setItem('agent-office.studio.pending', JSON.stringify(pending));
+  const key = 'agent-office.studio.pending' + (pendingHost === 'local' ? '' : '.' + pendingHost);
+  if (pending) window.sessionStorage.setItem(key, JSON.stringify(pending));
   const requests = [];
   window.fetch = async (path, options) => {
     const method = options.method ?? 'GET';
@@ -33,6 +37,8 @@ function mount(t, {workspaces = [workspace], runs = [], suffix = '', pending, ro
     }
     const override = route && await route(path, method, body);
     if (override) return override;
+    if (path === '/api/hosts') return Response.json({hosts});
+    if (path.startsWith(remoteAPI + '/')) path = '/api' + path.slice(remoteAPI.length);
     if (path === '/api/workspaces') {
       if (method === 'GET') return Response.json({workspaces});
       const added = {id: 'f'.repeat(32), name: body.name, folders: body.paths};
@@ -204,4 +210,159 @@ test('a queued edit shows no executed test and the diff preserves the server pre
   get('refresh').click();
   await waitFor(() => get('diff').textContent === item.diff);
   assert.equal(get('diff').hidden, false);
+});
+
+test('host links discard previous run IDs and a remote host owns registration, start and stop', async t => {
+  const {doc, get, window, requests} = mount(t, {suffix: '?host=' + remote, workspaces: []});
+  await waitFor(() => get('registration').open && !get('register').disabled);
+  const current = doc.querySelector('#hosts [aria-current=page]');
+  assert.equal(current.textContent, '연구실');
+  assert.equal(current.getAttribute('href'), '/?host=' + remote);
+  assert.equal(get('hosts').querySelector('a').getAttribute('href'), '/');
+  assert.match(get('paths-help').textContent, /연구실/);
+  get('name').value = '원격 저장소';
+  get('paths').value = '/srv/repos/app\n/srv/repos/app/docs';
+  get('register').click();
+  await waitFor(() => !get('start').disabled);
+  doc.querySelector('#extras input').click();
+  get('task').value = '문서 검토';
+  get('start').click();
+  await waitFor(() => !get('stop').hidden);
+  const added = requests.find(r => r.method === 'POST' && r.path === remoteAPI + '/runs');
+  assert.deepEqual(added.body.indices, [0, 1]);
+  assert.deepEqual(requests.find(r => r.method === 'POST' && r.path.endsWith('/workspaces')).body.paths,
+    ['/srv/repos/app', '/srv/repos/app/docs']);
+  assert.equal(window.location.search, '?host=' + remote + '&run=' + added.body.id);
+  get('stop').click();
+  await waitFor(() => get('run-state').textContent === '중지 요청 중');
+  assert.ok(requests.some(r => r.method === 'POST' && r.path === remoteAPI + '/runs/' + added.body.id + '/stop'));
+  assert.ok(requests.every(r => r.path === '/api/hosts' || r.path.startsWith(remoteAPI + '/')));
+});
+
+test('a remote run link retains the last detail during loss and reads the completed result on reconnect', async t => {
+  const item = {...run(runA, 'TESTING'), developer_output: '구현 완료'};
+  let disconnected = false;
+  const {get, requests, window} = mount(t, {suffix: '?host=' + remote + '&run=' + runA, runs: [item], route: path => {
+    if (disconnected && path.startsWith(remoteAPI + '/')) return Response.json({}, {status: 503});
+  }});
+  await waitFor(() => get('developer_output').textContent === '구현 완료');
+  disconnected = true;
+  get('refresh').click();
+  await waitFor(() => get('connection').dataset.online === 'false');
+  assert.equal(get('run-state').textContent, '테스트 중');
+  assert.equal(get('detail-body').hidden, false);
+  assert.match(get('detail-note').textContent, /마지막/);
+  assert.ok(get('stop').disabled && get('start').disabled && get('register').disabled);
+  Object.assign(item, {state: 'READY_FOR_HUMAN_REVIEW', test_output: '2 passed', diff: '+문서', review_output: '검토 완료'});
+  disconnected = false;
+  get('refresh').click();
+  await waitFor(() => get('review_output').textContent === item.review_output);
+  assert.equal(get('diff').textContent, item.diff);
+  assert.equal(get('test_output').textContent, item.test_output);
+  assert.ok(get('detail-note').hidden);
+  assert.equal(window.location.search, '?host=' + remote + '&run=' + runA);
+  assert.ok(requests.every(r => r.method === 'GET'));
+});
+
+test('an accepted remote operation with a lost response is recovered by host and ID after reload', async t => {
+  const items = [run(runA, 'PLAN_ONLY')];
+  let offline = false;
+  const first = mount(t, {suffix: '?host=' + remote, runs: items, route: (path, method, body) => {
+    if (path === remoteAPI + '/runs' && method === 'POST') {
+      items.push({...body, state: 'PLAN_ONLY', developer_output: '완료'});
+      offline = true;
+    }
+    if (offline && path.startsWith(remoteAPI + '/')) throw new Error('연결 중단');
+  }});
+  await waitFor(() => first.get('run-id').textContent === runA);
+  first.get('task').value = '원격 작업 확인';
+  first.get('start').click();
+  await waitFor(() => first.get('connection').dataset.online === 'false');
+  const remoteKey = 'agent-office.studio.pending.' + remote;
+  const saved = JSON.parse(first.window.sessionStorage.getItem(remoteKey));
+  assert.equal(saved.id, items[1].id);
+  const runLink = '?host=' + remote + '&run=' + saved.id;
+  assert.equal(first.window.location.search, runLink);
+  const local = mount(t, {pending: saved, pendingHost: remote});
+  await waitFor(() => !local.get('start').disabled);
+  assert.equal(local.get('task').value, '');
+  assert.ok(!local.requests.some(r => r.path.includes(saved.id)));
+  assert.ok(local.window.sessionStorage.getItem(remoteKey));
+  const recovered = mount(t, {suffix: runLink, pending: saved, pendingHost: remote, runs: items});
+  await waitFor(() => recovered.get('developer_output').textContent === '완료');
+  assert.equal(recovered.window.sessionStorage.getItem(remoteKey), null);
+  assert.equal(recovered.get('run-id').textContent, saved.id);
+  assert.ok(recovered.requests.some(r => r.path === remoteAPI + '/runs/' + saved.id));
+  assert.ok(recovered.requests.every(r => r.method === 'GET'));
+  offline = false;
+  first.get('refresh').click();
+  await waitFor(() => first.get('developer_output').textContent === '완료');
+  assert.equal(first.get('run-id').textContent, saved.id);
+  assert.equal(first.window.location.search, runLink);
+  assert.equal(first.requests.filter(r => r.method === 'POST').length, 1);
+});
+
+test('an explicit selection after submission survives a delayed receipt', async t => {
+  let release;
+  const items = [run(runA, 'PLAN_ONLY')];
+  const {doc, get, window} = mount(t, {suffix: '?host=' + remote, runs: items, route: (path, method, body) => {
+    if (path === remoteAPI + '/runs' && method === 'POST') {
+      const added = {...body, state: 'RUNNING'};
+      items.push(added);
+      return new Promise(resolve => { release = () => resolve(Response.json({run: added}, {status: 202})); });
+    }
+  }});
+  await waitFor(() => get('run-id').textContent === runA);
+  get('task').value = '새 실행';
+  get('start').click();
+  await waitFor(() => release);
+  assert.equal(window.location.search, '?host=' + remote + '&run=' + items[1].id);
+  doc.querySelector('[data-run-id="' + runA + '"]').click();
+  release();
+  await waitFor(() => get('start-note').textContent.includes('접수했습니다') && !get('detail-body').hidden);
+  assert.equal(window.location.search, '?host=' + remote + '&run=' + runA);
+  assert.equal(get('run-id').textContent, runA);
+});
+
+test('gateway failures cannot discard an ambiguous request or reissue it on reconnect', async t => {
+  const pending = {id: runB, workspace_id: workspace.id, indices: [0], task: '재시도', allow_edits: false};
+  let missingHost = false;
+  const {get, window, requests} = mount(t, {suffix: '?host=' + remote, pending, pendingHost: remote,
+    route: (path, method) => {
+      if (path === remoteAPI + '/runs' && method === 'POST') missingHost = true;
+      if (missingHost && path.startsWith(remoteAPI + '/')) return Response.json({error: {code: 'UNKNOWN_HOST'}}, {status: 404});
+    },
+  });
+  await waitFor(() => get('start-note').textContent.includes('아직 접수'));
+  get('start').click();
+  await waitFor(() => get('connection').dataset.online === 'false');
+  assert.equal(window.location.search, '?host=' + remote + '&run=' + runB);
+  assert.deepEqual(JSON.parse(window.sessionStorage.getItem('agent-office.studio.pending.' + remote)), pending);
+  missingHost = false;
+  get('refresh').click();
+  await waitFor(() => get('start-note').textContent.includes('아직 접수'));
+  assert.equal(requests.filter(r => r.method === 'POST').length, 1);
+});
+
+test('a deliberate retry checks the remote run ID before sending the same request', async t => {
+  const pending = {id: runB, workspace_id: workspace.id, indices: [0], task: '재시도', allow_edits: false};
+  const {get, requests} = mount(t, {suffix: '?host=' + remote, pending, pendingHost: remote});
+  await waitFor(() => get('start-note').textContent.includes('아직 접수'));
+  const before = requests.length;
+  get('start').click();
+  await waitFor(() => get('run-id').textContent === runB);
+  assert.deepEqual(requests.slice(before, before + 2), [
+    {path: remoteAPI + '/runs/' + runB, method: 'GET', body: undefined},
+    {path: remoteAPI + '/runs', method: 'POST', body: pending},
+  ]);
+});
+
+test('unknown, empty and ambiguous host links fail closed without local lookups or mutations', async t => {
+  for (const id of ['c'.repeat(32), '', 'local&host=' + remote]) {
+    const {get, requests} = mount(t, {suffix: '?host=' + id + '&run=' + runA});
+    await waitFor(() => get('connection').dataset.online === 'false');
+    assert.ok(get('start').disabled && get('register').disabled);
+    assert.equal(get('connection').textContent, '등록되지 않은 호스트');
+    assert.ok(requests.every(r => r.path === '/api/hosts' && r.method === 'GET'));
+  }
 });

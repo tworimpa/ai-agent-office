@@ -9,13 +9,15 @@ from pathlib import Path
 import re
 import socket
 import sqlite3
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
+import uuid
 
 from .models import OfficeError, validate_id
 from .observer import ObserverHandler
 from .store import TaskStore
 from .studio_catalog import StudioCatalog
 from .studio_runner import LocalRunner
+from .studio_ssh import RemoteUnavailable, is_peer_route, remote_request
 
 ASSETS = {
     "/": ("studio.html", "text/html"),
@@ -23,6 +25,23 @@ ASSETS = {
     "/studio.css": ("studio.css", "text/css"),
 }
 MAX_BODY = 128 * 1024
+
+
+def _journal_id(store):
+    # This identifier travels with the remote run journal across process restarts.
+    # It identifies the selected store. SSH provides transport authentication.
+    with store._write():
+        store.connection.execute("CREATE TABLE IF NOT EXISTS studio_identity "
+                                 "(singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL)")
+        store.connection.execute("INSERT OR IGNORE INTO studio_identity VALUES(1,?)", (uuid.uuid4().hex,))
+        return validate_id(store.connection.execute("SELECT id FROM studio_identity WHERE singleton=1").fetchone()[0])
+
+
+def _valid_page_query(query):
+    pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True, max_num_fields=2)
+    params = dict(pairs)
+    return (len(pairs) == len(params) and not params.keys() - {"host", "run"}
+            and all(re.fullmatch(r"[a-f0-9]{32}", value) for value in params.values()))
 
 
 class StudioServer(ThreadingHTTPServer):
@@ -35,15 +54,21 @@ class StudioServer(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
 
-    def __init__(self, db_path: Path, port: int = 8766):
+    def __init__(self, db_path: Path, port: int = 8766, *, remotes=(), accept_remote=False):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Invalid port")
         self.runner = None
+        self.remotes = {host.journal_id: host for host in remotes}
+        if len(self.remotes) != len(remotes) or len({h.alias.casefold() for h in remotes}) != len(remotes):
+            raise ValueError("각 원격 호스트의 SSH 별칭과 저널 ID는 고유해야 합니다.")
+        self.accept_remote = accept_remote
         super().__init__(("127.0.0.1", port), StudioHandler)
         try:
             self.db_path = Path(db_path).expanduser().resolve()
-            with TaskStore(self.db_path):
-                pass
+            with TaskStore(self.db_path) as store:
+                self.journal_id = _journal_id(store)
+            if self.journal_id in self.remotes:
+                raise ValueError("이 컴퓨터의 저널 ID를 원격 호스트로 등록할 수 없습니다.")
             self.identity = self.db_path.stat()
             self.catalog = StudioCatalog(self.db_path)
             self.runner = LocalRunner(self.db_path)
@@ -64,6 +89,11 @@ class StudioServer(ThreadingHTTPServer):
 
 class StudioHandler(ObserverHandler):
     allowed_methods = "GET, HEAD, POST"
+
+    def end_headers(self):
+        if getattr(self, "_peer_reply", False):
+            self.send_header("X-Agent-Office-Journal", self.server.journal_id)
+        super().end_headers()
 
     def _json_body(self):
         size = self.headers.get_all("Content-Length", [])
@@ -96,8 +126,7 @@ class StudioHandler(ObserverHandler):
                     or self.headers.get_all("X-Agent-Office") != ["studio"]):
                 self._error(403, "FORBIDDEN")
                 return
-        if parsed.query and not (not write and parsed.path == "/" and
-                                 re.fullmatch(r"run=[a-f0-9]{32}", parsed.query)):
+        if parsed.query and not (not write and parsed.path == "/" and _valid_page_query(parsed.query)):
             raise ValueError("요청 주소를 확인하세요.")
         if not write and parsed.path in ASSETS:
             name, mime = ASSETS[parsed.path]
@@ -105,12 +134,54 @@ class StudioHandler(ObserverHandler):
             return
         if not os.path.samestat(self.server.db_path.stat(), self.server.identity):
             raise OfficeError("STORE_IO")
+        if parsed.path == "/api/hosts" and not write:
+            hosts = [{"id": "local", "name": "이 컴퓨터"}]
+            hosts.extend({"id": host.journal_id, "name": host.alias} for host in self.server.remotes.values())
+            self._reply(200, {"hosts": hosts})
+            return
+        path = parsed.path
+        target = re.fullmatch(r"/api/(hosts|peer)/([a-f0-9]{32})(/.*)", path)
+        if target:
+            kind, journal_id, route = target.groups()
+            method = "POST" if write else "GET"
+            if not is_peer_route(method, route):
+                self._error(404, "NOT_FOUND")
+                return
+            if kind == "hosts":
+                self._forward(journal_id, method, route)
+                return
+            if not self.server.accept_remote:
+                self._reply(403, {"error": {"code": "PEER_DISABLED", "message": "원격 실행 접수가 꺼져 있습니다."}})
+                return
+            if journal_id != self.server.journal_id:
+                self._reply(409, {"error": {"code": "JOURNAL_MISMATCH", "message": "등록한 원격 실행 저널과 다릅니다."}})
+                return
+            self._peer_reply = True
+            path = "/api" + route
+        self._local_api(path, write)
+
+    def _forward(self, journal_id, method, route):
+        host = self.server.remotes.get(journal_id)
+        if host is None:
+            self._reply(404, {"error": {"code": "UNKNOWN_HOST", "message": "등록되지 않은 원격 호스트입니다."}})
+            return
+        payload = self._json_body() if method == "POST" else None
+        status, result = remote_request(host, method, route, payload)
+        if status >= 400:
+            error = result.get("error")
+            if not isinstance(error, dict) or not isinstance(error.get("code"), str):
+                raise RemoteUnavailable()
+            if error["code"] in {"PEER_DISABLED", "JOURNAL_MISMATCH"}:
+                status = 503
+        self._reply(status, result)
+
+    def _local_api(self, path, write):
         catalog, runner = self.server.catalog, self.server.runner
-        route = re.fullmatch(r"/api/runs/([a-f0-9]{32})(/stop)?", parsed.path)
+        route = re.fullmatch(r"/api/runs/([a-f0-9]{32})(/stop)?", path)
         if not write:
-            if parsed.path == "/api/workspaces":
+            if path == "/api/workspaces":
                 self._reply(200, {"workspaces": catalog.list()})
-            elif parsed.path == "/api/runs":
+            elif path == "/api/runs":
                 self._reply(200, {"runs": runner.runs()})
             elif route and not route[2]:
                 self._reply(200, {"run": runner.detail(route[1])})
@@ -118,11 +189,11 @@ class StudioHandler(ObserverHandler):
                 self._error(404, "NOT_FOUND")
             return
         data = self._json_body()
-        if parsed.path == "/api/workspaces":
+        if path == "/api/workspaces":
             if set(data) != {"name", "paths"}:
                 raise ValueError("작업공간 이름과 폴더를 입력하세요.")
             self._reply(201, {"workspace": catalog.create(data["name"], data["paths"])})
-        elif parsed.path == "/api/runs":
+        elif path == "/api/runs":
             if set(data) != {"id", "workspace_id", "indices", "task", "allow_edits"}:
                 raise ValueError("작업 요청의 입력 항목을 확인하세요.")
             run_id = validate_id(data["id"])
@@ -143,6 +214,9 @@ class StudioHandler(ObserverHandler):
             self._dispatch(write)
         except (BrokenPipeError, ConnectionResetError):
             return
+        except RemoteUnavailable:
+            self._reply(503, {"error": {"code": "REMOTE_UNAVAILABLE",
+                                        "message": "원격 작업실과 연결할 수 없습니다. 연결이 복구되면 같은 실행을 확인하세요."}})
         except (ValueError, OverflowError) as exc:
             self._reply(400, {"error": {"code": "INVALID_ARGUMENT", "message": str(exc)[:300]}})
         except KeyError:
@@ -171,9 +245,11 @@ class StudioHandler(ObserverHandler):
     do_PUT = do_PATCH = do_DELETE = do_OPTIONS = _write_not_allowed
 
 
-def serve_studio(db_path: Path, port: int):
-    with StudioServer(db_path, port) as server:
+def serve_studio(db_path: Path, port: int, *, remotes=(), accept_remote=False):
+    with StudioServer(db_path, port, remotes=remotes, accept_remote=accept_remote) as server:
         print(f"Agent Office studio: http://127.0.0.1:{server.server_address[1]}/", flush=True)
+        if accept_remote:
+            print(f"Remote studio port: {server.server_address[1]} | Journal ID: {server.journal_id}", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

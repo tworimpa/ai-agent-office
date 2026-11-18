@@ -2,7 +2,7 @@
 
 Local-first orchestration of coding agent CLIs with a browser-based local studio, persistent task history and a separate read-only observer.
 
-The local studio adds browser-based workspace registration, run controls and results on top of the CLI workflow. Remote runners, automatic human-in-the-loop Q&A, unattended delegation and self-updating are planned features.
+The studio supports local execution and SSH-connected remote studios. The selected host owns its folders, processes and journal. Automatic human-in-the-loop Q&A, unattended delegation and self-updating are planned features.
 
 ## 로컬 작업실 시작
 
@@ -18,6 +18,28 @@ agent-office --db ../office-data/tasks.sqlite3 studio
 4. 실행 상세에서 진행 상태를 확인하고 **실행 중지**를 요청할 수 있습니다. 작업실 명령이 실행 중이면 브라우저를 닫아도 작업이 계속됩니다. 같은 주소로 돌아오면 변경 파일, diff, 테스트 결과와 리뷰 의견을 확인할 수 있습니다.
 
 기본 주소는 `http://127.0.0.1:8766/`입니다. `studio --port 0`을 사용하면 빈 포트를 고릅니다. 실제 작업은 선택한 PC에 설치한 Codex와 Antigravity 계정을 사용하므로 신뢰하는 저장소에서 시작하세요. [제품 구상](docs/product-vision.md) · [구현 계획](docs/superpowers/plans/2026-11-19-local-studio.md)
+
+## 원격 호스트에서 작업하기
+
+두 컴퓨터에 이 버전의 Agent Office를 설치합니다. 로컬에서는 Windows 기본 OpenSSH 클라이언트 또는 Linux의 `/usr/bin/ssh`를 사용합니다. 사용할 SSH 별칭(예: `build-box`)은 이미 호스트 키를 확인했고, 해당 계정에 비대화형으로 접속할 수 있어야 합니다. SSH 연결에서 원격 루프백으로의 TCP 전달도 허용되어 있어야 합니다. Git과 작업에 사용할 CLI·테스트 환경은 원격 호스트에 준비합니다.
+
+**1. 원격 호스트**에서 작업실을 시작하고 계속 실행해 둡니다. 출력되는 포트와 32자리 `Journal ID`를 확인합니다.
+
+```shell
+agent-office --db ../remote-office/tasks.sqlite3 studio --port 8766 --accept-remote
+```
+
+**2. 로컬 컴퓨터**에서 다음 예시의 SSH 별칭과 저널 ID를 실제 값으로 바꿔 실행합니다. `--remote`는 호스트마다 한 번씩 지정할 수 있습니다. 다시 시작할 때도 같은 원격 저널을 지정하면 기존 실행 주소가 유지됩니다.
+
+```shell
+agent-office --db ../local-office/tasks.sqlite3 studio --remote build-box 8766 0123456789abcdef0123456789abcdef
+```
+
+**3. 브라우저**에서 터미널에 표시된 로컬 주소를 열고 실행 호스트로 `build-box`를 선택합니다. 해당 호스트의 작업공간과 폴더가 표시됩니다. 처음이면 **작업공간 등록**에 원격 컴퓨터의 절대 경로를 한 줄씩 입력합니다. 주 폴더와 추가 폴더를 선택하고 작업을 시작하면 worktree, 개발자·리뷰어 프로세스, 테스트와 결과 기록은 모두 원격에 생깁니다.
+
+네트워크가 끊기거나 로컬 작업실을 종료해도 **원격 작업실 프로세스가 살아 있으면 실행은 계속됩니다.** 연결이 복구되면 기존 상세 주소를 열어 같은 호스트·실행 ID의 상태와 결과를 확인합니다. 작업 접수 응답이 유실됐을 때에는 같은 ID로 접수 여부를 확인할 수 있습니다. 원격 작업실 자체를 종료한 경우에는 해당 호스트의 중지·복구 규칙이 적용됩니다.
+
+양쪽 HTTP 서버는 루프백에서 동작합니다. 로컬 작업실은 OpenSSH의 표준입출력 전달을 이용해 지정한 호스트의 작업실에만 요청합니다. 원격 포트에 다른 저널이 열려 있으면 요청이 거부됩니다. 저널 ID는 저장소 식별자이며 접속 인증은 SSH가 담당합니다. [OpenSSH 매뉴얼](https://man.openbsd.org/ssh.1) · [원격 실행 구현 계획](docs/superpowers/plans/2026-11-19-remote-studio.md)
 
 ## Architecture
 

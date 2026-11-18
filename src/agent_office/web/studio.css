@@ -33,6 +33,12 @@ a { color: inherit; }
 .connection[data-online=false]::before { background: #ffbd89; }
 main { padding-bottom: 68px; }
 .page-head { margin: 36px 0 24px; }
+.host-picker, .host-picker ul { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.host-picker { margin-bottom: 18px; font-size: .86rem; }
+.host-picker ul { list-style: none; padding: 0; }
+.host-picker strong { margin-right: 4px; }
+.host-picker a { display: block; overflow-wrap: anywhere; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); }
+.host-picker a[aria-current=page] { background: var(--ink); color: white; text-decoration: none; }
 h1, h2, h3, p, ul, pre { margin: 0; }
 h1 { font-size: clamp(2rem, 4vw, 3rem); line-height: 1.18; letter-spacing: -.075em; }
 h2 { display: flex; align-items: center; gap: 8px; font-size: 1.16rem; letter-spacing: -.045em; }
