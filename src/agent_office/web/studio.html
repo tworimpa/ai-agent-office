@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>로컬 작업실 · AI Agent Office</title>
+  <link rel="stylesheet" href="/studio.css">
+  <script type="module" src="/studio.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">본문으로 이동</a>
+  <header class="mast">
+    <div class="bar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>Agent Office</div>
+      <span id="connection" class="connection" role="status">연결 확인 중</span>
+    </div>
+  </header>
+  <main id="main">
+    <header class="page-head">
+      <h1>로컬 작업실</h1>
+      <a class="history-link" href="#history">실행 기록 보기 <span aria-hidden="true">↓</span></a>
+    </header>
+    <div class="layout">
+      <section class="card composer" aria-labelledby="compose-title">
+        <div class="card-head"><h2 id="compose-title">새 작업</h2></div>
+        <div class="compose-body">
+          <details id="registration">
+            <summary id="register-title">작업공간 등록</summary>
+            <form id="workspace-form" aria-labelledby="register-title">
+              <label for="name">작업공간 이름</label>
+              <input id="name" type="text" required placeholder="예: 주문 서비스">
+              <label for="paths">폴더 경로</label>
+              <textarea id="paths" rows="3" required spellcheck="false" aria-describedby="paths-help"></textarea>
+              <small id="paths-help">로컬 폴더의 절대 경로를 한 줄에 하나씩 입력하세요.</small>
+              <button id="register" type="submit" class="secondary">등록하기</button>
+              <p id="register-note" role="status" class="notice"></p>
+            </form>
+          </details>
+          <p id="catalog-error" class="notice error" role="status"></p>
+          <form id="run-form" aria-labelledby="compose-title">
+            <fieldset id="run-fields" disabled>
+              <legend class="sr-only">실행 설정</legend>
+              <label for="workspace">작업공간</label>
+              <select id="workspace" required><option value="">작업공간을 등록하세요</option></select>
+              <div id="folder-fields" hidden>
+                <label for="primary">주 폴더</label>
+                <select id="primary" required></select>
+                <fieldset id="extra-group" hidden>
+                  <legend>함께 사용할 폴더</legend>
+                  <div id="extras" class="checklist"></div>
+                  <small>같은 Git 저장소의 폴더를 선택하세요.</small>
+                </fieldset>
+              </div>
+              <label for="task">작업 요청</label>
+              <textarea id="task" rows="4" required aria-describedby="size-limit" placeholder="맡길 일과 완료 조건을 적어 주세요."></textarea>
+              <small id="size-limit">최대 8,192바이트(UTF-8)</small>
+              <fieldset class="modes">
+                <legend>실행 방식</legend>
+                <label class="mode"><input type="radio" name="mode" value="plan" checked><span><strong>계획 작성</strong><small>Codex가 읽고 계획을 작성합니다.</small></span></label>
+                <label class="mode"><input id="edit-mode" type="radio" name="mode" value="edit"><span><strong>개발·검증 맡기기</strong><small>별도 worktree에서 수정·테스트 후 Antigravity가 리뷰합니다.</small></span></label>
+              </fieldset>
+            </fieldset>
+            <button id="start" class="primary" type="submit" disabled>작업 시작 <span aria-hidden="true">↗</span></button>
+            <p id="start-note" role="status" class="notice"></p>
+          </form>
+        </div>
+      </section>
+      <div class="right">
+        <section id="history" class="card" aria-labelledby="history-title">
+          <div class="card-head">
+            <h2 id="history-title">실행 기록 <span id="count" class="count">0</span></h2>
+            <button type="button" id="refresh" class="link-button">새로고침</button>
+          </div>
+          <p id="list-note" class="empty">실행 기록을 불러오는 중입니다.</p>
+          <ul id="run-list" class="runs"></ul>
+        </section>
+        <section class="card" id="detail" aria-labelledby="detail-title">
+          <div class="card-head"><h2 id="detail-title">실행 상세</h2><span class="state" id="run-state" role="status" hidden></span></div>
+          <p id="detail-note" class="empty" role="status">실행을 선택하면 요청과 결과를 확인할 수 있습니다.</p>
+          <div id="detail-body" hidden>
+            <div class="request">
+              <p id="detail-workspace" class="workspace-name"></p>
+              <h3 id="request"></h3>
+              <div class="run-meta"><code id="run-id"></code><button type="button" id="stop" class="stop" hidden>실행 중지</button></div>
+              <p id="attempts" class="attempts" hidden></p>
+              <p id="outcome" class="outcome" hidden></p>
+              <p id="diagnostic" class="notice error" hidden></p>
+              <p id="retry-note" class="notice" hidden>마지막 개발 시도의 단계별 출력을 표시합니다.</p>
+              <p id="stop-note" role="status" class="notice"></p>
+            </div>
+            <div class="outputs">
+              <details id="run-context" hidden>
+                <summary>실행 환경</summary>
+                <dl class="context">
+                  <dt>실행 방식</dt><dd id="context-mode"></dd>
+                  <dt>작업 폴더</dt><dd id="context-path"></dd>
+                  <dt>주 폴더</dt><dd id="context-primary"></dd>
+                  <dt>추가 폴더</dt><dd id="context-extras"></dd>
+                  <dt>브랜치</dt><dd id="context-branch"></dd>
+                </dl>
+              </details>
+              <details open><summary>개발자 응답</summary><pre id="developer_output"></pre></details>
+              <details><summary>테스트 결과</summary><p id="test-command" class="command" hidden>테스트 단계에서 시도한 명령 <code>python -m pytest -q</code></p><pre id="test_output"></pre></details>
+              <details><summary>리뷰 의견</summary><pre id="review_output"></pre></details>
+              <details><summary>변경 파일</summary><pre id="changes"></pre></details>
+              <details><summary>변경 내용 <span lang="en">diff</span></summary><pre id="diff"></pre></details>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

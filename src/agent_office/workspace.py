@@ -31,7 +31,7 @@ def create_worktree(repo: Path, *, planned: Worktree | None = None) -> Worktree:
         ["git", "rev-parse", "--show-toplevel"],
         cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     )
-    root = Path(result.stdout.strip()).resolve()
+    root = Path(result.stdout.removesuffix("\n")).resolve()
     if root != repo:
         raise ValueError(f"Use repository root {root}, not {repo}")
 
@@ -54,3 +54,26 @@ def git_summary(workspace: Path) -> str:
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     return result.stdout[:4000] if result.returncode == 0 else "(git status unavailable)"
+
+def map_folders(root: Path, folders: list[str]) -> list[Path]:
+    """Resolve each selection inside this checkout, rejecting links and junctions."""
+    import stat
+
+    if not folders:
+        raise ValueError("Select at least one folder")
+    mapped = []
+    for folder in folders:
+        relative = Path(folder)
+        if relative.anchor or ".." in relative.parts:
+            raise ValueError("Invalid selected folder")
+        path = root
+        for part in relative.parts:
+            path = path / part
+            info = path.lstat()
+            if (not stat.S_ISDIR(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                raise ValueError("Selected folder must be a directory inside the worktree")
+        if not path.is_dir() or not path.resolve(strict=True).is_relative_to(root.resolve(strict=True)):
+            raise ValueError("Selected folder is missing from this checkout")
+        mapped.append(path)
+    return mapped

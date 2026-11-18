@@ -125,7 +125,7 @@ class TaskStore:
             raise ValueError("Run does not belong to task")
         return [self._event(row) for row in self.connection.execute("SELECT * FROM events WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?", (run.run_id, after_seq, limit))]
 
-    def create_run(self, spec: TaskSpec, run_id: str, intent: Worktree, owner: OwnerInfo):
+    def create_run(self, spec: TaskSpec, run_id: str, intent: Worktree, owner: OwnerInfo, *, register=None):
         validate_id(spec.task_id)
         validate_id(run_id)
         if type(spec.max_attempts) is not int or not 1 <= spec.max_attempts <= MAX_SQLITE_INT or spec.developer_engine not in SUPPORTED_ENGINES or spec.reviewer_engine not in SUPPORTED_ENGINES:
@@ -137,6 +137,8 @@ class TaskStore:
             task = TaskRecord(spec.task_id, spec.project, snapshot_request(spec.request_snapshot), spec.developer_engine, spec.reviewer_engine, str(intent.path), intent.branch, "QUEUED", None, 0, spec.max_attempts, run_id, stamp, stamp)
             self.connection.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(asdict(task).values()))
             self.connection.execute("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)", (run_id, spec.task_id, owner.host_name, owner.owner_token, "QUEUED", None, 0, stamp, None, 1))
+            if register is not None:
+                register(self.connection)
             self._record(run_id, operation_key=f"{run_id}:0:run:RUN_CREATED", event_type="RUN_CREATED", payload={"phase": "run"})
         return self.get_run(run_id)
 

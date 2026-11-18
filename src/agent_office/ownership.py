@@ -17,6 +17,13 @@ class RunGuard:
         self.path = Path(str(self.db_path) + ".locks") / (run_id + ".lock")
         self.fd = None
 
+    @classmethod
+    def studio(cls, db_path: Path):
+        """The Studio server owns a distinct lock next to per-run locks."""
+        guard = cls(db_path, "0" * 32)
+        guard.path = guard.path.with_name("studio-owner.lock")
+        return guard
+
     def __enter__(self):
         validate_db_file(self.db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)

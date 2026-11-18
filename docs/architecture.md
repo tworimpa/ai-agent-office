@@ -1,5 +1,7 @@
 # AO-000 Architecture & Scope
 
+For the current local studio, see the [workspace and run controls](../README.md#로컬-작업실-시작) and [Stage 1 implementation plan](superpowers/plans/2026-11-19-local-studio.md). The bootstrap scope below records the earlier milestones.
+
 ## Intent
 
 Build a personal Windows/Linux AI coding team orchestrator that can eventually improve its own implementation. Agents are existing CLI coding assistants, not reimplementations of their internal tool loops.

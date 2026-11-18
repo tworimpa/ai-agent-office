@@ -1,8 +1,23 @@
 # AI Agent Office
 
-**AO-002 candidate** — local-first orchestration of coding agent CLIs, persisted tasks/events and a read-only local observer.
+Local-first orchestration of coding agent CLIs with a browser-based local studio, persistent task history and a separate read-only observer.
 
-This is an early, deliberately limited command-line MVP. It does **not** implement the desktop office UI, a persistent job scheduler, automatic human-in-the-loop Q&A, unattended delegation, GitHub publishing, or self-updating. Those are planned features.
+The local studio adds browser-based workspace registration, run controls and results on top of the CLI workflow. Remote runners, automatic human-in-the-loop Q&A, unattended delegation and self-updating are planned features.
+
+## 로컬 작업실 시작
+
+아래 명령을 설치된 환경에서 실행한 뒤 터미널에 표시되는 주소를 브라우저에서 여세요. Windows와 Linux에서 같은 명령을 사용합니다.
+
+```shell
+agent-office --db ../office-data/tasks.sqlite3 studio
+```
+
+1. **작업공간 등록**에서 이름과 폴더의 절대 경로를 한 줄에 하나씩 입력합니다.
+2. 주 폴더와 함께 쓸 폴더를 선택합니다. 한 번의 실행에서는 같은 Git 체크아웃의 현재 커밋에 포함된 폴더들을 선택할 수 있습니다. 이 목록은 작업자에게 전달하는 작업 범위입니다. CLI와 테스트는 별도 worktree의 저장소 루트에서 실행되며 실제 파일 접근 권한은 CLI와 OS 설정에 따릅니다.
+3. 요청을 입력하고 **작업 시작**을 누릅니다. 기본값은 계획 작성입니다. 파일 수정과 테스트·리뷰까지 맡길 때에는 **개발·검증 맡기기**를 선택합니다.
+4. 실행 상세에서 진행 상태를 확인하고 **실행 중지**를 요청할 수 있습니다. 작업실 명령이 실행 중이면 브라우저를 닫아도 작업이 계속됩니다. 같은 주소로 돌아오면 변경 파일, diff, 테스트 결과와 리뷰 의견을 확인할 수 있습니다.
+
+기본 주소는 `http://127.0.0.1:8766/`입니다. `studio --port 0`을 사용하면 빈 포트를 고릅니다. 실제 작업은 선택한 PC에 설치한 Codex와 Antigravity 계정을 사용하므로 신뢰하는 저장소에서 시작하세요. [제품 구상](docs/product-vision.md) · [구현 계획](docs/superpowers/plans/2026-11-19-local-studio.md)
 
 ## Architecture
 
@@ -47,9 +62,9 @@ The CI workflow runs **Ubuntu + Windows**, Python **3.11 + 3.13**, without provi
 - To include authenticated headless CLI checks: add `-Live` (Windows) or `--live` (Linux).
 - Inspect available CLIs: `agent-office doctor`
 
-Task and event queries, explicit interruption marking and candidate DB paths are described in [storage guide](docs/storage.md). Use `--db` before the subcommand to keep development state separate from stable state. Task execution controls and automatic session resume are not implemented.
+Task and event queries, explicit interruption marking and candidate DB paths are described in [storage guide](docs/storage.md). Use `--db` before the subcommand to keep development state separate from stable state. The studio controls its own runs. Provider conversation resume is future work.
 
-The AO-002 candidate adds a **local read-only observer**: `agent-office --db PATH serve --port 8765`. See [observer guide](docs/observer.md) for selection, timeline updates and actual CLI acceptance limits. It does not add task execution controls or automatic session resume.
+For read-only access to the journal, use `agent-office --db PATH serve --port 8765`. See the [observer guide](docs/observer.md) for selection, timeline updates and actual CLI acceptance limits.
 
 See [verification guide](docs/verification.md). Real Codex/Antigravity checks require those CLIs installed and authenticated on the target PC; CI mocks do not validate live provider behavior.
 
