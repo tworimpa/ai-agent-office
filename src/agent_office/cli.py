@@ -63,16 +63,21 @@ def make_parser() -> argparse.ArgumentParser:
     recover.add_argument("--run-id", required=True)
     observer = sub.add_parser("serve", help="Open a loopback-only read-only observer")
     observer.add_argument("--port", type=int, default=8765)
+    studio = sub.add_parser("studio", help="Open the local workspace and task controls")
+    studio.add_argument("--port", type=int, default=8766)
     return parser
 
 
-def execute_run(args, store, run_id):
+def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage=None, defer_final=None):
     repo = args.repo.expanduser().resolve()
     worktree = plan_worktree(repo, run_id)
-    task_id = uuid.uuid4().hex
     recorder = RunRecorder(store, run_id)
-    store.create_run(TaskSpec(task_id, str(repo), args.task, args.developer, args.reviewer, args.max_attempts),
-                     run_id, worktree, OwnerInfo(platform.node(), uuid.uuid4().hex))
+    if prepared:
+        task_id = store.get_run(run_id).task_id
+    else:
+        task_id = uuid.uuid4().hex
+        store.create_run(TaskSpec(task_id, str(repo), args.task, args.developer, args.reviewer, args.max_attempts),
+                         run_id, worktree, OwnerInfo(platform.node(), uuid.uuid4().hex))
     try:
         worktree = create_worktree(repo, planned=worktree)
         recorder.record(operation_key=f"{run_id}:workspace", event_type="WORKSPACE_READY", payload={"phase": "workspace"})
@@ -80,7 +85,7 @@ def execute_run(args, store, run_id):
             engine: CLIAdapter(engine, timeout=args.timeout)
             for engine in SUPPORTED_ENGINES
         }
-        graph = build_graph(adapters, recorder=recorder)
+        graph = build_graph(adapters, recorder=recorder, save_stage=save_stage)
         initial = {
             "task": args.task,
             "workspace": str(worktree.path),
@@ -92,6 +97,10 @@ def execute_run(args, store, run_id):
             "max_attempts": args.max_attempts,
             "status": "NEW",
         }
+        if folders is not None:
+            from .workspace import map_folders
+            mapped = map_folders(worktree.path, folders)
+            initial["selected_folders"] = [str(path) for path in mapped]
         result = graph.invoke(initial, config={"configurable": {"thread_id": run_id}})
         state, outcome = {
             "PLAN_ONLY": ("PLAN_ONLY", "PLAN_ONLY"),
@@ -103,9 +112,14 @@ def execute_run(args, store, run_id):
             "NEEDS_HUMAN_REVIEW": ("WAITING_USER", "REVIEW_UNDECIDED"),
             "RECOVERY_REQUIRED": ("RECOVERY_REQUIRED", "INTERRUPTED"),
         }[result["status"]]
-        recorder.record(operation_key=f"{run_id}:final", event_type="RUN_FINISHED", state=state, outcome=outcome,
-                        attempts=result["attempts"], payload={"phase": "run"})
+        if defer_final is not None:
+            defer_final(state, outcome)
+        else:
+            recorder.record(operation_key=f"{run_id}:final", event_type="RUN_FINISHED", state=state, outcome=outcome,
+                            attempts=result["attempts"], payload={"phase": "run"})
     except KeyboardInterrupt:
+        if defer_final is not None:
+            raise  # Studio finalizes after draining the entire process tree.
         try:
             if store.get_run(run_id).state in ACTIVE:
                 recorder.record(operation_key=f"{run_id}:interrupt", event_type="RECOVERY_REQUIRED",
@@ -155,6 +169,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "events" and not 0 <= args.after_seq <= MAX_SQLITE_INT:
             raise ValueError("Invalid cursor")
         db_path = resolve_db_path(args.db)
+        if args.command == "studio":
+            from .studio_server import serve_studio
+            serve_studio(db_path, args.port)
+            return 0
         if args.command == "serve":
             from .observer import serve
             serve(db_path, args.port)

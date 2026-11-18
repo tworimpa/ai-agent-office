@@ -64,6 +64,7 @@ class ObserverServer(ThreadingHTTPServer):
 
 
 class ObserverHandler(BaseHTTPRequestHandler):
+    allowed_methods = "GET, HEAD"
     server_version = "AgentOffice"
     sys_version = ""
 
@@ -79,7 +80,7 @@ class ObserverHandler(BaseHTTPRequestHandler):
                            "Referrer-Policy": "no-referrer"}.items():
             self.send_header(key, value)
         if status == 405:
-            self.send_header("Allow", "GET, HEAD")
+            self.send_header("Allow", self.allowed_methods)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)

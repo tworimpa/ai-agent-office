@@ -20,6 +20,7 @@ class Adapter(Protocol):
 class TaskState(TypedDict, total=False):
     task: str
     workspace: str
+    selected_folders: list[str]
     developer: str
     reviewer: str
     test_argv: list[str]
@@ -40,7 +41,7 @@ def parse_review_verdict(output: str) -> str:
     return "UNKNOWN"
 
 
-def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=None):
+def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=None, save_stage=None):
     def emit(event, phase, count, *, state=None, engine=None, returncode=None):
         if recorder is not None:
             payload = {"phase": phase, "role": {"developer": "developer", "test": "tester", "review": "reviewer"}[phase], "engine": engine}
@@ -49,8 +50,16 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             recorder.record(operation_key=f"{recorder.run_id}:{count}:{phase}:{event}", event_type=event,
                             state=state, attempts=count, payload=payload)
 
+    def folder_context(state):
+        folders = state.get("selected_folders", [])
+        return ("Focus the task on the selected folders in this worktree (primary first):\n"
+                + "\n".join(folders) + "\n\n") if folders else ""
+
     def develop(state: TaskState) -> dict:
         count = state.get("attempts", 0) + 1
+        if save_stage and count > 1:
+            for column in ("developer_output", "test_output", "review_output"):
+                save_stage(column, "")
         emit("STAGE_STARTED", "developer", count, state="RUNNING", engine=state["developer"])
         prompt = (
             "You are the development worker for this repository. "
@@ -58,6 +67,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             "or change security/approval policy. "
             "If requirements are ambiguous or approval is needed, explicitly "
             "explain the blocker; do not silently assume permission.\n\n"
+            f"{folder_context(state)}"
             f"Task:\n{state['task']}\n\n"
             f"Feedback from last attempt:\n{state.get('feedback', '(none)')}"
         )
@@ -65,11 +75,14 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             prompt, workspace=Path(state["workspace"]),
             allow_edits=state["allow_edits"],
         )
+        if save_stage:
+            save_stage("developer_output", result.message)
         emit("STAGE_COMPLETED" if result.returncode == 0 else "STAGE_FAILED", "developer", count,
              engine=state["developer"], returncode=result.returncode)
         return {
             "attempts": count,
             "developer_output": result.message,
+            **({"test_output": "", "review_output": ""} if count > 1 else {}),
             "status": "DEVELOPED" if result.returncode == 0 else "RECOVERY_REQUIRED" if result.returncode == 124 else "FAILED",
             "feedback": "" if result.returncode == 0 else result.message[:2000],
         }
@@ -103,6 +116,8 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
         except OSError as exc:
             passed = False
             output = str(exc)
+        if save_stage:
+            save_stage("test_output", output)
         emit("STAGE_COMPLETED" if passed else "STAGE_FAILED", "test", state["attempts"], returncode=returncode)
         if not passed and not timed_out and state["attempts"] < state["max_attempts"]:
             emit("RETRY_SCHEDULED", "test", state["attempts"], state="RUNNING")
@@ -126,6 +141,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             "Respond using a standalone line exactly 'VERDICT: APPROVED' "
             "or 'VERDICT: CHANGES_REQUESTED', followed by reasons. "
             "Do not approve absent evidence.\n\n"
+            f"{folder_context(state)}"
             f"Original task:\n{state['task']}\n\n"
             f"Working-tree status:\n{git_summary(Path(state['workspace']))}\n\n"
             f"Test results:\n{state.get('test_output', '')}"
@@ -134,6 +150,8 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             prompt, workspace=Path(state["workspace"]), allow_edits=False,
         )
         output = result.message
+        if save_stage:
+            save_stage("review_output", output)
         emit("STAGE_COMPLETED" if result.returncode == 0 else "STAGE_FAILED", "review", state["attempts"], engine=state["reviewer"], returncode=result.returncode)
         if result.returncode == 124:
             status = "RECOVERY_REQUIRED"
