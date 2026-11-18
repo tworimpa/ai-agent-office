@@ -80,6 +80,8 @@ Tasks are transferred to CLI subprocesses through standard input rather than she
 
 ## Roadmap
 
+제품의 목표, 사용자 흐름과 단계별 완료 기준은 [AI Agent Office 제품 구상](docs/product-vision.md)에 정리했습니다.
+
 - AO-000: LangGraph + Claude/Codex adapters + separate worktree + tests + human-reviewed result.
 - AO-001: persistent task/run/event database, read-only queries and explicit recovery marking.
 - AO-002: office observation UI, Gemini/Cline/Antigravity adapters and skills registry.
