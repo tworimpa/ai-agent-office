@@ -115,7 +115,8 @@ print(json.dumps({{"type":"item.completed", "item":{{"type":"agent_message","tex
         store.create_run(TaskSpec(uuid4().hex, str(repo), "확인", "codex", "codex", 1), run_id,
                          plan_worktree(repo, run_id), OwnerInfo("host", uuid4().hex),
                          register=lambda db: skills.pin_selection(db, run_id, selection))
-        assert skills.selected_skills(store.connection, run_id) == selection
+        snapshots = skills.selected_metadata(store.connection, run_id)
+        assert {role: [row["id"] for row in versions] for role, versions in snapshots.items()} == selection
         current = catalog.create("검사", "REPLACEMENT_DEVELOPER")
         assert current["version"] == 2
         args = SimpleNamespace(task="확인", repo=repo, developer="codex", reviewer="codex", allow_edits=True,

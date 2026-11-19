@@ -4,7 +4,7 @@ import platform
 
 from .engines import SUPPORTED_ENGINES
 from .events import snapshot_request
-from .models import ACTIVE
+from .models import ACTIVE, OfficeError
 from .store import encode, now
 
 
@@ -21,6 +21,11 @@ def ensure_schema(db):
     db.execute("""CREATE TABLE IF NOT EXISTS studio_team_children(
         id TEXT PRIMARY KEY REFERENCES studio_runs(id), parent_id TEXT NOT NULL REFERENCES studio_teams(id),
         position INTEGER NOT NULL, indices TEXT NOT NULL, UNIQUE(parent_id,position))""")
+    # Plain CLI callers also write to runs. Once a parent owns an ID, they
+    # must not accidentally create a second, differently addressable record.
+    db.execute("""CREATE TRIGGER IF NOT EXISTS reserve_studio_parent_ids
+        BEFORE INSERT ON runs WHEN EXISTS(SELECT 1 FROM studio_teams WHERE id=NEW.run_id)
+        BEGIN SELECT RAISE(ABORT, 'Run ID is already a Studio parent'); END""")
 
 
 def validate_task(task):
@@ -55,6 +60,8 @@ def normalize_subtasks(value, indices, developer_engine, reviewer_engine):
 
 def register(db, parent_id, digest, workspace_id, task, indices, folders, allow_edits,
              developer_engine, reviewer_engine, use_inbox, policy, revision):
+    if db.execute("SELECT 1 FROM runs WHERE run_id=?", (parent_id,)).fetchone():
+        raise OfficeError("REQUEST_CONFLICT")
     db.execute("""INSERT INTO studio_teams(id,request_hash,workspace_id,task,indices,folders,allow_edits,
         developer_engine,reviewer_engine,use_inbox,delegation,base_revision,host_name,created_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",

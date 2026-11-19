@@ -163,6 +163,8 @@ class LocalRunner:
         row = store.connection.execute("SELECT request_hash FROM studio_runs WHERE id=? UNION ALL "
                                        "SELECT request_hash FROM studio_teams WHERE id=?", (run_id, run_id)).fetchone()
         if row is None:
+            if store.connection.execute("SELECT 1 FROM runs WHERE run_id=?", (run_id,)).fetchone():
+                raise OfficeError("REQUEST_CONFLICT")
             return None
         if row[0] != digest:
             raise OfficeError("REQUEST_CONFLICT")

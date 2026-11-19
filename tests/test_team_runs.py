@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import json
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -10,7 +11,8 @@ import uuid
 
 import pytest
 
-from agent_office.models import OfficeError
+from agent_office.models import OfficeError, OwnerInfo, TaskSpec
+from agent_office.workspace import plan_worktree
 from agent_office.role_skills import RoleSkillRegistry
 from agent_office.store import TaskStore
 from agent_office.studio_catalog import StudioCatalog
@@ -22,6 +24,26 @@ from test_studio_runner import install_fake, repo, wait_for
 def git(repo, *args):
     return subprocess.check_output(["git", "-c", "user.name=studio", "-c", "user.email=studio@example.invalid",
                                     *args], cwd=repo, text=True).strip()
+
+
+def test_plain_cli_and_studio_parents_cannot_share_an_id(tmp_path, repo, monkeypatch):
+    install_fake(tmp_path, monkeypatch, "print('plan')\n")
+    db = tmp_path / "journal.db"
+    wid, cli_run, group_id = (uuid.uuid4().hex for _ in range(3))
+    plan = [{"task": name, "indices": [0]} for name in ("one", "two")]
+    with closing(LocalRunner(db)) as runner, TaskStore(db) as store:
+        def create_cli(run_id):
+            spec = TaskSpec(uuid.uuid4().hex, str(repo), "CLI", "codex", "antigravity", 1)
+            store.create_run(spec, run_id, plan_worktree(repo, run_id), OwnerInfo("fixture", uuid.uuid4().hex))
+
+        create_cli(cli_run)
+        with pytest.raises(OfficeError, match="REQUEST_CONFLICT"):
+            runner.start(cli_run, wid, repo, ["."], "group", False, subtasks=plan)
+        assert runner.runs() == []
+        parent = runner.start(group_id, wid, repo, ["."], "group", False, subtasks=plan)
+        with pytest.raises(sqlite3.IntegrityError):
+            create_cli(group_id)
+        assert [t["id"] for t in runner.detail(group_id)["subtasks"]] == [t["id"] for t in parent["subtasks"]]
 
 
 def test_parallel_children_pin_base_scope_skills_and_retain_partial_results(tmp_path, repo, monkeypatch):

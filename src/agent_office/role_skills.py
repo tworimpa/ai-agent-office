@@ -158,12 +158,6 @@ def selected_metadata(db, run_id):
     return _assigned(db, run_id, ROLES)
 
 
-def selected_skills(db, run_id, *, instructions=False):
-    if instructions:
-        return _assigned(db, run_id, ROLES, instructions=True)
-    return {role: [row["id"] for row in rows] for role, rows in selected_metadata(db, run_id).items()}
-
-
 def role_guidance(db, run_id, roles):
     """Return prompt sections; only the named roles' selected versions are read."""
     assigned = _assigned(db, run_id, roles, instructions=True)
