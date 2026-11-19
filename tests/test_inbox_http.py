@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import subprocess
 import sys
 import time
 import uuid
@@ -11,6 +12,7 @@ import uuid
 import pytest
 
 from agent_office.studio_ssh import RemoteHost, RemoteUnavailable, _read_response, is_peer_route
+from test_codex_inbox import install_mock_codex
 from test_remote_studio import LoopbackLink
 from test_studio_http import project, request, studio, wait_for, workers
 from test_studio_ssh import frame
@@ -64,6 +66,36 @@ def test_remote_decision_receipt_matches_host_run_request_and_action():
                         {"decision": "reject"}, {"status": "pending"}):
         with pytest.raises(RemoteUnavailable):
             receipt({**row, **replacement}, pin)
+
+
+def test_default_engine_pair_continues_through_test_and_review(tmp_path, monkeypatch):
+    workers(tmp_path, monkeypatch)
+    install_mock_codex(tmp_path / "mock cli", monkeypatch, "approve")
+    web, _ = project(tmp_path)
+    repo = web.parent
+    (web / "test_value.py").write_text(
+        "from pathlib import Path\ndef test_accepted_patch():\n"
+        "    assert (Path(__file__).parents[1] / 'answer.txt').read_text() == 'fixture'\n")
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "commit", "-qam", "expect the approved patch"], check=True)
+    with studio(tmp_path / "db") as local:
+        status, info = request(local, "/api/workspaces", {"name": "기본 조합", "paths": [str(repo)]})
+        assert status == 201
+        run = uuid.uuid4().hex
+        assert request(local, "/api/runs", {"id": run, "workspace_id": info["workspace"]["id"], "indices": [0],
+                       "task": "원래 작업", "allow_edits": True, "use_inbox": True})[0] == 202
+        question = wait_request(local, "/api", run, "question")
+        assert question["engine"] == "codex"
+        base = f"/api/runs/{run}/inbox"
+        assert request(local, f"{base}/{question['id']}/decision", {"action": "answer", "answer": "둘째 방식"})[0] == 200
+        permission = wait_request(local, "/api", run, "permission")
+        assert "answer.txt" in permission["prompt"]
+        assert request(local, f"{base}/{permission['id']}/decision", {"action": "approve"})[0] == 200
+        result = wait_for(local, run, {"READY_FOR_HUMAN_REVIEW"})
+        assert "2 passed" in result["test_output"] and "APPROVED" in result["review_output"]
+        assert not (repo / "answer.txt").exists()
+        assert [(r["decision"], r["status"]) for r in request(local, base)[1]["requests"]] == [
+            ("answer", "delivered"), ("approve", "delivered")]
 
 
 @pytest.mark.parametrize(("remote", "allow"), [(True, True), (False, False)])

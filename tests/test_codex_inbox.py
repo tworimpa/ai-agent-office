@@ -39,15 +39,20 @@ class Operator:
         self.confirmed.append(request_id)
 
 
-def fixture(tmp_path, monkeypatch, scenario, edits=True, operator=None):
-    executable = tmp_path / ("codex.cmd" if os.name == "nt" else "codex")
+def install_mock_codex(directory, monkeypatch, scenario):
+    executable = directory / ("codex.cmd" if os.name == "nt" else "codex")
     if os.name == "nt":
         executable.write_text(f'@"{sys.executable}" "{__file__}" %*\n')
     else:
         executable.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(__file__)} "$@"\n')
         executable.chmod(0o700)
-    monkeypatch.setattr("agent_office.adapters.resolve_executable", lambda _: str(executable))
     monkeypatch.setenv("OFFICE_FIXTURE_CODEX", scenario)
+    return executable
+
+
+def fixture(tmp_path, monkeypatch, scenario, edits=True, operator=None):
+    executable = install_mock_codex(tmp_path, monkeypatch, scenario)
+    monkeypatch.setattr("agent_office.adapters.resolve_executable", lambda _: str(executable))
     operator = operator or Operator()
     result = CLIAdapter("codex", timeout=2 if scenario == "timeout" else 8).execute(
         "원래 작업", workspace=tmp_path, allow_edits=edits, inbox=operator)
