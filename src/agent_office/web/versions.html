@@ -32,6 +32,22 @@
       <div><h2 id="current-title">현재 안정 소스</h2><p id="published"></p></div>
       <div><strong id="current-version">확인 중</strong><code id="current-sha"></code></div>
     </section>
+    <section class="card deployment" aria-labelledby="deployment-title">
+      <div class="card-head">
+        <div><h2 id="deployment-title">서비스 배포 상태</h2><p id="deployment-service"></p></div>
+        <span id="deployment-health" class="state">확인 중</span>
+      </div>
+      <p id="deployment-announcement" class="sr-only" role="status"></p>
+      <dl class="deployment-facts">
+        <div><dt>실제 실행 버전</dt><dd id="running-version">확인 중</dd><dd><code id="running-sha"></code></dd></div>
+        <div><dt>선택한 대상 버전과 비교</dt><dd id="deployment-match">확인 중</dd></div>
+        <div><dt>최근 배포 요청</dt><dd id="deployment-last">확인 중</dd><dd id="deployment-detail"></dd></div>
+      </dl>
+      <details class="deployment-help"><summary>운영자 터미널에서 배포하기</summary>
+        <p>선택한 호스트의 터미널에서 릴리스 경로(ROOT), 버전 순번(SEQ), 배포 대상 경로(DIR)를 지정합니다.</p>
+        <code>agent-office improve --release ROOT deploy SEQ --target DIR</code>
+      </details>
+    </section>
     <div class="layout">
       <section class="card" aria-labelledby="history-title">
         <div class="card-head"><h2 id="history-title">변경 이력</h2></div>

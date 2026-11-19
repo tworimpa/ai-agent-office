@@ -7,6 +7,15 @@
 .current-version { justify-content: start; gap: 16px 48px; flex-wrap: wrap; margin-bottom: 22px; padding: 18px 22px; background: #e9eee2; border-inline-start: 4px solid #476547; }
 .current-version code, .current-version strong, #history small { display: block; overflow-wrap: anywhere; }
 .current-version code, #published, .pager, #compare-note { font-size: .83rem; color: var(--muted); }
+.deployment { margin-bottom: 22px; overflow-wrap: anywhere; }
+.deployment .card-head { flex-wrap: wrap; }
+.deployment-facts { margin: 0; padding: 16px 22px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr)); gap: 16px 24px; }
+.deployment-facts dt { margin-bottom: 5px; color: var(--muted); font-size: .83rem; }
+.deployment-facts dd { margin: 0; font-size: .94rem; }
+#deployment-service, #deployment-detail, #running-sha { font-size: .8rem; color: var(--muted); }
+.deployment-help { padding: 0 22px; border-top: 1px solid var(--border); font-size: .85rem; }
+.deployment-help summary { min-height: 44px; align-content: center; }
+.deployment-help code { display: block; margin: 8px 0 14px; }
 #history { margin: 0; padding: 0; list-style: none; max-height: min(58vh, 32rem); overflow-y: auto; }
 #history li { padding: 11px 22px; }
 #history li + li, .pager { border-top: 1px solid var(--border); }
@@ -22,6 +31,6 @@
 .rollback-help code { display: block; margin-top: 8px; overflow-wrap: anywhere; }
 @media (max-width: 680px) {
   .page-head { align-items: flex-start; flex-direction: column; }
-  .compare-body, .current-version, #history li { padding-inline: 16px; }
+  .compare-body, .current-version, .deployment-facts, .deployment-help, #history li { padding-inline: 16px; }
   .role-pickers { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 }

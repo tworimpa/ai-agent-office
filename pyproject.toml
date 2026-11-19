@@ -19,6 +19,7 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 agent-office = "agent_office.cli:main"
+agent-office-runtime = "agent_office.managed_runtime:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,6 +1,13 @@
 const events = {initial: '초기 버전', promotion: '승격', rollback: '롤백'};
 const statuses = {added: '추가', deleted: '삭제', modified: '수정'};
-const validHost = id => id === 'local' || (typeof id === 'string' && /^[a-f0-9]{32}$/.test(id));
+const healthLabels = {unconfigured: '대상 미설정', offline: '서비스 응답 없음', unverified: '서비스 확인 불가', healthy: '정상 응답'};
+const attemptLabels = {
+  deploying: '배포 진행 중', restoring: '이전 버전 복구 중', healthy: '배포 완료',
+  deploy_failed_restored: '배포 실패 · 이전 버전 복구 완료', deploy_failed_stopped: '배포 실패 · 서비스 중지',
+  restore_failed: '이전 버전 복구 실패',
+};
+const validId = id => typeof id === 'string' && /^[a-f0-9]{32}$/.test(id);
+const validHost = id => id === 'local' || validId(id);
 const validSeq = n => Number.isSafeInteger(n) && n >= 0;
 const validSha = sha => typeof sha === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha);
 const sameVersion = (a, b) => a?.seq === b?.seq && a?.sha === b?.sha;
@@ -12,9 +19,40 @@ function addressHost(win) {
   return ids.length === 1 && validHost(ids[0]) ? ids[0] : null;
 }
 
+function validRevision(row) {
+  return row && validSeq(row.seq) && row.seq > 0 && validSha(row.sha);
+}
+
 function validEntry(row) {
-  return row && validSeq(row.seq) && row.seq > 0 && Object.hasOwn(events, row.kind) && validSha(row.sha) &&
+  return validRevision(row) && Object.hasOwn(events, row.kind) &&
     (row.previous === null || validSha(row.previous)) && (row.target_seq === null || validSeq(row.target_seq));
+}
+
+function checkDeployment(data, target) {
+  const invalid = new Error('서비스 배포 상태를 확인할 수 없습니다.');
+  if (!data || !Object.hasOwn(healthLabels, data.health) || data.configured !== (data.health !== 'unconfigured') ||
+      !(target ? sameVersion(target, data.selection) : data.selection === null)) throw invalid;
+  const {service, running, last, release_matches} = data;
+  if (!data.configured) {
+    if ([service, running, last, release_matches].some(field => field !== null)) throw invalid;
+    return;
+  }
+  if (typeof service !== 'string' || !service ||
+      !(release_matches === null || (target && typeof release_matches === 'boolean'))) throw invalid;
+  if (data.health === 'healthy' ? !validRevision(running) || !validId(running.boot_id) : running !== null) throw invalid;
+  if (last !== null && (!last || !validId(last.id) || !Object.hasOwn(attemptLabels, last.state) ||
+      !validRevision(last.requested) || !(last.previous === null || validRevision(last.previous)) ||
+      typeof last.time !== 'string' || !Number.isFinite(Date.parse(last.time)) || typeof last.message !== 'string')) throw invalid;
+}
+
+function deploymentMatch(data, target) {
+  if (!target) return '비교할 대상 버전이 없습니다.';
+  const label = '대상 #' + target.seq + ' · ';
+  if (data.release_matches === false) return label + '다른 릴리스 또는 게시 이력입니다.';
+  if (!data.running || data.release_matches !== true) return label + '일치 여부를 확인할 수 없습니다.';
+  if (sameVersion(data.running, target)) return label + '실행 버전과 일치합니다.';
+  if (data.running.sha === target.sha) return label + '같은 커밋이지만 버전 순번이 다릅니다.';
+  return label + '실행 중인 커밋이 다릅니다.';
 }
 
 function checkPage(page, offset) {
@@ -48,14 +86,16 @@ export function mountVersions(win) {
   };
   const say = (id, text) => { if (get(id).textContent !== text) get(id).textContent = text; };
   const controllers = new Set();
-  let hostId, prefix, page, offset, from, to, manual, online, hostName;
+  let hostId, hostApi, prefix, page, offset, from, to, manual, online, hostName;
+  let deploymentKey, deploymentRequest, deploymentSequence = 0;
   let pageSignature, hostsSignature, comparisonSignature, options;
   let comparisonStale = false;
   let generation = 0, compareSequence = 0, timer, disposed = false;
 
   function resetHost() {
     hostId = addressHost(win);
-    prefix = hostId === 'local' ? '/api/versions' : '/api/hosts/' + hostId + '/versions';
+    hostApi = hostId === 'local' ? '/api' : '/api/hosts/' + hostId;
+    prefix = hostApi + '/versions';
     const query = hostId ? '?host=' + hostId : '';
     for (const [id, path] of [['studio-link', '/'], ['office-link', '/office'], ['improvements-link', '/improvements']]) {
       get(id).href = path + query;
@@ -68,6 +108,8 @@ export function mountVersions(win) {
     for (const controller of controllers) controller.abort();
     for (const id of ['history', 'hosts', 'from-version', 'to-version']) get(id).replaceChildren();
     clearComparison();
+    clearDeployment('확인 중');
+    say('deployment-announcement', '');
     say('current-version', '확인 중');
     say('current-sha', '');
     say('published', '');
@@ -102,6 +144,49 @@ export function mountVersions(win) {
     say('diff', '');
     say('file-count', '');
     say('compare-note', '');
+  }
+  function clearDeployment(status) {
+    ++deploymentSequence;
+    deploymentKey = undefined;
+    say('deployment-health', status);
+    delete get('deployment-health').dataset.tone;
+    say('deployment-service', '');
+    const pending = status === '확인 중';
+    say('running-version', pending ? status : '확인할 수 없음');
+    say('running-sha', '');
+    say('deployment-match', pending ? status : '비교할 수 없음');
+    say('deployment-last', pending ? status : '확인할 수 없음');
+    say('deployment-detail', '');
+    if (!pending) say('deployment-announcement', status);
+  }
+  function refreshDeployment(target) {
+    const path = hostApi + '/deployment' + (target ? '/versions/' + target.seq + '/' + target.sha : '');
+    if (deploymentKey === path) return;
+    clearDeployment('확인 중');
+    deploymentKey = path;
+    const sequence = deploymentSequence;
+    const active = () => live() && sequence === deploymentSequence;
+    deploymentRequest = json(path).then(data => {
+      if (!active()) return;
+      checkDeployment(data, target);
+      say('deployment-service', data.service ? data.service +
+        (data.runtime_journal_id ? ' · 런타임 저널 ' + data.runtime_journal_id : '') : '');
+      say('deployment-health', healthLabels[data.health]);
+      get('deployment-health').dataset.tone = ({healthy: 'done', offline: 'error', unverified: 'attention'})[data.health] || '';
+      say('running-version', data.running ? '#' + data.running.seq : '확인된 버전 없음');
+      say('running-sha', data.running?.sha || '');
+      const match = deploymentMatch(data, target);
+      say('deployment-match', match);
+      const last = data.last;
+      say('deployment-last', last ? '#' + last.requested.seq + ' 요청 · ' + attemptLabels[last.state] : '기록 없음');
+      say('deployment-detail', last ? [stamp(last.time), last.previous ? '직전 버전 #' + last.previous.seq : '', last.message]
+        .filter(Boolean).join(' · ') : '');
+      const observation = [hostName, healthLabels[data.health], data.running && '실행 버전 #' + data.running.seq, match,
+        last && '최근 요청 #' + last.requested.seq + ' ' + attemptLabels[last.state]].filter(Boolean);
+      say('deployment-announcement', observation.join('. '));
+    }).catch(() => {
+      if (active()) clearDeployment('배포 상태 조회 실패');
+    });
   }
   const live = () => !disposed && addressHost(win) === hostId;
   async function json(path) {
@@ -236,10 +321,14 @@ export function mountVersions(win) {
     if (!live() || doc.hidden) return;
     const sequence = ++generation;
     const active = () => live() && sequence === generation;
+    clearDeployment('확인 중');
+    let knownHost = false;
     try {
       const {hosts} = await json('/api/hosts');
       if (!active()) return;
       showHosts(hosts);
+      knownHost = true;
+      refreshDeployment(online ? to : null);
       let next = checkPage(await json(prefix + '/page/' + requested), requested);
       if (!active()) return;
       if (next.available && requested && !sameVersion(next.current, page?.current)) {
@@ -254,10 +343,12 @@ export function mountVersions(win) {
       say('page-note', '');
       if (!next.available) {
         unpublished();
+        refreshDeployment(null);
         controls();
         return;
       }
       showPage(next, requested);
+      refreshDeployment(to);
       controls();
       if (page.current) await compare(reuseComparison);
       else { clearComparison(); say('compare-note', '비교할 안정 버전이 없습니다.'); }
@@ -266,6 +357,8 @@ export function mountVersions(win) {
       ++compareSequence;
       if (err.status === 404) unpublished();
       online = false;
+      if (knownHost) refreshDeployment(null);
+      else clearDeployment('호스트 확인 불가');
       controls();
       say('connection', (hostName || '호스트') + ' 조회 실패');
       get('connection').dataset.online = 'false';
@@ -273,6 +366,7 @@ export function mountVersions(win) {
         (page ? ' 이 화면은 마지막으로 받은 기록입니다.' : ' 새로고침으로 다시 확인하세요.'));
       if (!page) say('current-version', '확인할 수 없음');
     } finally {
+      await deploymentRequest;
       if (active() && !doc.hidden) timer = win.setTimeout(() => refresh(offset, true), 6000);
     }
   }
@@ -281,6 +375,7 @@ export function mountVersions(win) {
     manual = true;
     from = options.get(Number(get('from-version').value));
     to = options.get(Number(get('to-version').value));
+    refreshDeployment(to);
     clearComparison();
     compare();
   }
