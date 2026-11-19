@@ -151,9 +151,15 @@ def _running(target, seq, sha, account_sid):
     assert status["health"] == "healthy", status
     receipt = status["actual"]
     assert (receipt["seq"], receipt["sha"]) == (seq, sha)
-    with win32api.OpenProcess(0x1000, False, receipt["pid"]) as process:
-        with win32security.OpenProcessToken(process, win32con.TOKEN_QUERY) as token:
+    process = win32api.OpenProcess(0x1000, False, receipt["pid"])
+    try:
+        token = win32security.OpenProcessToken(process, win32con.TOKEN_QUERY)
+        try:
             sid, _ = win32security.GetTokenInformation(token, win32security.TokenUser)
+        finally:
+            token.Close()
+    finally:
+        process.Close()
     assert win32security.ConvertSidToStringSid(sid) == account_sid != operator_sid()
     connection = HTTPConnection("127.0.0.1", status["port"], timeout=5)
     try:
