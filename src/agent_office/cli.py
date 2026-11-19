@@ -76,7 +76,8 @@ def make_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage=None, defer_final=None, inbox_factory=None):
+def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage=None, defer_final=None,
+                inbox_factory=None, base_revision=None, delegated_questions=()):
     repo = args.repo.expanduser().resolve()
     worktree = plan_worktree(repo, run_id)
     recorder = RunRecorder(store, run_id)
@@ -87,13 +88,14 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
         store.create_run(TaskSpec(task_id, str(repo), args.task, args.developer, args.reviewer, args.max_attempts),
                          run_id, worktree, OwnerInfo(platform.node(), uuid.uuid4().hex))
     try:
-        worktree = create_worktree(repo, planned=worktree)
+        worktree = create_worktree(repo, planned=worktree, **({"revision": base_revision} if base_revision else {}))
         recorder.record(operation_key=f"{run_id}:workspace", event_type="WORKSPACE_READY", payload={"phase": "workspace"})
         adapters = {
             engine: CLIAdapter(engine, timeout=args.timeout)
             for engine in SUPPORTED_ENGINES
         }
-        graph = build_graph(adapters, recorder=recorder, save_stage=save_stage, inbox_factory=inbox_factory)
+        graph = build_graph(adapters, recorder=recorder, save_stage=save_stage, inbox_factory=inbox_factory,
+                            delegated_questions=delegated_questions)
         initial = {
             "task": args.task,
             "workspace": str(worktree.path),

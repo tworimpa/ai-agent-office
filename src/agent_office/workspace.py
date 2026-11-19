@@ -23,7 +23,7 @@ def plan_worktree(repo: Path, run_id: str) -> Worktree:
     return Worktree(repo.parent / f"{short_name}-agent-worktrees" / f"task-{run_id}", f"ao/task-{run_id}")
 
 
-def create_worktree(repo: Path, *, planned: Worktree | None = None) -> Worktree:
+def create_worktree(repo: Path, *, planned: Worktree | None = None, revision: str = "HEAD") -> Worktree:
     repo = repo.expanduser().resolve()
     if not repo.is_dir():
         raise ValueError(f"Repository directory not found: {repo}")
@@ -41,8 +41,11 @@ def create_worktree(repo: Path, *, planned: Worktree | None = None) -> Worktree:
     path = planned.path if planned else repo.parent / f"{short_name}-agent-worktrees" / f"task-{token}"
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    if revision != "HEAD" and not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision):
+        raise ValueError("Expected a pinned Git commit")
+    git = ["git"] if revision == "HEAD" else ["git", "--no-replace-objects"]
     subprocess.run(
-        ["git", "worktree", "add", "-b", branch, str(path), "HEAD"],
+        [*git, "worktree", "add", "-b", branch, str(path), revision],
         cwd=repo, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return Worktree(path=path, branch=branch)

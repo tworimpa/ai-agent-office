@@ -6,14 +6,13 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import threading
 
 if __name__ == "__main__":
     # -I excludes the operator's current directory and untrusted Python paths.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent_office.adapters import AgentResult, CLIAdapter
-from agent_office.studio_process import run_owned_command
+from agent_office.studio_process import run_until_owner_closes
 
 
 def _command(mode):
@@ -50,16 +49,7 @@ def execute_fixture(engine, prompt, *, workspace, allow_edits, timeout=120):
 def _supervise():
     payload = sys.stdin.buffer.readline()
     timeout = json.loads(payload)[-1]
-    owner_closed = threading.Event()
-
-    def watch_owner():
-        try:
-            os.read(sys.stdin.fileno(), 1)
-        finally:
-            owner_closed.set()
-
-    threading.Thread(target=watch_owner, daemon=True).start()
-    succeeded = run_owned_command(_command("worker"), payload, owner_closed, timeout=timeout, output=sys.stdout.buffer)
+    succeeded = run_until_owner_closes(_command("worker"), payload, timeout=timeout)
     return 0 if succeeded else 1
 
 

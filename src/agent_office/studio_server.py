@@ -19,6 +19,7 @@ from .observer import ObserverHandler
 from .store import TaskStore
 from .studio_catalog import StudioCatalog
 from .studio_runner import LocalRunner
+from .away_ledger import return_report, revoke_policy
 from .studio_ssh import RemoteUnavailable, is_peer_route, remote_request
 
 ASSETS = {
@@ -185,8 +186,11 @@ class StudioHandler(ObserverHandler):
         catalog, runner = self.server.catalog, self.server.runner
         route = re.fullmatch(r"/api/runs/([a-f0-9]{32})(/stop)?", path)
         inbox_route = re.fullmatch(r"/api/runs/([a-f0-9]{32})/inbox(?:/([a-f0-9]{32})/decision)?", path)
+        revoke = re.fullmatch(r"/api/runs/([a-f0-9]{32})/delegation/stop", path)
         if not write:
-            if path == "/api/inbox":
+            if path == "/api/return-report":
+                self._reply(200, return_report(self.server.db_path))
+            elif path == "/api/inbox":
                 self._reply(200, {"requests": runner.inbox.pending()})
             elif inbox_route and not inbox_route[2]:
                 self._reply(200, {"requests": runner.inbox.history(inbox_route[1])})
@@ -208,7 +212,7 @@ class StudioHandler(ObserverHandler):
             self._reply(201, {"workspace": catalog.create(data["name"], data["paths"])})
         elif path == "/api/runs":
             required_keys = {"id", "workspace_id", "indices", "task", "allow_edits"}
-            if not required_keys <= data.keys() or data.keys() - required_keys - {"developer_engine", "reviewer_engine", "use_inbox"}:
+            if not required_keys <= data.keys() or data.keys() - required_keys - {"developer_engine", "reviewer_engine", "use_inbox", "delegation"}:
                 raise ValueError("작업 요청의 입력 항목을 확인하세요.")
             run_id = validate_id(data["id"])
             workspace_id = validate_id(data["workspace_id"])
@@ -219,8 +223,10 @@ class StudioHandler(ObserverHandler):
             run = runner.submit(catalog, run_id, workspace_id, data["indices"], task, data["allow_edits"],
                                 developer_engine=data.get("developer_engine", DEFAULT_DEVELOPER),
                                 reviewer_engine=data.get("reviewer_engine", DEFAULT_REVIEWER),
-                                use_inbox=data.get("use_inbox", False))
+                                use_inbox=data.get("use_inbox", False), delegation=data.get("delegation"))
             self._reply(202, {"run": run})
+        elif revoke and not data:
+            self._reply(200, revoke_policy(self.server.db_path, revoke[1]))
         elif inbox_route and inbox_route[2]:
             self._reply(200, {"request": runner.inbox.decide(inbox_route[1], inbox_route[2], data)})
         elif route and route[2] and not data:

@@ -20,6 +20,9 @@ from .ownership import RunGuard, RunBusyError, recover_run
 from .store import TaskStore
 from .studio_diff import changes_in
 from .studio_inbox import Inbox, InboxChannel, expire_requests
+from .away_evidence import DelegationDeferred, git as evidence_git
+from .away_expert import RULES, in_scope, validate_policy
+from .away_ledger import get_policy, get_revision, register_policy
 from .workspace import map_folders, plan_worktree
 
 
@@ -33,12 +36,15 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS studio_runs(
 SUMMARY = """SELECT s.id,s.workspace_id,t.request_snapshot AS task,
     CASE WHEN s.stop_requested AND r.ended_at IS NULL THEN 'STOP_REQUESTED' ELSE r.state END AS state,
     r.outcome,r.task_id,t.workspace,t.branch,t.developer_engine,t.reviewer_engine,r.attempts,r.started_at AS created_at,
-    t.updated_at,s.allow_edits,EXISTS(SELECT 1 FROM studio_interactive_runs i WHERE i.id=s.id) AS use_inbox"""
+    t.updated_at,s.allow_edits,EXISTS(SELECT 1 FROM studio_interactive_runs i WHERE i.id=s.id) AS use_inbox,
+    (SELECT policy_json FROM studio_away_policies p WHERE p.run_id=s.id) AS delegation,
+    (r.ended_at IS NULL AND s.stop_requested=0 AND s.proposed_state IS NULL AND t.current_run_id=s.id AND
+     EXISTS(SELECT 1 FROM studio_away_policies p WHERE p.run_id=s.id AND p.revoked_at IS NULL)) AS delegation_active"""
 SOURCE = """ FROM studio_runs s JOIN runs r ON r.run_id=s.id JOIN tasks t ON t.task_id=r.task_id"""
 DETAIL = ",s.folders,s.developer_output,s.test_output,s.review_output,s.changes,s.diff,s.diagnostic"
 
 
-def _request_digest(parts, developer_engine, reviewer_engine, use_inbox=False):
+def _request_digest(parts, developer_engine, reviewer_engine, use_inbox=False, delegation=None):
     if developer_engine not in SUPPORTED_ENGINES or reviewer_engine not in SUPPORTED_ENGINES:
         raise ValueError("지원하는 개발자·리뷰어 엔진을 선택하세요.")
     # Default-role requests must match the exact digest persisted by Stage 1/2.
@@ -48,6 +54,10 @@ def _request_digest(parts, developer_engine, reviewer_engine, use_inbox=False):
         raise ValueError("요청함 사용 설정을 확인하세요.")
     if use_inbox:
         parts = [*parts, {"use_inbox": True}]
+    if delegation is not None:
+        if not use_inbox:
+            raise ValueError("부재중 위임에는 협업 요청함이 필요합니다.")
+        parts = [*parts, {"delegation": delegation}]
     return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -140,21 +150,22 @@ class LocalRunner:
         return self._detail(store, run_id)
 
     def submit(self, catalog, run_id, workspace_id, indices, task, allow_edits, *,
-               developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER, use_inbox=False):
+               developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER, use_inbox=False, delegation=None):
         # A registered folder's index is stable even if its checkout was moved
         # after the original request succeeded and its HTTP response was lost.
-        digest = _request_digest([workspace_id, indices, task, allow_edits], developer_engine, reviewer_engine, use_inbox)
+        policy = validate_policy(delegation) if delegation is not None else None
+        digest = _request_digest([workspace_id, indices, task, allow_edits], developer_engine, reviewer_engine, use_inbox, policy)
         with self.lock, TaskStore(self.path, existing=True) as store:
             existing = self._previous(store, run_id, digest)
             if existing:
                 return existing
         repo, folders = catalog.select(workspace_id, indices)
         return self.start(run_id, workspace_id, repo, folders, task, allow_edits, request_digest=digest,
-                          developer_engine=developer_engine, reviewer_engine=reviewer_engine, use_inbox=use_inbox)
+                          developer_engine=developer_engine, reviewer_engine=reviewer_engine, use_inbox=use_inbox, delegation=policy)
 
     def start(self, run_id: str, workspace_id: str, repo: Path, folders: list[str],
               task: str, allow_edits: bool, *, request_digest=None,
-              developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER, use_inbox=False):
+              developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER, use_inbox=False, delegation=None):
         validate_id(run_id)
         if not isinstance(task, str) or not task.strip() or len(task.encode("utf-8")) > 8192:
             raise ValueError("Task must be between 1 and 8192 UTF-8 bytes")
@@ -162,8 +173,11 @@ class LocalRunner:
             raise ValueError("Invalid Studio request")
         repo = Path(repo).resolve()
         folder_json = json.dumps(folders, ensure_ascii=False)
+        policy = validate_policy(delegation) if delegation is not None else None
+        if policy and (not use_inbox or not all(in_scope(rule["path"], folders) for rule in policy["rules"])):
+            raise ValueError("요청함을 켜고 선택한 폴더 또는 저장소 루트의 근거 파일을 지정하세요.")
         digest = request_digest or _request_digest([workspace_id, str(repo), folders, task, allow_edits],
-                                                   developer_engine, reviewer_engine, use_inbox)
+                                                   developer_engine, reviewer_engine, use_inbox, policy)
         with self.lock, TaskStore(self.path, existing=True) as store:
             if self.closed:
                 raise OfficeError("RUN_BUSY")
@@ -172,6 +186,12 @@ class LocalRunner:
             if existing:
                 return existing
             map_folders(repo, folders)
+            revision = None
+            if policy:
+                try:
+                    revision = evidence_git(repo, "rev-parse", "--verify", "HEAD^{commit}").decode("ascii").strip()
+                except (DelegationDeferred, UnicodeError):
+                    raise ValueError("위임 근거에 사용할 기준 커밋을 확인할 수 없습니다.") from None
             spec = TaskSpec(uuid.uuid4().hex, str(repo), task, developer_engine, reviewer_engine, 2)
 
             def register(connection):
@@ -181,6 +201,8 @@ class LocalRunner:
                 )
                 if use_inbox:
                     connection.execute("INSERT INTO studio_interactive_runs VALUES (?)", (run_id,))
+                if policy:
+                    register_policy(connection, run_id, policy, revision)
 
             store.create_run(spec, run_id, plan_worktree(repo, run_id),
                              OwnerInfo(platform.node(), uuid.uuid4().hex), register=register)
@@ -209,6 +231,8 @@ class LocalRunner:
         result["folders"] = json.loads(result["folders"])
         result["allow_edits"] = bool(result["allow_edits"])
         result["use_inbox"] = bool(result["use_inbox"])
+        result["delegation"] = json.loads(result["delegation"]) if result["delegation"] else None
+        result["delegation_active"] = bool(result["delegation_active"])
         return result
 
     def detail(self, run_id):
@@ -221,7 +245,9 @@ class LocalRunner:
         with self.lock, TaskStore(self.path, existing=True) as store:
             self._refresh(store)
             rows = store.connection.execute(SUMMARY + SOURCE + " ORDER BY r.started_at DESC LIMIT 200")
-            return [dict(row, allow_edits=bool(row["allow_edits"]), use_inbox=bool(row["use_inbox"])) for row in rows]
+            return [dict(row, allow_edits=bool(row["allow_edits"]), use_inbox=bool(row["use_inbox"]),
+                         delegation=json.loads(row["delegation"]) if row["delegation"] else None,
+                         delegation_active=bool(row["delegation_active"])) for row in rows]
 
     def stop(self, run_id):
         validate_id(run_id)
@@ -281,6 +307,7 @@ def worker(db_path, run_id):
         task = store.get_task(run.task_id)
         row = store.connection.execute("SELECT folders,allow_edits FROM studio_runs WHERE id=?", (run_id,)).fetchone()
         interactive = store.connection.execute("SELECT 1 FROM studio_interactive_runs WHERE id=?", (run_id,)).fetchone()
+        policy = get_policy(db_path, run_id)
         args = SimpleNamespace(repo=Path(task.project), task=raw_task, developer=task.developer_engine,
                                reviewer=task.reviewer_engine, max_attempts=task.max_attempts,
                                timeout=900, test_command=[sys.executable, "-m", "pytest", "-q"],
@@ -299,6 +326,8 @@ def worker(db_path, run_id):
         try:
             execute_run(args, store, run_id, prepared=True, folders=json.loads(row["folders"]),
                         save_stage=save_stage, defer_final=defer_final,
+                        base_revision=get_revision(db_path, run_id),
+                        delegated_questions=tuple(RULES[rule["topic"]] for rule in policy["rules"]) if policy else (),
                         inbox_factory=(lambda role, engine: InboxChannel(db_path, run_id, role, engine)) if interactive else None)
         except (ValueError, OSError, subprocess.SubprocessError, RuntimeError):
             message = {

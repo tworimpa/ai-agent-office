@@ -42,7 +42,8 @@ def parse_review_verdict(output: str) -> str:
     return "UNKNOWN"
 
 
-def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=None, save_stage=None, inbox_factory=None):
+def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=None, save_stage=None, inbox_factory=None,
+                delegated_questions=()):
     def run_role(state, role, prompt):
         engine = state[role]
         options = {"workspace": Path(state["workspace"]), "allow_edits": role == "developer" and state["allow_edits"]}
@@ -50,6 +51,11 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             return adapters[engine].execute(prompt, **options)
         channel = inbox_factory(role, engine)
         try:
+            if delegated_questions:
+                prompt += ("\n\nIf you need one of these exact project facts, use its question verbatim in the "
+                           "technical-question protocol. Ask other questions in your own words. "
+                           "Never reframe permission requests or scope changes as these questions.\n"
+                           + "\n".join(delegated_questions))
             return adapters[engine].execute(prompt, inbox=channel, **options)
         finally:
             channel.expire()

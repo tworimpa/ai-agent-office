@@ -164,6 +164,20 @@ def run_owned_command(argv, payload, stop, *, timeout=None, output=None):
         tree.close()
 
 
+def run_until_owner_closes(argv, payload, *, timeout):
+    """Use inside a dedicated supervisor after reading its single framed command."""
+    owner_closed = threading.Event()
+
+    def watch_owner():
+        try:
+            os.read(sys.stdin.fileno(), 1)
+        finally:
+            owner_closed.set()
+
+    threading.Thread(target=watch_owner, daemon=True).start()
+    return run_owned_command(argv, payload, owner_closed, timeout=timeout, output=sys.stdout.buffer)
+
+
 def supervise(db_path, run_id, payload):
     """EOF signals owner loss or an explicitly persisted stop request."""
     from .models import ACTIVE

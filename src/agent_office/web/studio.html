@@ -69,6 +69,18 @@
               </div>
               <label class="check inbox-option" for="use-inbox"><input id="use-inbox" name="use_inbox" type="checkbox" checked aria-describedby="inbox-help">작업자 요청을 협업 요청함에서 받기</label>
               <small id="inbox-help">작업자의 기술 질문에 직접 답합니다. Codex의 작업 폴더 내 파일 변경과 Cline의 파일 읽기·편집 권한 요청은 한 건씩 승인하거나 거절합니다.</small>
+              <label class="check inbox-option" for="use-delegation"><input id="use-delegation" name="use_delegation" type="checkbox" aria-controls="delegation-fields" aria-describedby="delegation-help">이번 실행의 부재중 기술 답변 위임</label>
+              <small id="delegation-help">선택한 질문과 정확히 일치하면 전문가와 독립 검증자가 별도 세션에서 최대 두 번 호출됩니다. 그 밖의 질문과 권한 요청은 직접 처리합니다.</small>
+              <small id="delegation-availability" role="status"></small>
+              <fieldset id="delegation-fields" class="delegation-fields" hidden disabled>
+                <legend>위임할 질문과 근거 파일</legend>
+                <small>질문을 선택하고 기준 커밋에 있는 파일의 저장소 상대 경로를 입력하세요.</small>
+                <div id="delegation-topics"></div>
+                <div class="role-pickers">
+                  <div><label for="specialist-engine">전문가 엔진</label><select id="specialist-engine" name="specialist_engine" required></select></div>
+                  <div><label for="verifier-engine">독립 검증자 엔진</label><select id="verifier-engine" name="verifier_engine" required></select></div>
+                </div>
+              </fieldset>
             </fieldset>
             <p id="engine-warning" class="notice error" role="status"></p>
             <details class="engine-panel">
@@ -82,7 +94,14 @@
         </div>
       </section>
       <div class="right">
-        <section class="card" aria-labelledby="inbox-title">
+        <section class="card" aria-labelledby="report-title">
+          <div class="card-head"><h2 id="report-title">부재중 복귀 보고</h2><a class="history-link" href="#inbox">대기 요청 처리 ↓</a></div>
+          <p id="report-note" class="empty" role="status">복귀 보고를 불러오는 중입니다.</p>
+          <ul id="delegation-active" class="inbox-list"></ul>
+          <p id="delegation-stop-note" class="inbox-feedback" role="status"></p>
+          <ul id="delegation-decisions" class="inbox-list"></ul>
+        </section>
+        <section id="inbox" class="card" aria-labelledby="inbox-title">
           <div class="card-head"><h2 id="inbox-title">협업 요청함 <span id="inbox-count" class="count">0</span></h2></div>
           <p id="inbox-note" class="empty" role="status">대기 요청을 불러오는 중입니다.</p>
           <ul id="inbox-list" class="inbox-list"></ul>
@@ -105,6 +124,14 @@
               <h3 id="request"></h3>
               <p id="run-engines" class="assignments"></p>
               <p id="run-inbox-mode" class="assignments"></p>
+              <div id="run-delegation" hidden>
+                <h4>이 실행에서 위임한 질문</h4>
+                <p id="run-delegation-roles" class="assignments"></p>
+                <ul id="run-delegation-rules"></ul>
+                <p id="run-delegation-status" class="assignments"></p>
+                <button id="run-delegation-stop" type="button" class="stop" hidden>이 실행의 위임 종료</button>
+                <p id="run-delegation-note" class="notice" role="status"></p>
+              </div>
               <div class="run-meta"><code id="run-id"></code><button type="button" id="stop" class="stop" hidden>실행 중지</button></div>
               <p id="attempts" class="attempts" hidden></p>
               <p id="outcome" class="outcome" hidden></p>

@@ -4,10 +4,13 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 import hashlib
+import json
 from pathlib import Path
 import platform
 import uuid
 
+from . import away_ledger
+from .dialogue import DelegationWithdrawn
 from .events import snapshot_request
 from .models import OfficeError, validate_id
 from .ownership import RunBusyError, RunGuard
@@ -18,6 +21,14 @@ from .store import TaskStore, now
 LIST_LIMIT = 100
 RUN_LIMIT = 100
 POLL_SECONDS = 0.15
+DEFERRED_REASONS = {
+    "evidence_unavailable": "기준 커밋에서 답변을 뒷받침할 근거를 확인하지 못했습니다.",
+    "evidence_ambiguous": "근거 문서에서 하나의 답을 정할 수 없습니다.",
+    "worktree_changed": "작업 트리가 위임 기준 커밋과 일치하지 않습니다.",
+    "verifier_failed": "독립 검증자가 답과 근거를 확인하지 못했습니다.",
+    "specialist_failed": "전문가가 근거 있는 답변을 제출하지 못했습니다.",
+    "out_of_scope": away_ledger.OUT_OF_SCOPE,
+}
 ROLE_STATE = {"developer": "RUNNING", "reviewer": "REVIEWING"}
 PUBLIC = ("id", "run_id", "kind", "status", "role", "engine", "attempt", "prompt", "decision",
           "answer", "created_at", "decided_at", "delivered_at", "expired_at")
@@ -55,8 +66,18 @@ def _action(payload):
     raise ValueError("질문에는 답변을, 권한 요청에는 승인 또는 거절을 선택하세요.")
 
 
-def _public(row):
-    return {key: row[key] for key in PUBLIC}
+def _public(db, row):
+    result = {key: row[key] for key in PUBLIC}
+    check = db.execute("SELECT * FROM studio_away_checks WHERE request_id=?", (row["id"],)).fetchone()
+    result["source"] = "operator" if row["decision"] is not None else None
+    result["delegation_reason"] = check["reason"] if check else None
+    result["delegation_in_progress"] = bool(check and row["status"] == "pending"
+                                            and check["reason"] is None and check["evidence"] is None)
+    if check and check["evidence"] is not None:
+        result["source"] = "delegate"
+        result["delegation_details"] = {key: check[key] for key in ("topic", "specialist_engine", "verifier_engine")}
+        result["delegation_details"]["evidence"] = json.loads(check["evidence"])
+    return result
 
 
 def _run(db, run_id):
@@ -101,45 +122,60 @@ def _holder_alive(path, holder):
         return True
 
 
+def _refresh(db, path, row, run):
+    if row["status"] in ("pending", "decided") and (
+        not _active(run, row["role"], row["engine"]) or row["attempt"] != run["attempts"]
+        or not _holder_alive(path, row["holder"])
+    ):
+        _expire(db, "id=?", (row["id"],))
+        return _request(db, row["run_id"], row["id"])
+    return row
+
+
+def refresh_status(db, path, run_id, request_id):
+    return _refresh(db, path, _request(db, run_id, request_id), _run(db, run_id))["status"]
+
+
+def _live_pending(db, path, limit=None):
+    # Oldest first; expired rows do not consume a slot. A rowid cursor stays
+    # stable as _refresh expires stale rows inside this transaction.
+    last = 0
+    yielded = 0
+    while limit is None or yielded < limit:
+        rows = db.execute("""SELECT q.rowid,q.* FROM studio_requests q JOIN runs r ON r.run_id=q.run_id
+            WHERE q.status='pending' AND r.host_name=? AND q.rowid>? ORDER BY q.rowid LIMIT ?""",
+            (platform.node(), last, LIST_LIMIT if limit is None else limit - yielded)).fetchall()
+        if not rows:
+            return
+        for row in rows:
+            last = row["rowid"]
+            if _refresh(db, path, row, _run(db, row["run_id"]))["status"] == "pending":
+                yielded += 1
+                yield row
+
+
+def live_pending_counts(db, path):
+    counts = {"questions": 0, "permissions": 0}
+    for row in _live_pending(db, path):
+        counts[row["kind"] + "s"] += 1
+    return counts
+
+
 class Inbox:
     def __init__(self, db_path):
         self.path = Path(db_path)
         with TaskStore(self.path, existing=True) as store, store._write():
             store.connection.execute(SCHEMA)
+            away_ledger.ensure_schema(store.connection)
             store.connection.execute("CREATE INDEX IF NOT EXISTS studio_requests_run "
                                      "ON studio_requests(run_id)")
             store.connection.execute("CREATE INDEX IF NOT EXISTS studio_requests_queue "
                                      "ON studio_requests(status)")
 
-    def _refresh(self, db, row, run):
-        if row["status"] in ("pending", "decided") and (
-            not _active(run, row["role"], row["engine"]) or row["attempt"] != run["attempts"]
-            or not _holder_alive(self.path, row["holder"])
-        ):
-            _expire(db, "id=?", (row["id"],))
-            return _request(db, row["run_id"], row["id"])
-        return row
-
     def pending(self):
         with TaskStore(self.path, existing=True) as store, store._write():
-            db = store.connection
-            result = []
-            # Stale rows do not consume a slot. Oldest first means a new run
-            # cannot push a live older request off the list.
-            while len(result) < LIST_LIMIT:
-                rows = db.execute(
-                    "SELECT q.* FROM studio_requests q JOIN runs r ON r.run_id=q.run_id "
-                    "WHERE q.status='pending' AND r.host_name=? "
-                    "ORDER BY q.rowid LIMIT ? OFFSET ?",
-                    (platform.node(), LIST_LIMIT - len(result), len(result)),
-                ).fetchall()
-                if not rows:
-                    break
-                for row in rows:
-                    current = self._refresh(db, row, _run(db, row["run_id"]))
-                    if current["status"] == "pending":
-                        result.append(_public(current))
-            return result
+            return [_public(store.connection, row)
+                    for row in _live_pending(store.connection, self.path, LIST_LIMIT)]
 
     def history(self, run_id):
         with TaskStore(self.path, existing=True) as store, store._write():
@@ -147,24 +183,24 @@ class Inbox:
             run = _run(db, run_id)
             rows = db.execute("SELECT * FROM studio_requests WHERE run_id=? ORDER BY rowid",
                               (run_id,)).fetchall()
-            return [_public(self._refresh(db, row, run)) for row in rows]
+            return [_public(db, _refresh(db, self.path, row, run)) for row in rows]
 
     def decide(self, run_id, request_id, payload):
         action, answer = _action(payload)
         with TaskStore(self.path, existing=True) as store, store._write():
             db = store.connection
             run = _run(db, run_id)
-            row = self._refresh(db, _request(db, run_id, request_id), run)
+            row = _refresh(db, self.path, _request(db, run_id, request_id), run)
             if (row["kind"] == "question") != (action == "answer"):
                 raise ValueError("요청 종류에 맞는 응답을 선택하세요.")
             if row["decision"] is not None:
                 if row["decision"] != action or row["answer"] != answer:
                     raise OfficeError("REQUEST_CONFLICT")
-                return _public(row)
+                return _public(db, row)
             if row["status"] == "pending":
                 db.execute("UPDATE studio_requests SET status='decided',decision=?,answer=?,decided_at=? WHERE id=?",
                            (action, answer, now(), request_id))
-                return _public(_request(db, run_id, request_id))
+                return _public(db, _request(db, run_id, request_id))
         # Commit any expiry detected above before reporting the refusal.
         raise OfficeError("REQUEST_CLOSED")
 
@@ -180,7 +216,10 @@ class InboxChannel:
         self.guard = RunGuard(self.path, self.holder)
         self.session_hash = None
         self.closed = False
-        self.ready_to_send = set()
+        # None means a human decision was already recorded. A tuple is a
+        # private proposal, eligible only at the immediately guarded pipe write.
+        self.ready_to_send = {}
+        self.awaiting_operator = set()
         self.awaiting_receipt = set()
 
     def _bind(self, session_id):
@@ -215,12 +254,102 @@ class InboxChannel:
                            "VALUES (?,?,?,?,?,?,?,?,?,'pending',?)",
                            (request_id, self.run_id, self.role, self.engine, run["attempts"], self.holder,
                             self.session_hash, kind, prompt, now()))
+                plan = (away_ledger.begin_question(db, _request(db, self.run_id, request_id))
+                        if kind == "question" else None)
+            consultation = (asyncio.create_task(self._consult(store, request_id, plan)) if plan else None)
             try:
                 while True:
                     row = self._current(db, request_id)
                     if row["status"] == "decided":
-                        self.ready_to_send.add(request_id)
-                        return _public(row)
+                        self.ready_to_send[request_id] = None
+                        return _public(db, row)
+                    if consultation:
+                        if consultation.done():
+                            proposal = await consultation
+                            consultation = None
+                            if proposal is not None:
+                                current, reason = away_ledger.match_question(db, row)
+                                if current == plan:
+                                    answer, evidence = proposal
+                                    self.ready_to_send[request_id] = (plan, answer, evidence)
+                                    # This is private input for the transport to encode.
+                                    # The journal still shows a pending human-answerable question.
+                                    return dict(_public(db, row), source="delegate", decision="answer",
+                                                answer=answer)
+                                away_ledger.defer(db, request_id, reason or away_ledger.CHANGED)
+                        else:
+                            current, reason = away_ledger.match_question(db, row)
+                            if current != plan:
+                                away_ledger.defer(db, request_id, reason or away_ledger.CHANGED)
+                                consultation.cancel()
+                                await asyncio.gather(consultation, return_exceptions=True)
+                                consultation = None
+                    await asyncio.sleep(POLL_SECONDS)
+            except BaseException:
+                _expire(db, "id=? AND holder=?", (request_id, self.holder))
+                raise
+            finally:
+                if consultation:
+                    consultation.cancel()
+                    await asyncio.gather(consultation, return_exceptions=True)
+
+    async def _consult(self, store, request_id, plan):
+        from .away_consult import run_consultation
+        from .away_evidence import DelegationDeferred
+
+        db = store.connection
+        current, changed_reason = away_ledger.match_question(db, self._current(db, request_id))
+        if current != plan:
+            if changed_reason:
+                away_ledger.defer(db, request_id, changed_reason)
+            return
+        try:
+            result = await run_consultation(plan.repo, plan.revision, plan.rule,
+                                            plan.specialist, plan.verifier, json.loads(plan.folders_json))
+            answer = _text(result["answer"])
+            evidence = result["evidence"]
+            if (evidence["path"] != plan.path or evidence["revision"] != plan.revision
+                    or type(evidence["line"]) is not int or evidence["line"] < 1):
+                raise ValueError("Invalid delegation evidence")
+            evidence = {"path": plan.path, "revision": plan.revision, "line": evidence["line"],
+                        "quote": _text(evidence["quote"])}
+        except DelegationDeferred as exc:
+            reason = DEFERRED_REASONS.get(exc.reason, away_ledger.FAILED)
+        except Exception:
+            # An unavailable or malformed provider result must leave the human
+            # question usable. Never expose raw CLI output in the decision journal.
+            reason = away_ledger.FAILED
+        else:
+            reason = None
+        with store._write():
+            row = self._current(db, request_id)
+            if row["status"] != "pending":
+                return
+            current, changed_reason = away_ledger.match_question(db, row)
+            if current != plan:
+                reason = changed_reason or away_ledger.CHANGED
+            if reason:
+                away_ledger.defer(db, request_id, reason)
+            else:
+                return answer, evidence
+
+    async def await_operator(self, request_id):
+        """Resume waiting on the same live question after its private proposal was withdrawn."""
+        if request_id not in self.awaiting_operator:
+            raise OfficeError("REQUEST_CLOSED")
+        self.awaiting_operator.remove(request_id)
+        with TaskStore(self.path, existing=True) as store:
+            db = store.connection
+            try:
+                while True:
+                    row = self._current(db, request_id)
+                    if row["kind"] != "question":
+                        raise OfficeError("REQUEST_CLOSED")
+                    if row["status"] == "decided":
+                        if row["decision"] != "answer":
+                            raise OfficeError("REQUEST_CLOSED")
+                        self.ready_to_send[request_id] = None
+                        return _public(db, row)
                     await asyncio.sleep(POLL_SECONDS)
             except BaseException:
                 _expire(db, "id=? AND holder=?", (request_id, self.holder))
@@ -229,7 +358,9 @@ class InboxChannel:
     def _current(self, db, request_id):
         row = _request(db, self.run_id, request_id)
         run = _run(db, self.run_id)
-        if (self.closed or row["holder"] != self.holder or row["session_hash"] != self.session_hash
+        if (self.closed or self.guard.fd is None or row["holder"] != self.holder
+                or row["session_hash"] != self.session_hash
+                or row["role"] != self.role or row["engine"] != self.engine
                 or row["status"] not in ("pending", "decided") or row["attempt"] != run["attempts"]
                 or not _active(run, self.role, self.engine)):
             raise OfficeError("REQUEST_CLOSED")
@@ -237,13 +368,41 @@ class InboxChannel:
 
     @contextmanager
     def sending(self, request_id):
-        """Order the single synchronous pipe write against stop. Never await inside."""
+        """Order one transport write with human decisions, revocation and run stop."""
         if request_id not in self.ready_to_send:
             raise OfficeError("REQUEST_CLOSED")
-        self.ready_to_send.remove(request_id)
+        proposal = self.ready_to_send.pop(request_id)
+        withdrawn = False
+        send_error = None
         with TaskStore(self.path, existing=True) as store, store._write():
-            self._current(store.connection, request_id)
-            yield
+            db = store.connection
+            row = self._current(db, request_id)
+            if proposal is not None:
+                if row["kind"] != "question":
+                    raise OfficeError("REQUEST_CLOSED")
+                plan, answer, evidence = proposal
+                current, reason = away_ledger.match_question(db, row)
+                if current != plan:
+                    withdrawn = True
+                    if row["status"] == "pending":
+                        away_ledger.defer(db, request_id, reason or away_ledger.CHANGED)
+                else:
+                    away_ledger.record_answer(db, request_id, plan, answer, evidence)
+            elif row["status"] != "decided":
+                raise OfficeError("REQUEST_CLOSED")
+            if not withdrawn:
+                try:
+                    yield
+                except BaseException as exc:
+                    # The transport might already have accepted bytes. Preserve
+                    # the decision, expire it, and do not authorize a replay.
+                    _expire(db, "id=? AND holder=?", (request_id, self.holder))
+                    send_error = exc
+        if withdrawn:
+            self.awaiting_operator.add(request_id)
+            raise DelegationWithdrawn()
+        if send_error is not None:
+            raise send_error
         self.awaiting_receipt.add(request_id)
 
     def delivered(self, request_id):

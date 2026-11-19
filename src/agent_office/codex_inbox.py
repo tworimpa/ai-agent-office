@@ -12,6 +12,7 @@ from .adapters import AgentResult
 from .dialogue import (FINAL_MARKER, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, QUESTION_MARKER,
                        continuation_prompt, extract_question)
 from .events import snapshot_request
+from .dialogue import DelegationWithdrawn
 from .models import OfficeError
 
 
@@ -142,9 +143,12 @@ class CodexSession:
         return _object(msg.get("result"))
 
     async def ask(self, kind, prompt):
+        return await self.wait_decision(self.inbox.ask(kind, prompt, self.thread))
+
+    async def wait_decision(self, awaitable):
         # Reject withdrawal, patch mutation, server exit or turn completion
         # while the browser is open. No new turn may inherit an old request.
-        answer = asyncio.create_task(self.inbox.ask(kind, prompt, self.thread))
+        answer = asyncio.create_task(awaitable)
         invalidation = asyncio.create_task(self.event())
         try:
             await asyncio.wait((answer, invalidation), return_when=asyncio.FIRST_COMPLETED)
@@ -347,7 +351,12 @@ class CodexSession:
                    + FINAL_MARKER + ".")
         decision = None
         for index in range(MAX_QUESTIONS + 1):
-            response = await self.rpc("turn/start", {"threadId": self.thread, "input": [{"type": "text", "text": prompt}]}, decision)
+            try:
+                response = await self.rpc("turn/start", {"threadId": self.thread, "input": [{"type": "text", "text": prompt}]}, decision)
+            except DelegationWithdrawn:
+                row = await self.wait_decision(self.inbox.await_operator(decision))
+                response = await self.rpc("turn/start", {"threadId": self.thread,
+                                          "input": [{"type": "text", "text": continuation_prompt(row["answer"])}]}, decision)
             turn = _object(response.get("turn"))
             self.turn = _identifier(turn.get("id"))
             if self.turn in self.turn_ids or turn.get("status") != "inProgress":
@@ -372,7 +381,7 @@ class CodexSession:
             row = await self.ask("question", question)
             if row.get("decision") != "answer" or not isinstance(row.get("answer"), str) or not row["answer"].strip():
                 raise ProtocolError("invalid Codex clarification")
-            prompt, decision = continuation_prompt(row["answer"]), row["id"]
+            prompt, decision = continuation_prompt(row["answer"], source=row.get("source")), row["id"]
 
 
 async def _run(executable, prompt, workspace, edits, env, timeout, inbox):

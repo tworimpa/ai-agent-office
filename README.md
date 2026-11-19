@@ -2,7 +2,7 @@
 
 Local-first orchestration of coding agent CLIs with a browser-based local studio, persistent task history and a separate read-only observer.
 
-The selected local or SSH-connected host owns its folders, processes, requests and decision journal. The collaboration inbox supports operator answers and one-time decisions. Unattended delegation and self-updating are planned features.
+The selected local or SSH-connected host owns its folders, processes, requests and decision journal. The collaboration inbox supports operator decisions and opt-in, evidence-checked answers to selected technical questions.
 
 ## 로컬 작업실 시작
 
@@ -68,7 +68,7 @@ agent-office --db ../remote-office/tasks.sqlite3 verify-engine gemini read
 
 실행 상세의 요청 이력에서 **결정 접수**와 **작업자에게 전달됨**을 확인할 수 있습니다. 연결이 끊기면 원래 호스트·실행 주소로 돌아옵니다. 이미 저장된 결정은 유지되고 같은 요청에 다른 결정을 보내면 충돌로 표시됩니다. 중지·시간 초과·작업자 종료 후에는 남은 요청이 만료됩니다. 결정 시각이 있고 전달 시각이 없는 만료 기록은 작업자가 결정을 받았는지 확인할 수 없는 경우입니다.
 
-질문을 받은 동안에도 실행 제한 시간은 흐릅니다. 기본 작업자 호출은 900초이며 기술 질문은 호출당 최대 8회입니다. 요청·답변은 각각 UTF-8 8,192바이트까지 원문으로 기록합니다. 사전 위임과 부재중 자동 응답은 후속 범위입니다.
+질문을 받은 동안에도 실행 제한 시간은 흐릅니다. 기본 작업자 호출은 900초이며 기술 질문은 호출당 최대 8회입니다. 요청·답변은 각각 UTF-8 8,192바이트까지 원문으로 기록합니다.
 
 | 엔진 | 기술 질문 처리 | 사용자에게 전달할 수 있는 권한 요청 |
 | --- | --- | --- |
@@ -78,6 +78,24 @@ agent-office --db ../remote-office/tasks.sqlite3 verify-engine gemini read
 | Claude Code · Antigravity | 완료된 질문 턴의 대화 UUID를 지정해 같은 작업 폴더에서 재개 | 현재 배치 연결은 기술 답변을 전달 |
 
 요청함에는 제공자가 실제로 승인을 요구한 작업이 나타납니다. 예를 들어 Codex가 호스트 정책에 따라 작업 폴더 안의 편집을 이미 허용하면 그 편집은 바로 진행됩니다. 요청함은 신뢰하는 개인용 호스트와 기존 SSH 연결을 사용합니다. 운영체제·제공자의 접근 제한과 작업자의 배포·푸시·머지 제한은 계속 적용됩니다. [구현 계획](docs/superpowers/plans/2026-11-19-studio-inbox.md)
+
+## 부재중 기술 답변과 복귀 보고
+
+작업을 시작하기 전에 **이번 실행의 부재중 기술 답변 위임**을 켜고, 대신 답해도 되는 질문과 그 근거 파일을 선택합니다. 기본값은 꺼짐입니다. 위임은 선택한 호스트의 그 실행에만 적용됩니다.
+
+| 위임할 질문 | 지정할 수 있는 근거 |
+| --- | --- |
+| 이 프로젝트의 테스트 명령은 무엇인가요? | `AGENTS.md` 또는 `README.md`에 명시된 단일 테스트 명령. 예를 들어 ‘테스트’ 절의 `python -m pytest -q` |
+| 이 프로젝트가 요구하는 Python 버전은 무엇인가요? | `pyproject.toml`의 `[project]` 아래 `requires-python` |
+| 이 프로젝트가 요구하는 Node.js 버전은 무엇인가요? | `package.json`의 `engines.node` |
+
+근거 경로는 저장소 루트 기준입니다. 루트의 공통 지침·설정 파일 또는 선택한 폴더 안의 파일을 지정할 수 있습니다. 실행 접수 시점의 커밋을 고정하므로, 검증 결과에서 당시 파일과 인용 위치를 다시 찾을 수 있습니다.
+
+테스트 명령은 `## Tests`나 `## 테스트` 절에 한 줄로 적을 수 있습니다. 문서의 첫 제목에 저장소 이름을 넣어도 됩니다. 예를 들어 `ai-agent-office` 저장소는 `# AI Agent Office`를 인식합니다. 선택한 하위 폴더에 둔 문서는 그 폴더 이름도 첫 제목으로 사용할 수 있습니다. 예전 버전이나 특정 환경에서만 쓰는 명령은 사람이 확인합니다.
+
+위임된 질문 문구가 그대로 들어오면 전문가가 근거에 따라 답하고, 별도 세션의 검증자가 전문가의 답을 보지 않고 같은 자료를 확인합니다. 두 역할에 같은 엔진을 지정해도 세션은 분리됩니다. 해당 호스트의 CLI 계정을 사용하며 질문 한 건에 최대 두 번의 추가 제공자 호출이 발생할 수 있습니다. 답과 인용이 일치하면 대리 답변을 원래 작업자에게 전달합니다. 다른 질문, 모호한 근거, 검증 실패는 사람이 처리할 질문으로 남습니다. **권한 요청은 항상 기존 사용자 요청함에서 처리합니다.**
+
+돌아오면 **부재중 복귀 보고**에서 대리 답변과 남은 질문·권한 요청 수를 확인합니다. 결정마다 질문, 답, 전문가·검증자, 근거 파일·행·커밋, 전달 상태와 원래 실행을 볼 수 있습니다. 보고에는 최근 40건을 표시하고, 이전 결정의 근거는 각 실행 상세에 보관합니다. **이 실행의 위임 종료**를 누르면 원래 작업은 계속되며 아직 전송되지 않은 대리 답변은 같은 요청에서 사람의 답을 기다립니다. [구현 계획과 검증 기준](docs/superpowers/plans/2026-11-19-away-delegation.md)
 
 ## Architecture
 
