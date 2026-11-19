@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import sqlite3
 import subprocess
 import sys
 from uuid import uuid4
@@ -257,6 +258,29 @@ def test_room_history_pages_keep_workspace_scope(tmp_path, monkeypatch):
             all_ids.extend(row["id"] for row in page["runs"])
             cursor = page["next_cursor"]
         assert all_ids == list(reversed(ids))
+
+
+def test_room_records_codex_start_failure_without_provider_message(tmp_path, monkeypatch):
+    from contextlib import closing
+
+    workers(tmp_path, monkeypatch)
+    install_mock_codex(tmp_path / "mock cli", monkeypatch, "rpc-rejected")
+    web, contracts = project(tmp_path)
+    db = tmp_path / "tasks.db"
+    with studio(db) as local:
+        monkeypatch.setattr(local.engines, "snapshot", lambda: engine_snapshot("codex", "antigravity"))
+        workspace = register(local, (web, contracts))
+        run_id = uuid4().hex
+        status, data = request(local, f"/api/rooms/{workspace}/assignments",
+                               {"id": run_id, "message": "원래 작업", "allow_edits": True, "delegation": None})
+        assert status == 202, data
+        run = wait_for(local, run_id, {"FAILED"})
+        expected = "Codex app-server [thread/start] protocol: RPC rejected (code=-32602)."
+        assert run["developer_output"] == expected
+        assert request(local, f"/api/runs/{run_id}/inbox") == (200, {"requests": []})
+    with closing(sqlite3.connect(db)) as journal:
+        saved = journal.execute("SELECT developer_output FROM studio_runs WHERE id=?", (run_id,)).fetchone()
+        assert saved == (expected,)
 
 
 @pytest.mark.parametrize("remote", [False, True])

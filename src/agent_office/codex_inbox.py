@@ -28,16 +28,80 @@ INFORMATIONAL = {
     "model/rerouted", "model/verification", "model/safetyBuffering/updated",
 }
 
+_DIAGNOSTIC_NOTIFICATIONS = {
+    "account/updated", "account/login/completed", "account/gatewayOAuth/changed",
+    "app/list/updated", "error", "guardianWarning", "skills/changed", "project/changed",
+    "thread/started", "thread/name/updated", "thread/settings/updated", "turn/started",
+    "thread/environment/connected", "thread/environment/disconnected",
+    "modelProvider/authRecoveryStarted", "modelProvider/authRecoveryCompleted",
+    "windows/worldWritableWarning", "windowsSandbox/setupCompleted",
+}
+_PROVIDER_ERROR_TYPES = {
+    "badRequest", "contextWindowExceeded", "httpConnectionFailed", "httpRequestFailed",
+    "internalServerError", "modelNotFound", "rateLimitExceeded", "sandboxError", "serverOverloaded",
+    "sessionBudgetExceeded", "unauthorized", "usageLimitExceeded",
+    "responseStreamDisconnected", "responseTooManyFailedAttempts",
+}
+
+
+class _CodexProtocolError(ProtocolError):
+    """Construct only with fixed text and bounded, recognized metadata."""
+
+
+def _notification_failure(record):
+    method = record["method"]
+    name = method if method in _DIAGNOSTIC_NOTIFICATIONS or method in INFORMATIONAL else "unrecognized"
+    kind = "server request" if "id" in record else "notification"
+    return _CodexProtocolError(f"unexpected {kind} ({name})")
+
+
+def _rpc_failure(error):
+    code = error.get("code") if isinstance(error, dict) else None
+    suffix = f" (code={code})" if type(code) is int and -2**31 <= code < 2**31 else ""
+    return _CodexProtocolError("RPC rejected" + suffix)
+
+
+def _provider_failure(error):
+    info = error.get("codexErrorInfo") if isinstance(error, dict) else None
+    if isinstance(info, dict) and len(info) == 1:
+        info = next(iter(info))
+    suffix = f" ({info})" if isinstance(info, str) and info in _PROVIDER_ERROR_TYPES else ""
+    return _CodexProtocolError("provider turn failed" + suffix)
+
+
+def _failure_result(phase, exc):
+    code = 1
+    category = "protocol"
+    if isinstance(exc, TimeoutError):
+        reason, code, category = "deadline exceeded", 124, "timeout"
+    elif isinstance(exc, OfficeError):
+        reason, code, category = "Studio request closed", 124, "request"
+    elif isinstance(exc, _CodexProtocolError):
+        reason = str(exc)
+    elif isinstance(exc, json.JSONDecodeError):
+        reason = "invalid JSON record"
+    elif isinstance(exc, UnicodeError):
+        reason = "invalid text encoding"
+    elif isinstance(exc, OSError):
+        category = "I/O"
+        winerror = getattr(exc, "winerror", None)
+        number = winerror if type(winerror) is int else exc.errno
+        suffix = f" (code={number})" if type(number) is int and 0 <= number < 2**32 else ""
+        reason = "operating system error" + suffix
+    else:
+        reason = "invalid protocol data"
+    return AgentResult(code, f"Codex app-server [{phase}] {category}: {reason}.")
+
 
 def _identifier(value):
     if not isinstance(value, str) or not value.strip() or len(value) > 256:
-        raise ProtocolError("missing Codex protocol ID")
+        raise _CodexProtocolError("missing Codex protocol ID")
     return value
 
 
 def _object(value):
     if not isinstance(value, dict):
-        raise ProtocolError("invalid Codex protocol object")
+        raise _CodexProtocolError("invalid Codex protocol object")
     return value
 
 
@@ -84,6 +148,7 @@ class CodexSession:
         self.client_id = 0
         self.server_ids = set()
         self.turn_ids = set()
+        self.phase = "initialize"
 
     async def send(self, message, decision=None, *, direction=None):
         data = (json.dumps(message, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
@@ -93,26 +158,26 @@ class CodexSession:
     async def read(self, *, allow_eof=False):
         self.records += 1
         if self.records > 50_000:
-            raise ProtocolError("Codex record limit exceeded")
+            raise _CodexProtocolError("Codex record limit exceeded")
         line = await self.process.stdout.readline()
         if not line:
             if allow_eof:
                 return None
-            raise ProtocolError("Codex disconnected")
+            raise _CodexProtocolError("Codex disconnected")
         self.last_size = len(line)
         msg = _object(json.loads(line, object_pairs_hook=_unique_fields))
         if "method" in msg:
             _object(msg.get("params"))
             if not isinstance(msg["method"], str) or "result" in msg or "error" in msg:
-                raise ProtocolError("invalid Codex event")
+                raise _CodexProtocolError("invalid Codex event")
         return msg
 
     def check_binding(self, msg):
         params = msg["params"]
         if "threadId" in params and params["threadId"] != self.thread:
-            raise ProtocolError("wrong Codex thread")
+            raise _CodexProtocolError("wrong Codex thread")
         if "turnId" in params and params["turnId"] != self.turn:
-            raise ProtocolError("wrong Codex turn")
+            raise _CodexProtocolError("wrong Codex turn")
 
     async def event(self):
         while True:
@@ -124,6 +189,7 @@ class CodexSession:
                 return msg
 
     async def rpc(self, method, params, decision=None, *, direction=None):
+        self.phase = method
         self.client_id += 1
         await self.send({"method": method, "params": params, "id": self.client_id}, decision, direction=direction)
         if method == "turn/start":
@@ -134,14 +200,17 @@ class CodexSession:
             while "method" in msg:
                 size += self.last_size
                 if len(self.early) >= 128 or size > 1024 * 1024:
-                    raise ProtocolError("too many unbound Codex events")
+                    raise _CodexProtocolError("too many unbound Codex events")
                 self.early.append((msg, self.last_size))
                 msg = await self.read()
         else:
             msg = await self.event()
-        if ("method" in msg or type(msg.get("id")) is not int or msg["id"] != self.client_id
-                or "error" in msg):
-            raise ProtocolError("Codex request was not acknowledged")
+        if "method" in msg:
+            raise _notification_failure(msg)
+        if type(msg.get("id")) is not int or msg["id"] != self.client_id:
+            raise _CodexProtocolError("RPC response ID did not match the request")
+        if "error" in msg:
+            raise _rpc_failure(msg["error"])
         return _object(msg.get("result"))
 
     async def ask(self, kind, prompt):
@@ -150,34 +219,40 @@ class CodexSession:
     async def wait_decision(self, awaitable):
         # Reject withdrawal, patch mutation, server exit or turn completion
         # while the browser is open. No new turn may inherit an old request.
+        previous_phase, self.phase = self.phase, "operator decision"
         answer = asyncio.create_task(awaitable)
         invalidation = asyncio.create_task(self.event())
         try:
             await asyncio.wait((answer, invalidation), return_when=asyncio.FIRST_COMPLETED)
             if invalidation.done():
                 invalidation.result()
-                raise ProtocolError("Codex changed state while waiting for the operator")
-            return answer.result()
+                raise _CodexProtocolError("Codex changed state while waiting for the operator")
+            result = answer.result()
         finally:
             for task in (answer, invalidation):
                 task.cancel()
             await asyncio.gather(answer, invalidation, return_exceptions=True)
+        self.phase = previous_phase
+        return result
 
     def check_sandbox(self, response):
         sandbox = _object(response.get("sandbox"))
-        if (response.get("approvalsReviewer") != "user" or response.get("approvalPolicy") != "on-request"
-                or not isinstance(response.get("cwd"), str) or Path(response["cwd"]).resolve() != self.workspace
-                or sandbox.get("type") != ("workspaceWrite" if self.edits else "readOnly")
+        if response.get("approvalsReviewer") != "user" or response.get("approvalPolicy") != "on-request":
+            raise _CodexProtocolError("requested human reviewer or approval policy not confirmed")
+        if not isinstance(response.get("cwd"), str) or Path(response["cwd"]).resolve() != self.workspace:
+            raise _CodexProtocolError("requested working directory not confirmed")
+        if (sandbox.get("type") != ("workspaceWrite" if self.edits else "readOnly")
                 or sandbox.get("networkAccess", False) is not False):
-            raise ProtocolError("Codex did not confirm the requested sandbox and human reviewer")
+            raise _CodexProtocolError("requested sandbox mode not confirmed")
         if self.edits:
             roots = sandbox.get("writableRoots", [])
             if (not isinstance(roots, list) or any(not isinstance(p, str) or not Path(p).is_absolute()
                                                    or not Path(p).resolve().is_relative_to(self.workspace) for p in roots)
                     or sandbox.get("excludeSlashTmp") is not True or sandbox.get("excludeTmpdirEnvVar") is not True):
-                raise ProtocolError("Codex advertised writable locations outside the worktree")
+                raise _CodexProtocolError("Codex advertised writable locations outside the worktree")
 
     async def finish(self):
+        self.phase = "shutdown"
         self.process.stdin.close()
         total = 0
         for _ in range(128):
@@ -188,16 +263,16 @@ class CodexSession:
                 size = self.last_size
             if msg is None:
                 if await self.process.wait() != 0:
-                    raise ProtocolError("Codex exited unsuccessfully")
+                    raise _CodexProtocolError("Codex exited unsuccessfully")
                 return
             total += size
             if ("id" in msg or "method" not in msg or total > 1024 * 1024
                     or msg["method"] not in INFORMATIONAL | {"thread/closed"}):
-                raise ProtocolError("unexpected Codex shutdown record")
+                raise _CodexProtocolError("unexpected Codex shutdown record")
             self.check_binding(msg)
             if msg["method"] == "thread/closed" and msg["params"].get("threadId") != self.thread:
-                raise ProtocolError("wrong Codex shutdown thread")
-        raise ProtocolError("Codex shutdown record limit exceeded")
+                raise _CodexProtocolError("wrong Codex shutdown thread")
+        raise _CodexProtocolError("Codex shutdown record limit exceeded")
 
     async def start(self):
         # Start confirmations come from the response. Opt out of the redundant
@@ -218,14 +293,14 @@ class CodexSession:
     async def permission(self, msg, active, files, receipts, denied_commands):
         method, params, rpc_id = msg["method"], msg["params"], msg["id"]
         if type(rpc_id) not in (int, str) or rpc_id in self.server_ids:
-            raise ProtocolError("invalid or reused Codex server request ID")
+            raise _CodexProtocolError("invalid or reused Codex server request ID")
         self.server_ids.add(rpc_id)
         if params.get("threadId") != self.thread or params.get("turnId") != self.turn:
-            raise ProtocolError("unbound Codex server request")
+            raise _CodexProtocolError("unbound Codex server request")
         if method == "item/commandExecution/requestApproval":
             item_id = _identifier(params.get("itemId"))
             if active.get(item_id) != "commandExecution":
-                raise ProtocolError("Codex command approval has no open command")
+                raise _CodexProtocolError("Codex command approval has no open command")
             denied_commands.add(item_id)
             result = {"decision": "decline"}
         elif method == "item/permissions/requestApproval":
@@ -240,7 +315,7 @@ class CodexSession:
             item_id = _identifier(params.get("itemId"))
             file = files.get(item_id)
             if file is None or file["action"] is not None:
-                raise ProtocolError("Codex patch approval has no unique open item")
+                raise _CodexProtocolError("Codex patch approval has no unique open item")
             reason = params.get("reason")
             can_offer = (self.edits and params.get("grantRoot") is None
                          and set(params) <= {"threadId", "turnId", "itemId", "reason", "grantRoot", "startedAtMs"}
@@ -252,9 +327,9 @@ class CodexSession:
                 preview = json.dumps(details, ensure_ascii=False, indent=2)
                 row = await self.ask("permission", preview)
                 if row.get("decision") not in ("approve", "reject"):
-                    raise ProtocolError("invalid Codex patch decision")
+                    raise _CodexProtocolError("invalid Codex patch decision")
                 if not _changes(self.workspace, file["changes"]):
-                    raise ProtocolError("Codex patch target changed while awaiting approval")
+                    raise _CodexProtocolError("Codex patch target changed while awaiting approval")
                 action = "accept" if row["decision"] == "approve" else "decline"
                 decision_id = row["id"]
             file.update(action=action, decision=decision_id, resolved=False)
@@ -262,40 +337,49 @@ class CodexSession:
             await self.send({"id": rpc_id, "result": {"decision": action}}, decision_id)
             return
         else:
-            raise ProtocolError("unsupported Codex server request")
+            raise _CodexProtocolError("unsupported Codex server request")
         receipts[rpc_id] = None
         await self.send({"id": rpc_id, "result": result})
 
     async def complete_turn(self):
+        self.phase = "turn/completed"
         files, receipts, active, finished = {}, {}, {}, set()
         denied_commands = set()
         answer = None
         while True:
             msg = await self.event()
             if "method" not in msg:
-                raise ProtocolError("unexpected Codex response")
+                raise _CodexProtocolError("unexpected Codex response")
             method, params = msg["method"], msg["params"]
             if "id" in msg:
                 await self.permission(msg, active, files, receipts, denied_commands)
                 continue
             if params.get("threadId") != self.thread:
-                raise ProtocolError("unbound Codex notification")
+                if "threadId" not in params:
+                    raise _notification_failure(msg)
+                raise _CodexProtocolError("unbound Codex notification")
+            if method == "error":
+                raise _provider_failure(params.get("error"))
             if method == "serverRequest/resolved":
                 key = params.get("requestId")
                 if type(key) not in (int, str) or key not in receipts:
-                    raise ProtocolError("unknown Codex request receipt")
+                    raise _CodexProtocolError("unknown Codex request receipt")
                 item_id = receipts.pop(key)
                 if item_id is not None:
                     files[item_id]["resolved"] = True
                 continue
             if method == "turn/completed":
                 turn = _object(params.get("turn"))
+                if turn.get("id") == self.turn and turn.get("status") == "failed":
+                    raise _provider_failure(turn.get("error"))
                 if (turn.get("id") != self.turn or turn.get("status") != "completed"
                         or turn.get("error") is not None or receipts or files or active or not answer):
-                    raise ProtocolError("Codex did not complete the expected turn")
+                    raise _CodexProtocolError("Codex did not complete the expected turn")
                 return answer
+            if method not in ("item/started", "item/completed", "item/fileChange/patchUpdated"):
+                raise _notification_failure(msg)
             if params.get("turnId") != self.turn:
-                raise ProtocolError("unbound Codex item")
+                raise _CodexProtocolError("unbound Codex item")
             if method == "item/fileChange/patchUpdated":
                 item_id = _identifier(params.get("itemId"))
                 if item_id not in active and item_id not in finished:
@@ -304,48 +388,46 @@ class CodexSession:
                     continue
                 file = files.get(item_id)
                 if file is None or params.get("changes") != file["changes"]:
-                    raise ProtocolError("Codex changed the authoritative patch")
+                    raise _CodexProtocolError("Codex changed the authoritative patch")
                 continue
-            if method not in ("item/started", "item/completed"):
-                raise ProtocolError("unexpected Codex turn event")
             item = _object(params.get("item"))
             item_id, kind = _identifier(item.get("id")), _identifier(item.get("type"))
             if method == "item/started":
                 if item_id in active or item_id in finished or answer:
-                    raise ProtocolError("unexpected Codex item start")
+                    raise _CodexProtocolError("unexpected Codex item start")
                 active[item_id] = kind
                 if kind == "fileChange":
                     if item.get("status") != "inProgress":
-                        raise ProtocolError("invalid pending Codex file change")
+                        raise _CodexProtocolError("invalid pending Codex file change")
                     files[item_id] = {"changes": item.get("changes"), "action": None}
                 continue
             if active.pop(item_id, None) != kind:
-                raise ProtocolError("unexpected Codex item completion")
+                raise _CodexProtocolError("unexpected Codex item completion")
             finished.add(item_id)
             if item_id in denied_commands and item.get("status") != "declined":
-                raise ProtocolError("Codex did not confirm command refusal")
+                raise _CodexProtocolError("Codex did not confirm command refusal")
             if kind == "fileChange":
                 file = files.pop(item_id)
                 status = item.get("status")
                 if status not in ("completed", "declined") or not self.edits and status == "completed":
-                    raise ProtocolError("Codex file change did not complete in the permitted mode")
+                    raise _CodexProtocolError("Codex file change did not complete in the permitted mode")
                 if file["action"] is not None:
                     if (not file["resolved"] or (file["action"] == "accept") != (status == "completed")
                             or file["changes"] != item.get("changes")):
-                        raise ProtocolError("Codex did not confirm the exact patch decision")
+                        raise _CodexProtocolError("Codex did not confirm the exact patch decision")
                     if file["decision"]:
                         self.inbox.delivered(file["decision"])
             elif (kind == "agentMessage" and item.get("delivery") != "async"
                   and item.get("phase") in (None, "final_answer")):
                 value = item.get("text")
                 if not isinstance(value, str) or not value.strip() or item.get("delivery") or item.get("questions"):
-                    raise ProtocolError("invalid Codex final message")
+                    raise _CodexProtocolError("invalid Codex final message")
                 # A phase-less completed item requires our explicit turn marker.
                 lines = value.rstrip().splitlines()
                 if (item.get("phase") == "final_answer" or lines[0] in (QUESTION_MARKER, PRODUCT_DECISION_MARKER)
                         or lines[-1] == FINAL_MARKER):
                     if answer is not None:
-                        raise ProtocolError("multiple final Codex messages")
+                        raise _CodexProtocolError("multiple final Codex messages")
                     answer = value
 
     async def run(self, prompt):
@@ -366,7 +448,7 @@ class CodexSession:
             turn = _object(response.get("turn"))
             self.turn = _identifier(turn.get("id"))
             if self.turn in self.turn_ids or turn.get("status") != "inProgress":
-                raise ProtocolError("Codex did not start a distinct active turn")
+                raise _CodexProtocolError("Codex did not start a distinct active turn")
             self.turn_ids.add(self.turn)
             for early, _ in self.early:
                 self.check_binding(early)
@@ -378,12 +460,12 @@ class CodexSession:
             request = extract_request(message)
             if request is not None:
                 if questions == MAX_QUESTIONS:
-                    raise ProtocolError("Codex question limit reached")
+                    raise _CodexProtocolError("Codex question limit reached")
                 questions += 1
                 kind, question = request
                 row = await self.ask(kind, question)
                 if row.get("decision") != "answer" or not isinstance(row.get("answer"), str) or not row["answer"].strip():
-                    raise ProtocolError("invalid Codex clarification")
+                    raise _CodexProtocolError("invalid Codex clarification")
                 decision, direction = row["id"], None
                 prompt = continuation_prompt(row["answer"], source=row.get("source"), kind=kind)
                 continue
@@ -392,7 +474,8 @@ class CodexSession:
                 lines.pop()
             final = "\n".join(lines).rstrip()
             if not final or FINAL_MARKER in lines:
-                raise ProtocolError("invalid final Codex answer")
+                raise _CodexProtocolError("invalid final Codex answer")
+            self.phase = "direction handoff"
             direction = self.directions.next(available=not self.early) if self.directions is not None else None
             if direction is None:
                 return AgentResult(0, final[:12000], self.thread, len(final) > 12000)
@@ -402,24 +485,23 @@ class CodexSession:
 
 async def _run(executable, prompt, workspace, edits, env, timeout, inbox):
     deadline = asyncio.get_running_loop().time() + timeout
-    async with asyncio.timeout_at(deadline):
-        process = await asyncio.create_subprocess_exec(
-            executable, "app-server", "--listen", "stdio://", cwd=workspace, env=env,
-            start_new_session=os.name != "nt", stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=1024 * 1024)
-        try:
-            session = CodexSession(process, workspace.resolve(), edits, inbox, deadline)
-            result = await session.run(prompt)
-            await session.finish()
-            return result
-        finally:
-            await close_stdio_process(process)
+    session = None
+    try:
+        async with asyncio.timeout_at(deadline):
+            process = await asyncio.create_subprocess_exec(
+                executable, "app-server", "--listen", "stdio://", cwd=workspace, env=env,
+                start_new_session=os.name != "nt", stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=1024 * 1024)
+            try:
+                session = CodexSession(process, workspace.resolve(), edits, inbox, deadline)
+                result = await session.run(prompt)
+                await session.finish()
+                return result
+            finally:
+                await close_stdio_process(process)
+    except (ValueError, RecursionError, OSError, OfficeError) as exc:
+        return _failure_result(session.phase if session is not None else "spawn", exc)
 
 
 def run_codex_inbox(executable, prompt, workspace, allow_edits, env, timeout, inbox):
-    try:
-        return asyncio.run(_run(executable, prompt, workspace, allow_edits, env, timeout, inbox))
-    except (TimeoutError, OfficeError):
-        return AgentResult(124, "Codex timed out or the Studio request closed.")
-    except (ValueError, RecursionError, OSError):
-        return AgentResult(1, "Codex did not complete the expected app-server protocol.")
+    return asyncio.run(_run(executable, prompt, workspace, allow_edits, env, timeout, inbox))

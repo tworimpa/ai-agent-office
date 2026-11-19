@@ -101,6 +101,19 @@ def test_readonly_codex_handles_remote_control_status_during_startup(tmp_path, m
     assert not operator.requests and not operator.confirmed
 
 
+@pytest.mark.parametrize(("scenario", "diagnosis"), [
+    ("rpc-rejected", "Codex app-server [thread/start] protocol: RPC rejected (code=-32602)."),
+    ("startup-notification", "Codex app-server [thread/start] protocol: unexpected notification (windows/worldWritableWarning)."),
+    ("unknown-startup-notification", "Codex app-server [thread/start] protocol: unexpected notification (unrecognized)."),
+    ("bad-mode", "Codex app-server [thread/start] protocol: requested sandbox mode not confirmed."),
+    ("failed-turn", "Codex app-server [turn/completed] protocol: provider turn failed (unauthorized)."),
+])
+def test_protocol_diagnosis_records_only_fixed_metadata(tmp_path, monkeypatch, scenario, diagnosis):
+    operator, result = fixture(tmp_path, monkeypatch, scenario)
+    assert result.returncode == 1 and result.message == diagnosis
+    assert not operator.requests and not operator.confirmed
+
+
 def test_timeout_expires_unsent_codex_decision(tmp_path, monkeypatch):
     operator, result = fixture(tmp_path, monkeypatch, "timeout", operator=Operator(delay=True))
     assert result.returncode == 124 and not operator.sent and not operator.confirmed
@@ -131,8 +144,10 @@ def server():
         item("completed", {**data, "text": text})
 
     def end():
-        emit(method="turn/completed", params={"threadId": "thread", "turn": {
-            "id": turn, "items": [], "status": "failed" if scenario == "failed-turn" else "completed"}})
+        completed = {"id": turn, "items": [], "status": "completed"}
+        if scenario == "failed-turn":
+            completed.update(status="failed", error={"message": "provider-private-text", "codexErrorInfo": "unauthorized"})
+        emit(method="turn/completed", params={"threadId": "thread", "turn": completed})
 
     def start_turn(first, direction=False):
         start = read()
@@ -175,6 +190,13 @@ def server():
     params = start["params"]
     assert start["method"] == "thread/start" and params["approvalsReviewer"] == "user"
     assert params["approvalPolicy"] == "on-request" and Path(params["cwd"]) == Path.cwd()
+    if scenario == "rpc-rejected":
+        emit(id=start["id"], error={"code": -32602, "message": "provider-private-text", "data": "private-response"})
+        return
+    if scenario in ("startup-notification", "unknown-startup-notification"):
+        topic = "windows/worldWritableWarning" if scenario == "startup-notification" else "unexpected/private-method-text"
+        emit(method=topic, params={"path": "provider-private-text"})
+        return
     read_only = scenario in ("read-only", "direction-plan", "room-choice", "room-product", "remote-status")
     assert params["sandbox"] == ("read-only" if read_only else "workspace-write")
     policy = {"type": "readOnly"} if read_only else {
