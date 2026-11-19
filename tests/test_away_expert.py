@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -246,6 +247,10 @@ def test_changed_revision_between_sessions_defers_before_verifier(repo, monkeypa
 
 
 def test_two_supervised_readonly_cli_processes_use_only_committed_evidence(repo, tmp_path, monkeypatch):
+    from agent_office.away_consult import run_consultation
+    from agent_office.role_skills import MAX_INSTRUCTION_BYTES, MAX_PER_ROLE, RoleSkillRegistry, pin_selection, role_guidance
+    from agent_office.store import TaskStore
+
     root, revision = repo
     (root / "README.md").write_text("private uncommitted task data")
     bin_dir = tmp_path / "bin"
@@ -254,7 +259,12 @@ def test_two_supervised_readonly_cli_processes_use_only_committed_evidence(repo,
     script.write_text(
         'import json, os, sys\nfrom pathlib import Path\n'
         'assert "--sandbox" in sys.argv and "read-only" in sys.argv\n'
+        'assert all(os.environ.get(key) == value for key, value in json.loads(os.environ["FIXTURE_TEMP_ENV"]).items())\n'
         'prompt = sys.stdin.read()\nrole = prompt.splitlines()[0]\n'
+        'expected = "specialist" if role == "AWAY_SPECIALIST" else "verifier"\n'
+        'other = "verifier" if expected == "specialist" else "specialist"\n'
+        'assert all(f"stamp-{expected}-{i}" in prompt for i in range(4))\n'
+        'assert f"stamp-{other}" not in prompt and "stamp-developer" not in prompt\n'
         'packet = json.loads(prompt.splitlines()[-1])\n'
         'assert json.loads(Path("evidence.json").read_text(encoding="utf-8")) == packet\n'
         'assert "private uncommitted" not in prompt and "answer" not in packet\n'
@@ -275,12 +285,30 @@ def test_two_supervised_readonly_cli_processes_use_only_committed_evidence(repo,
         launcher.chmod(0o700)
     calls = tmp_path / "calls"
     monkeypatch.setenv("AWAY_TEST_CALLS", str(calls))
+    monkeypatch.setenv("FIXTURE_TEMP_ENV", json.dumps({key: os.environ.get(key) for key in ("TMP", "TEMP", "TMPDIR")}))
     git_dir = str(Path(shutil.which("git")).parent)
     monkeypatch.setenv("PATH", os.pathsep.join((str(bin_dir), git_dir)))
-    assert expert.assess(root, revision, RULE, "codex", "codex") == {
+    journal = tmp_path / "journal"
+    catalog = RoleSkillRegistry(journal)
+    selection = {}
+    for role in ("specialist", "verifier", "developer"):
+        selection[role] = []
+        for i in range(MAX_PER_ROLE):
+            marker = f"stamp-{role}-{i}"
+            # Maximum wire expansion occurs when JSON escapes every quote.
+            body = marker + '"' * (MAX_INSTRUCTION_BYTES - len(marker))
+            selection[role].append(catalog.create(marker, body)["id"])
+    run_id = "a" * 32
+    with TaskStore(journal) as store, store._write():
+        pin_selection(store.connection, run_id, selection)
+        guidance = role_guidance(store.connection, run_id, ("specialist", "verifier"))
+    assert asyncio.run(run_consultation(root, revision, RULE, "codex", "codex", ["."], skill_guidance=guidance)) == {
         "answer": "python -m pytest -q",
         "evidence": {"path": "README.md", "line": 2, "quote": "python -m pytest -q", "revision": revision},
     }
     first, second = map(json.loads, calls.read_text(encoding="utf-8").splitlines())
     assert (first[1], second[1]) == ("AWAY_SPECIALIST", "AWAY_VERIFIER")
     assert first[0] != second[0] and not any(Path(c[0]).exists() for c in (first, second))
+    supervisor_dir = Path(first[0]).parent
+    assert supervisor_dir == Path(second[0]).parent and supervisor_dir.name.startswith("office-away-consult-")
+    assert not supervisor_dir.exists()

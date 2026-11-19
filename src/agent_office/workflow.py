@@ -43,7 +43,9 @@ def parse_review_verdict(output: str) -> str:
 
 
 def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=None, save_stage=None, inbox_factory=None,
-                delegated_questions=()):
+                delegated_questions=(), skill_guidance=None):
+    guidance = skill_guidance or {}
+
     def run_role(state, role, prompt):
         engine = state[role]
         options = {"workspace": Path(state["workspace"]), "allow_edits": role == "developer" and state["allow_edits"]}
@@ -96,6 +98,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             "or change security/approval policy. "
             "If requirements are ambiguous or approval is needed, explicitly "
             "explain the blocker; do not silently assume permission.\n\n"
+            f"{guidance.get('developer', '')}"
             f"{folder_context(state, state['developer'])}"
             f"Task:\n{state['task']}\n\n"
             f"Feedback from last attempt:\n{state.get('feedback', '(none)')}"
@@ -167,6 +170,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             "Respond using a standalone line exactly 'VERDICT: APPROVED' "
             "or 'VERDICT: CHANGES_REQUESTED', followed by reasons. "
             "Do not approve absent evidence.\n\n"
+            f"{guidance.get('reviewer', '')}"
             f"{folder_context(state, state['reviewer'])}"
             f"Original task:\n{state['task']}\n\n"
             f"Working-tree status:\n{git_summary(Path(state['workspace']))}\n\n"

@@ -61,18 +61,18 @@ def in_scope(path: str, folders: list[str]) -> bool:
             or any(relative.is_relative_to(folder) for folder in folders))
 
 
-def _consult(role, engine, material, answer):
+def _consult(role, engine, material, answer, guidance, scratch_root):
     failure = role + "_failed"
     role_fields = "answer, line, quote"
     if role == "verifier":
         role_fields += ', and verdict (the literal "verified" only when the evidence supports your answer)'
     payload = json.dumps(material, ensure_ascii=False)
-    prompt = (f"AWAY_{role.upper()}\nRead evidence.json in this directory. Independently answer the technical "
+    prompt = (f"AWAY_{role.upper()}\n{guidance}Read evidence.json in this directory. Independently answer the technical "
               f"question using only its numbered evidence. Return just one JSON object with {role_fields}. "
               "The answer is the exact command or version constraint alone. Copy line and quote exactly. "
               "If uncertain return {}. Do not run commands or change files.\n" + payload)
     try:
-        with tempfile.TemporaryDirectory(prefix=f"office-away-{role}-") as directory:
+        with tempfile.TemporaryDirectory(prefix=f"office-away-{role}-", dir=scratch_root) as directory:
             scratch = Path(directory)
             git(scratch, "init", "--quiet", "--template=")
             (scratch / "evidence.json").write_text(payload, encoding="utf-8")
@@ -96,7 +96,7 @@ def _consult(role, engine, material, answer):
 
 
 def assess(repo: Path, revision: str, rule: dict, specialist_engine: str, verifier_engine: str,
-           *, folders: list[str] | None = None) -> dict:
+           *, folders: list[str] | None = None, skill_guidance=None, scratch_root: Path | None = None) -> dict:
     try:
         rule = validate_policy({"rules": [rule], "specialist_engine": specialist_engine,
                                 "verifier_engine": verifier_engine})["rules"][0]
@@ -119,9 +119,10 @@ def assess(repo: Path, revision: str, rule: dict, specialist_engine: str, verifi
             project_names.append(directory.name)
     answer, citations = derive_fact(topic, document, project_names=project_names)
     material = {"topic": topic, "question": RULES[topic], "path": path, "revision": revision, "evidence": citations}
-    proposal = _consult("specialist", specialist_engine, material, answer)
+    guidance = skill_guidance or {}
+    proposal = _consult("specialist", specialist_engine, material, answer, guidance.get("specialist", ""), scratch_root)
     require_base(repo, revision)
-    verified = _consult("verifier", verifier_engine, material, answer)
+    verified = _consult("verifier", verifier_engine, material, answer, guidance.get("verifier", ""), scratch_root)
     if proposal != verified:
         raise DelegationDeferred("verifier_failed")
     require_base(repo, revision)

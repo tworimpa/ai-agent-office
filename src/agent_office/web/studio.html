@@ -40,6 +40,28 @@
               <p id="register-note" role="status" class="notice"></p>
             </form>
           </details>
+          <details id="skill-library" class="engine-panel">
+            <summary id="skill-title">호스트 스킬 관리</summary>
+            <p id="skill-status" role="status">스킬 목록을 확인하는 중입니다.</p>
+            <label for="inspect-skill">등록된 버전</label>
+            <select id="inspect-skill"><option value="">버전을 선택하세요</option></select>
+            <pre id="skill-preview" hidden></pre>
+            <button id="older-skills" type="button" class="secondary" hidden>이전 버전 더 보기</button>
+            <form id="skill-form" aria-labelledby="skill-title">
+              <fieldset id="skill-entry" disabled>
+                <legend>새 스킬 또는 버전 등록</legend>
+                <label for="skill-name">스킬 이름 (필수)</label>
+                <input type="text" id="skill-name" name="name" required>
+                <label for="skill-file">Markdown 파일에서 지침 가져오기</label>
+                <input type="file" id="skill-file" name="file" accept=".md,.markdown,text/markdown,text/plain">
+                <label for="skill-text">지침 (필수)</label>
+                <textarea id="skill-text" name="instructions" rows="4" required aria-describedby="skill-text-help"></textarea>
+                <small id="skill-text-help">직접 입력하거나 가져온 내용을 확인한 뒤 등록하세요. 최대 8,192바이트(UTF-8)</small>
+                <button id="save-skill" type="submit" class="secondary">이 호스트에 버전 등록</button>
+              </fieldset>
+              <p id="skill-note" role="status" class="notice"></p>
+            </form>
+          </details>
           <p id="catalog-error" class="notice error" role="status"></p>
           <form id="run-form" aria-labelledby="compose-title">
             <fieldset id="run-fields" disabled>
@@ -63,12 +85,25 @@
                 <label class="mode"><input type="radio" name="mode" value="plan" checked><span><strong>계획 작성</strong><small>개발자가 코드를 읽고 계획을 작성합니다.</small></span></label>
                 <label class="mode"><input id="edit-mode" type="radio" name="mode" value="edit"><span><strong>개발·검증 맡기기</strong><small>별도 worktree에서 수정하고 테스트한 뒤 리뷰어가 검토합니다.</small></span></label>
               </fieldset>
-              <div class="role-pickers">
+              <div class="role-pickers" id="single-run-engines">
                 <div><label for="developer-engine">개발자 엔진</label><select id="developer-engine" name="developer_engine" aria-describedby="engine-warning" required></select></div>
                 <div><label for="reviewer-engine">리뷰어 엔진</label><select id="reviewer-engine" name="reviewer_engine" aria-describedby="engine-warning" required></select></div>
               </div>
               <label class="check inbox-option" for="use-inbox"><input id="use-inbox" name="use_inbox" type="checkbox" checked aria-describedby="inbox-help">작업자 요청을 협업 요청함에서 받기</label>
               <small id="inbox-help">작업자의 기술 질문에 직접 답합니다. Codex의 작업 폴더 내 파일 변경과 Cline의 파일 읽기·편집 권한 요청은 한 건씩 승인하거나 거절합니다.</small>
+              <details id="role-skill-panel" class="engine-panel">
+                <summary>역할별 스킬 선택</summary>
+                <small id="role-skill-help">역할마다 최대 네 버전을 선택하세요. 전문가와 독립 검증자의 스킬은 부재중 답변을 위임할 때 사용합니다.</small>
+                <div id="role-skills" aria-describedby="role-skill-help"></div>
+              </details>
+              <label class="check inbox-option" for="use-parallel"><input type="checkbox" id="use-parallel" name="use_parallel" aria-controls="parallel-fields">독립 하위 작업으로 나눠 실행</label>
+              <small id="team-availability" role="status"></small>
+              <fieldset id="parallel-fields" hidden disabled>
+                <legend>하위 작업 배정</legend>
+                <small>2~4개 작업 중 최대 2개를 동시에 실행합니다. 각 작업은 같은 커밋에서 별도 worktree를 사용합니다.</small>
+                <div id="subtasks"></div>
+                <button type="button" id="add-subtask" class="secondary">하위 작업 추가</button>
+              </fieldset>
               <label class="check inbox-option" for="use-delegation"><input id="use-delegation" name="use_delegation" type="checkbox" aria-controls="delegation-fields" aria-describedby="delegation-help">이번 실행의 부재중 기술 답변 위임</label>
               <small id="delegation-help">선택한 질문과 정확히 일치하면 전문가와 독립 검증자가 별도 세션에서 최대 두 번 호출됩니다. 그 밖의 질문과 권한 요청은 직접 처리합니다.</small>
               <small id="delegation-availability" role="status"></small>
@@ -123,6 +158,8 @@
               <p id="detail-workspace" class="workspace-name"></p>
               <h3 id="request"></h3>
               <p id="run-engines" class="assignments"></p>
+              <p id="parent-link"></p>
+              <p id="assigned-skills" class="assignments"></p>
               <p id="run-inbox-mode" class="assignments"></p>
               <div id="run-delegation" hidden>
                 <h4>이 실행에서 위임한 질문</h4>
@@ -140,6 +177,12 @@
               <p id="stop-note" role="status" class="notice"></p>
             </div>
             <div class="outputs">
+              <section id="group-result" hidden aria-labelledby="group-title">
+                <h3 id="group-title">하위 작업별 결과</h3>
+                <p id="group-revision" class="assignments"></p>
+                <small>각 작업의 변경·테스트·리뷰는 해당 worktree 기준입니다. 변경을 합친 결과는 별도 검증이 필요합니다.</small>
+                <div id="child-results"></div>
+              </section>
               <details open>
                 <summary>이 실행의 협업 요청 내역</summary>
                 <p id="history-inbox-note" class="command" role="status"></p>

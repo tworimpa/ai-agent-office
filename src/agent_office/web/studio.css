@@ -145,6 +145,27 @@ input[type=radio], input[type=checkbox] { flex: none; margin: 5px 2px 0; accent-
 .command { margin: 0 22px 8px; font-size: .8rem; color: var(--muted); }
 .command code { color: var(--ink); }
 .outputs pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 30rem; overflow: auto; margin: 0 22px 16px; padding: 12px; background: #f4f6f1; border-radius: 6px; font: .8rem/1.65 "IBM Plex Mono", Consolas, monospace; }
+#skill-library { border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+#skill-library > label { display: block; margin: 8px 0 4px; }
+#skill-file { max-width: 100%; font-size: .84rem; }
+#skill-preview { margin-block: 8px; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16rem; overflow-y: auto; background: #f4f6f1; }
+#role-skills { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(10rem, 100%), 1fr)); gap: 0 12px; }
+#role-skills .checklist { max-height: 14rem; overflow: auto; padding: 2px; }
+#role-skills .check { padding-block: 3px; }
+#parallel-fields > small { clear: both; }
+.subtask { margin-top: 14px; padding: 0 12px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.subtask > legend { color: var(--ink); }
+.subtask > label { clear: both; }
+.subtask > button { margin-top: 8px; }
+#group-result { padding: 16px 22px; border-top: 1px solid var(--border); }
+#group-result h3 { font-size: 1rem; }
+#group-revision, #assigned-skills, .child-result { overflow-wrap: anywhere; }
+#assigned-skills, .child-result .assignments { white-space: pre-line; }
+.child-result { margin-top: 12px; padding: 0 12px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.child-result:not([open]) { padding-bottom: 0; }
+.child-result summary { padding: 10px 0; }
+.child-result pre { margin: 0 0 10px; }
+.child-result > a { display: inline-block; padding-block: 10px 2px; }
 @media (max-width: 780px) {
   .bar, main { width: min(100% - 32px, 650px); }
   .layout { grid-template-columns: minmax(0, 1fr); gap: 18px; }

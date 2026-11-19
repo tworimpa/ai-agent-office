@@ -14,6 +14,7 @@ from .dialogue import DelegationWithdrawn
 from .events import snapshot_request
 from .models import OfficeError, validate_id
 from .ownership import RunBusyError, RunGuard
+from .role_skills import role_guidance
 from .store import TaskStore, now
 
 
@@ -304,8 +305,10 @@ class InboxChannel:
                 away_ledger.defer(db, request_id, changed_reason)
             return
         try:
+            guidance = role_guidance(db, self.run_id, ("specialist", "verifier"))
             result = await run_consultation(plan.repo, plan.revision, plan.rule,
-                                            plan.specialist, plan.verifier, json.loads(plan.folders_json))
+                                            plan.specialist, plan.verifier, json.loads(plan.folders_json),
+                                            **({"skill_guidance": guidance} if guidance else {}))
             answer = _text(result["answer"])
             evidence = result["evidence"]
             if (evidence["path"] != plan.path or evidence["revision"] != plan.revision

@@ -4,15 +4,19 @@ from __future__ import annotations
 from contextlib import ExitStack
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import platform
+import sqlite3
 import subprocess
 import sys
 import threading
 from types import SimpleNamespace
 import uuid
 
+from . import role_skills as skills
+from . import team_runs
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .events import snapshot_request
 from .models import ACTIVE, OfficeError, OwnerInfo, TaskSpec, validate_id
@@ -44,7 +48,7 @@ SOURCE = """ FROM studio_runs s JOIN runs r ON r.run_id=s.id JOIN tasks t ON t.t
 DETAIL = ",s.folders,s.developer_output,s.test_output,s.review_output,s.changes,s.diff,s.diagnostic"
 
 
-def _request_digest(parts, developer_engine, reviewer_engine, use_inbox=False, delegation=None):
+def _request_digest(parts, developer_engine, reviewer_engine, use_inbox=False, delegation=None, role_skills=None, subtasks=None):
     if developer_engine not in SUPPORTED_ENGINES or reviewer_engine not in SUPPORTED_ENGINES:
         raise ValueError("지원하는 개발자·리뷰어 엔진을 선택하세요.")
     # Default-role requests must match the exact digest persisted by Stage 1/2.
@@ -58,6 +62,10 @@ def _request_digest(parts, developer_engine, reviewer_engine, use_inbox=False, d
         if not use_inbox:
             raise ValueError("부재중 위임에는 협업 요청함이 필요합니다.")
         parts = [*parts, {"delegation": delegation}]
+    if role_skills:
+        parts = [*parts, {"role_skills": role_skills}]
+    if subtasks is not None:
+        parts = [*parts, {"subtasks": subtasks}]
     return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -92,6 +100,10 @@ class LocalRunner:
         self.path = Path(db_path).expanduser().resolve()
         self.lock = threading.RLock()
         self.children = {}
+        self.pending = {}  # Raw prompts live only in this owner's memory. Never replay on startup.
+        self.team_workers = set()
+        self.scheduler = None
+        self.shutdown = threading.Event()
         self.stale = set()
         self.closed = False
         self.guard = RunGuard.studio(self.path)
@@ -102,6 +114,8 @@ class LocalRunner:
                 store.connection.execute("CREATE TABLE IF NOT EXISTS studio_interactive_runs "
                                          "(id TEXT PRIMARY KEY REFERENCES studio_runs(id))")
                 self.inbox = Inbox(self.path)
+                team_runs.ensure_schema(store.connection)
+                skills.ensure_schema(store.connection)
                 stale = store.connection.execute(
                     "SELECT r.run_id FROM runs r JOIN studio_runs s ON s.id=r.run_id "
                     "WHERE r.host_name=? AND r.ended_at IS NULL", (platform.node(),)
@@ -109,6 +123,8 @@ class LocalRunner:
                 for row in stale:
                     if not self._recover(store, row[0]):
                         self.stale.add(row[0])
+                        if store.connection.execute("SELECT 1 FROM studio_team_children WHERE id=?", (row[0],)).fetchone():
+                            self.team_workers.add(row[0])
         except BaseException:
             self.guard.__exit__(None, None, None)
             raise
@@ -118,7 +134,7 @@ class LocalRunner:
         try:
             if store.get_run(run_id).state not in ACTIVE:
                 return True
-            run = recover_run(store, run_id, host_name=platform.node())
+            run = recover_run(store, run_id, host_name=platform.node(), studio_owner=True)
             with store._write():
                 expire_requests(store.connection, run_id)
             if run.state != "RECOVERY_REQUIRED":
@@ -135,49 +151,65 @@ class LocalRunner:
         for run_id in self.stale.copy():
             if self._recover(store, run_id):
                 self.stale.remove(run_id)
+                self.team_workers.discard(run_id)
         for run_id, child in list(self.children.items()):
             if child.poll() is not None:
                 child.stdin.close()
-                del self.children[run_id]
-                self._recover(store, run_id)
+                if self._recover(store, run_id):
+                    del self.children[run_id]
+                    self.team_workers.discard(run_id)
 
     def _previous(self, store, run_id, digest):
-        row = store.connection.execute("SELECT request_hash FROM studio_runs WHERE id=?", (run_id,)).fetchone()
+        row = store.connection.execute("SELECT request_hash FROM studio_runs WHERE id=? UNION ALL "
+                                       "SELECT request_hash FROM studio_teams WHERE id=?", (run_id, run_id)).fetchone()
         if row is None:
+            if store.connection.execute("SELECT 1 FROM runs WHERE run_id=?", (run_id,)).fetchone():
+                raise OfficeError("REQUEST_CONFLICT")
             return None
         if row[0] != digest:
             raise OfficeError("REQUEST_CONFLICT")
         return self._detail(store, run_id)
 
     def submit(self, catalog, run_id, workspace_id, indices, task, allow_edits, *,
-               developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER, use_inbox=False, delegation=None):
-        # A registered folder's index is stable even if its checkout was moved
-        # after the original request succeeded and its HTTP response was lost.
+               developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER, use_inbox=False,
+               delegation=None, role_skills=None, subtasks=None):
+        # Check the receipt before re-opening folders: the original checkout may have moved.
         policy = validate_policy(delegation) if delegation is not None else None
-        digest = _request_digest([workspace_id, indices, task, allow_edits], developer_engine, reviewer_engine, use_inbox, policy)
+        selected = skills.normalize_selection({} if role_skills is None else role_skills)
+        plan = (team_runs.normalize_subtasks(subtasks, indices, developer_engine, reviewer_engine)
+                if subtasks is not None else None)
+        digest = _request_digest([workspace_id, indices, task, allow_edits], developer_engine, reviewer_engine,
+                                 use_inbox, policy, selected, plan)
         with self.lock, TaskStore(self.path, existing=True) as store:
+            self._refresh(store)
             existing = self._previous(store, run_id, digest)
             if existing:
                 return existing
         repo, folders = catalog.select(workspace_id, indices)
         return self.start(run_id, workspace_id, repo, folders, task, allow_edits, request_digest=digest,
-                          developer_engine=developer_engine, reviewer_engine=reviewer_engine, use_inbox=use_inbox, delegation=policy)
+                          developer_engine=developer_engine, reviewer_engine=reviewer_engine, use_inbox=use_inbox,
+                          delegation=policy, role_skills=selected, indices=indices, subtasks=plan)
 
     def start(self, run_id: str, workspace_id: str, repo: Path, folders: list[str],
-              task: str, allow_edits: bool, *, request_digest=None,
-              developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER, use_inbox=False, delegation=None):
+              task: str, allow_edits: bool, *, request_digest=None, developer_engine=DEFAULT_DEVELOPER,
+              reviewer_engine=DEFAULT_REVIEWER, use_inbox=False, delegation=None, role_skills=None,
+              indices=None, subtasks=None):
         validate_id(run_id)
-        if not isinstance(task, str) or not task.strip() or len(task.encode("utf-8")) > 8192:
-            raise ValueError("Task must be between 1 and 8192 UTF-8 bytes")
+        team_runs.validate_task(task)
         if type(allow_edits) is not bool or not folders or not all(isinstance(f, str) for f in folders):
             raise ValueError("Invalid Studio request")
         repo = Path(repo).resolve()
-        folder_json = json.dumps(folders, ensure_ascii=False)
+        indices = list(range(len(folders))) if indices is None else indices
+        folder_map = dict(zip(indices, folders, strict=True))
         policy = validate_policy(delegation) if delegation is not None else None
-        if policy and (not use_inbox or not all(in_scope(rule["path"], folders) for rule in policy["rules"])):
-            raise ValueError("요청함을 켜고 선택한 폴더 또는 저장소 루트의 근거 파일을 지정하세요.")
-        digest = request_digest or _request_digest([workspace_id, str(repo), folders, task, allow_edits],
-                                                   developer_engine, reviewer_engine, use_inbox, policy)
+        selected = skills.normalize_selection({} if role_skills is None else role_skills)
+        plan = (team_runs.normalize_subtasks(subtasks, indices, developer_engine, reviewer_engine)
+                if subtasks is not None else None)
+        request_parts = [workspace_id, str(repo), folders, task, allow_edits]
+        if plan:
+            request_parts.append({"indices": indices})
+        digest = request_digest or _request_digest(request_parts, developer_engine, reviewer_engine,
+                                                   use_inbox, policy, selected, plan)
         with self.lock, TaskStore(self.path, existing=True) as store:
             if self.closed:
                 raise OfficeError("RUN_BUSY")
@@ -187,53 +219,153 @@ class LocalRunner:
                 return existing
             map_folders(repo, folders)
             revision = None
-            if policy:
+            if policy or plan:
                 try:
                     revision = evidence_git(repo, "rev-parse", "--verify", "HEAD^{commit}").decode("ascii").strip()
+                    if plan:
+                        for folder in folders:
+                            spec = f"{revision}^{{tree}}" if folder == "." else f"{revision}:{folder}"
+                            if evidence_git(repo, "cat-file", "-t", spec).strip() != b"tree":
+                                raise ValueError("기준 커밋에 포함된 작업 폴더를 선택하세요.")
                 except (DelegationDeferred, UnicodeError):
-                    raise ValueError("위임 근거에 사용할 기준 커밋을 확인할 수 없습니다.") from None
-            spec = TaskSpec(uuid.uuid4().hex, str(repo), task, developer_engine, reviewer_engine, 2)
+                    raise ValueError("작업에 사용할 기준 커밋을 확인할 수 없습니다.") from None
 
-            def register(connection):
-                connection.execute(
-                    "INSERT INTO studio_runs(id,workspace_id,folders,allow_edits,request_hash) VALUES (?,?,?,?,?)",
-                    (run_id, workspace_id, folder_json, allow_edits, digest),
-                )
+            def add_run(child_id, goal, scope, developer, reviewer, request_hash):
+                if policy and (not use_inbox or not all(in_scope(rule["path"], scope) for rule in policy["rules"])):
+                    raise ValueError("요청함을 켜고 각 작업 폴더 또는 저장소 루트의 근거 파일을 지정하세요.")
+                spec = TaskSpec(uuid.uuid4().hex, str(repo), goal, developer, reviewer, 2)
+                store._create_run(spec, child_id, plan_worktree(repo, child_id),
+                                  OwnerInfo(platform.node(), uuid.uuid4().hex))
+                db = store.connection
+                db.execute("INSERT INTO studio_runs(id,workspace_id,folders,allow_edits,request_hash) VALUES (?,?,?,?,?)",
+                           (child_id, workspace_id, json.dumps(scope, ensure_ascii=False), allow_edits, request_hash))
                 if use_inbox:
-                    connection.execute("INSERT INTO studio_interactive_runs VALUES (?)", (run_id,))
+                    db.execute("INSERT INTO studio_interactive_runs VALUES (?)", (child_id,))
                 if policy:
-                    register_policy(connection, run_id, policy, revision)
+                    register_policy(db, child_id, policy, revision)
+                skills.pin_selection(db, child_id, selected)
 
-            store.create_run(spec, run_id, plan_worktree(repo, run_id),
-                             OwnerInfo(platform.node(), uuid.uuid4().hex), register=register)
-            try:
-                child = subprocess.Popen(
-                    [sys.executable, "-m", "agent_office.studio_process", str(self.path), run_id],
-                    cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    start_new_session=os.name != "nt",
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-                )
-                self.children[run_id] = child
-                child.stdin.write(json.dumps(task, ensure_ascii=False).encode("utf-8") + b"\n")
-                child.stdin.flush()
-            except OSError:
-                if run_id in self.children:
-                    self.children[run_id].stdin.close()
-                self._recover(store, run_id)
+            queued = {}
+            if plan and (self.scheduler is None or not self.scheduler.is_alive()):
+                # Hold self.lock across registration so dispatch can only see committed work.
+                self.scheduler = threading.Thread(target=self._dispatch_pending, daemon=True)
+                self.scheduler.start()
+            with ExitStack() as guards:
+                with store._write():
+                    if plan:
+                        team_runs.register(store.connection, run_id, digest, workspace_id, task, indices, folders,
+                                           allow_edits, developer_engine, reviewer_engine, use_inbox, policy, revision)
+                        skills.pin_selection(store.connection, run_id, selected)
+                        for position, item in enumerate(plan):
+                            child_id = uuid.uuid4().hex
+                            scope = [folder_map[index] for index in item["indices"]]
+                            add_run(child_id, item["task"], scope, item["developer_engine"], item["reviewer_engine"],
+                                    f"child:{run_id}:{position}")
+                            store.connection.execute("INSERT INTO studio_team_children VALUES (?,?,?,?)",
+                                                     (child_id, run_id, position, json.dumps(item["indices"])))
+                            guard = guards.enter_context(RunGuard(self.path, child_id))
+                            prompt = ("Use the original request for context and shared constraints. "
+                                      "Complete and verify only the assigned subtask in this worktree.\n\n"
+                                      f"Original request:\n{task}\n\nAssigned subtask:\n{item['task']}")
+                            queued[child_id] = (prompt, guard)
+                    else:
+                        add_run(run_id, task, folders, developer_engine, reviewer_engine, digest)
+                # Pending entries take ownership only after the entire team registration commits.
+                guards.pop_all()
+
+            if plan:
+                self.pending.update(queued)
+            else:
+                self._launch(store, run_id, task)
             return self._detail(store, run_id)
 
+    def _launch(self, store, run_id, prompt):
+        try:
+            child = subprocess.Popen(
+                [sys.executable, "-m", "agent_office.studio_process", str(self.path), run_id],
+                cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=os.name != "nt",
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            self.children[run_id] = child
+            child.stdin.write(json.dumps(prompt, ensure_ascii=False).encode("utf-8") + b"\n")
+            child.stdin.flush()
+        except OSError:
+            if run_id in self.children:
+                self.children[run_id].stdin.close()
+            else:
+                self.stale.add(run_id)
+                if self._recover(store, run_id):
+                    self.stale.remove(run_id)
+
+    def _schedule(self, store):
+        for child_id in list(self.pending):
+            if len(self.team_workers) >= team_runs.MAX_ACTIVE:
+                break
+            state = store.get_run(child_id).state
+            prompt, guard = self.pending.pop(child_id)
+            try:
+                guard.__exit__(None, None, None)
+                if state == "QUEUED":
+                    self._launch(store, child_id, prompt)
+            finally:
+                if child_id in self.children:
+                    self.team_workers.add(child_id)
+                else:
+                    self.stale.add(child_id)
+
+    def _dispatch_pending(self):
+        while not self.shutdown.wait(0.15):
+            with self.lock:
+                if self.closed or not self.pending:
+                    self.scheduler = None
+                    return
+                try:
+                    with TaskStore(self.path, existing=True) as store:
+                        self._refresh(store)
+                        self._schedule(store)
+                except Exception as exc:
+                    if (isinstance(exc, sqlite3.OperationalError)
+                            and getattr(exc, "sqlite_errorcode", 0) & 255 in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)):
+                        continue
+                    # An owner that can no longer dispatch drops the raw prompts. Reads and
+                    # restart perform the same guarded recovery as an interrupted process.
+                    self.stale.update(self.pending)
+                    for _, guard in self.pending.values():
+                        guard.__exit__(None, None, None)
+                    self.pending.clear()
+                    self.scheduler = None
+                    logging.getLogger(__name__).exception("Studio team dispatcher interrupted")
+                    return
+
     def _detail(self, store, run_id):
-        row = store.connection.execute(SUMMARY + DETAIL + SOURCE + " WHERE s.id=?", (run_id,)).fetchone()
-        if row is None:
-            raise OfficeError("NOT_FOUND")
-        result = dict(row)
-        result["folders"] = json.loads(result["folders"])
-        result["allow_edits"] = bool(result["allow_edits"])
-        result["use_inbox"] = bool(result["use_inbox"])
-        result["delegation"] = json.loads(result["delegation"]) if result["delegation"] else None
-        result["delegation_active"] = bool(result["delegation_active"])
+        db = store.connection
+        parent = db.execute("SELECT * FROM studio_teams WHERE id=?", (run_id,)).fetchone()
+        if parent:
+            result = team_runs.describe(db, parent, detail=True)
+        else:
+            row = db.execute(SUMMARY + DETAIL + SOURCE + " WHERE s.id=?", (run_id,)).fetchone()
+            if row is None:
+                raise OfficeError("NOT_FOUND")
+            result = self._summary(row)
+            result["folders"] = json.loads(row["folders"])
+            relation = db.execute("""SELECT p.id AS parent_id,p.task AS original_task,c.indices,p.base_revision
+                FROM studio_team_children c JOIN studio_teams p ON p.id=c.parent_id WHERE c.id=?""",
+                (run_id,)).fetchone()
+            if relation:
+                result.update(dict(relation), indices=json.loads(relation["indices"]), kind="subtask")
+            elif result["delegation"]:
+                result["base_revision"] = get_revision(self.path, run_id)
+        versions = skills.selected_metadata(db, run_id)
+        result["role_skill_snapshots"] = versions
+        result["role_skills"] = {role: [version["id"] for version in items] for role, items in versions.items()}
         return result
+
+    @staticmethod
+    def _summary(row):
+        return dict(row, allow_edits=bool(row["allow_edits"]), use_inbox=bool(row["use_inbox"]),
+                    delegation=json.loads(row["delegation"]) if row["delegation"] else None,
+                    delegation_active=bool(row["delegation_active"]))
 
     def detail(self, run_id):
         validate_id(run_id)
@@ -244,31 +376,54 @@ class LocalRunner:
     def runs(self):
         with self.lock, TaskStore(self.path, existing=True) as store:
             self._refresh(store)
-            rows = store.connection.execute(SUMMARY + SOURCE + " ORDER BY r.started_at DESC LIMIT 200")
-            return [dict(row, allow_edits=bool(row["allow_edits"]), use_inbox=bool(row["use_inbox"]),
-                         delegation=json.loads(row["delegation"]) if row["delegation"] else None,
-                         delegation_active=bool(row["delegation_active"])) for row in rows]
+            db = store.connection
+            rows = db.execute(SUMMARY + SOURCE + " WHERE NOT EXISTS "
+                              "(SELECT 1 FROM studio_team_children c WHERE c.id=s.id) "
+                              "ORDER BY r.started_at DESC LIMIT 200")
+            result = [self._summary(row) for row in rows]
+            parents = db.execute("SELECT * FROM studio_teams ORDER BY created_at DESC LIMIT 200")
+            result.extend(team_runs.describe(db, parent, detail=False) for parent in parents)
+            return sorted(result, key=lambda item: item["created_at"], reverse=True)[:200]
+
+    def _mark_stopped(self, store, run_id):
+        db = store.connection
+        if store.get_run(run_id).state not in ACTIVE:
+            return
+        db.execute("UPDATE studio_runs SET stop_requested=1 WHERE id=?", (run_id,))
+        expire_requests(db, run_id)
+        if run_id in self.pending:
+            store._record(run_id, operation_key=f"{run_id}:studio:final", event_type="RUN_FINISHED",
+                          state="CANCELED", outcome="CANCELED", payload={"phase": "run"})
 
     def stop(self, run_id):
         validate_id(run_id)
         with self.lock, TaskStore(self.path, existing=True) as store:
             self._refresh(store)
-            result = self._detail(store, run_id)
-            if result["state"] in ACTIVE or result["state"] == "STOP_REQUESTED":
-                run = store.get_run(run_id)
-                if run.host_name != platform.node():
+            parent = store.connection.execute("SELECT * FROM studio_teams WHERE id=?", (run_id,)).fetchone()
+            if parent:
+                if parent["host_name"] != platform.node():
                     raise OfficeError("HOST_MISMATCH")
-                child = self.children.get(run_id)
-                if child is None:
-                    self._recover(store, run_id)
+                targets = [row[0] for row in store.connection.execute(
+                    "SELECT id FROM studio_team_children WHERE parent_id=?", (run_id,))]
+            else:
+                if not store.connection.execute("SELECT 1 FROM studio_runs WHERE id=?", (run_id,)).fetchone():
+                    raise OfficeError("NOT_FOUND")
+                targets = [run_id]
+                if store.get_run(run_id).host_name != platform.node():
+                    raise OfficeError("HOST_MISMATCH")
+            with store._write():
+                if parent and any(store.get_run(child).state in ACTIVE for child in targets):
+                    store.connection.execute("UPDATE studio_teams SET stop_requested=1 WHERE id=?", (run_id,))
+                for child in targets:
+                    self._mark_stopped(store, child)
+            for child in targets:
+                if child in self.pending:
+                    _, guard = self.pending.pop(child)
+                    guard.__exit__(None, None, None)
+                elif child in self.children:
+                    self.children[child].stdin.close()
                 else:
-                    with store._write():
-                        store.connection.execute(
-                            "UPDATE studio_runs SET stop_requested=1 WHERE id=? AND EXISTS "
-                            "(SELECT 1 FROM runs WHERE run_id=? AND ended_at IS NULL)", (run_id, run_id),
-                        )
-                        expire_requests(store.connection, run_id)
-                    child.stdin.close()
+                    self._recover(store, child)
             return self._detail(store, run_id)
 
     def close(self):
@@ -276,6 +431,7 @@ class LocalRunner:
             if self.closed:
                 return
             self.closed = True
+            self.shutdown.set()
             # Register all pipe closes before touching SQLite. Even if a stop
             # marker cannot be saved, EOF still makes every supervisor drain.
             with ExitStack() as cleanup:
@@ -284,14 +440,12 @@ class LocalRunner:
                     cleanup.callback(child.wait, timeout=30)
                 for child in self.children.values():
                     cleanup.callback(child.stdin.close)
+                for _, guard in self.pending.values():
+                    cleanup.callback(guard.__exit__, None, None, None)
                 with TaskStore(self.path, existing=True) as store, store._write():
-                    store.connection.executemany(
-                        "UPDATE studio_runs SET stop_requested=1 WHERE id=? AND EXISTS "
-                        "(SELECT 1 FROM runs WHERE run_id=? AND ended_at IS NULL)",
-                        [(run_id, run_id) for run_id in self.children],
-                    )
-                    for run_id in self.children:
-                        expire_requests(store.connection, run_id)
+                    for run_id in (*self.children, *self.pending):
+                        self._mark_stopped(store, run_id)
+                self.pending.clear()
             with TaskStore(self.path, existing=True) as store:
                 self._refresh(store)
 
@@ -308,6 +462,9 @@ def worker(db_path, run_id):
         row = store.connection.execute("SELECT folders,allow_edits FROM studio_runs WHERE id=?", (run_id,)).fetchone()
         interactive = store.connection.execute("SELECT 1 FROM studio_interactive_runs WHERE id=?", (run_id,)).fetchone()
         policy = get_policy(db_path, run_id)
+        team = store.connection.execute("""SELECT p.base_revision FROM studio_team_children c
+            JOIN studio_teams p ON p.id=c.parent_id WHERE c.id=?""", (run_id,)).fetchone()
+        revision = team[0] if team else get_revision(db_path, run_id)
         args = SimpleNamespace(repo=Path(task.project), task=raw_task, developer=task.developer_engine,
                                reviewer=task.reviewer_engine, max_attempts=task.max_attempts,
                                timeout=900, test_command=[sys.executable, "-m", "pytest", "-q"],
@@ -326,7 +483,7 @@ def worker(db_path, run_id):
         try:
             execute_run(args, store, run_id, prepared=True, folders=json.loads(row["folders"]),
                         save_stage=save_stage, defer_final=defer_final,
-                        base_revision=get_revision(db_path, run_id),
+                        base_revision=revision,
                         delegated_questions=tuple(RULES[rule["topic"]] for rule in policy["rules"]) if policy else (),
                         inbox_factory=(lambda role, engine: InboxChannel(db_path, run_id, role, engine)) if interactive else None)
         except (ValueError, OSError, subprocess.SubprocessError, RuntimeError):

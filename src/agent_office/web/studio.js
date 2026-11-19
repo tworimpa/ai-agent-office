@@ -46,6 +46,11 @@ const inboxMode = run => run.use_inbox === true ? '협업 요청함 사용' : '�
 const inboxPath = id => '/runs/' + id + '/inbox';
 const requestKey = row => row.run_id + '/' + row.id;
 
+const sameList = (left, right) => Array.isArray(left) && Array.isArray(right) &&
+  left.length === right.length && left.every((value, i) => value === right[i]);
+const sameSkills = (left, right) => [...roles, ...delegationRoles].every(([role]) =>
+  sameList(left?.[role] ?? [], right?.[role] ?? []));
+
 function decisionLabel(row) {
   const action = decisionLabels[row.decision];
   return [inboxStates[row.status] ?? '상태 미확인', row.source === 'delegate' && '대리 결정', action,
@@ -114,6 +119,9 @@ export function mountStudio(win) {
   const deciding = new Set(), unconfirmed = new Map();
   let pendingRows = [], historySnapshot = null, inboxAvailable = false;
   let pending = null;
+  let skillCatalog = new Map(), skillCursor = null, skillsAvailable = false, catalogBusy = false;
+  let savingSkill = false, importSequence = 0, skillReadSequence = 0;
+  let subtaskNumber = 0;
   try {
     const saved = JSON.parse(win.sessionStorage.getItem(pendingKey));
     if (validId(saved?.id) && Array.isArray(saved.indices) && typeof saved.task === 'string') pending = saved;
@@ -176,11 +184,235 @@ export function mountStudio(win) {
   const workspaceName = id => workspaces.find(item => item.id === id)?.name ?? '작업공간';
   const option = (value, text) => new win.Option(text, value);
   const checkedExtras = () => [...get('extras').querySelectorAll(':checked')].map(box => Number(box.value));
+  const selectedIndices = () => [Number(get('primary').value), ...checkedExtras()];
+  const skillRoles = [...roles, ...delegationRoles];
+  const skillLabel = item => item.name + ' · v' + item.version;
+  const assigned = new Map(skillRoles.map(([role]) => [role, new Set(pending?.role_skills?.[role] ?? [])]));
+  const chosenSkills = () => Object.fromEntries([...assigned].filter(([, ids]) => ids.size).map(([role, ids]) => [role, [...ids]]));
+  const hasSkills = () => [...assigned.values()].some(ids => ids.size);
+  const bytes = value => new TextEncoder().encode(value).length;
+
+  function renderSkillCatalog() {
+    const inspect = get('inspect-skill'), previous = inspect.value;
+    inspect.replaceChildren(option('', '버전을 선택하세요'), ...[...skillCatalog.values()].map(item => option(item.id, skillLabel(item))));
+    inspect.value = previous;
+    get('older-skills').hidden = !skillCursor;
+    get('role-skills').replaceChildren(...skillRoles.map(([role, title]) => {
+      const group = make('fieldset'), legend = make('legend'), choices = make('div');
+      group.dataset.role = role;
+      legend.textContent = title;
+      choices.className = 'checklist';
+      const picked = assigned.get(role);
+      for (const id of new Set([...skillCatalog.keys(), ...picked])) {
+        const label = make('label'), box = make('input');
+        box.type = 'checkbox';
+        box.name = role + '_skill';
+        box.value = id;
+        box.checked = picked.has(id);
+        label.className = 'check';
+        label.append(box, skillCatalog.has(id) ? skillLabel(skillCatalog.get(id)) : '선택한 버전 ' + id);
+        box.addEventListener('change', () => {
+          if (box.checked) picked.add(id);
+          else picked.delete(id);
+          controls();
+        });
+        choices.append(label);
+      }
+      if (!choices.children.length) choices.textContent = '등록된 버전이 없습니다.';
+      group.append(legend, choices);
+      return group;
+    }));
+  }
+
+  async function loadSkills(older = false) {
+    if (catalogBusy || (older && !skillCursor)) return;
+    catalogBusy = true;
+    get('older-skills').disabled = true;
+    try {
+      const page = await api(older ? '/skills/before/' + skillCursor : '/skills');
+      if (closed || hostId !== addressHost()) return;
+      if (!Array.isArray(page.skills) || page.skills.some(item => !validId(item?.id) ||
+          typeof item.name !== 'string' || !Number.isInteger(item.version)) ||
+          (page.next_cursor != null && !validId(page.next_cursor))) throw new Error('스킬 목록 형식 오류');
+      // Keep the loaded tail, including selections, when polling brings new versions to the front.
+      const map = new Map((older ? [...skillCatalog.values(), ...page.skills] : [...page.skills, ...skillCatalog.values()]).map(item => [item.id, item]));
+      const changed = JSON.stringify([...map]) !== JSON.stringify([...skillCatalog]);
+      if (older || !skillCatalog.size || (page.next_cursor && !skillCatalog.has(page.next_cursor))) {
+        skillCursor = page.next_cursor ?? null;
+      }
+      skillCatalog = map;
+      if (changed || !get('role-skills').children.length) renderSkillCatalog();
+      get('older-skills').hidden = !skillCursor;
+      skillsAvailable = true;
+      say('skill-status', host.name + ' · 불러온 버전 ' + map.size + '개');
+    } catch {
+      if (!closed) {
+        skillsAvailable = false;
+        say('skill-status', '이 호스트의 스킬 목록을 확인할 수 없습니다.');
+      }
+    } finally {
+      catalogBusy = false;
+      get('older-skills').disabled = !skillsAvailable;
+      controls();
+    }
+  }
+
+  get('inspect-skill').addEventListener('change', async () => {
+    const id = get('inspect-skill').value, sequence = ++skillReadSequence;
+    get('skill-preview').hidden = !id;
+    if (!id) return;
+    say('skill-preview', '지침을 불러오는 중입니다.');
+    try {
+      const {skill} = await api('/skills/' + id);
+      if (closed || sequence !== skillReadSequence) return;
+      if (skill?.id !== id || typeof skill.instructions !== 'string') throw new Error();
+      say('skill-preview', skill.instructions);
+    } catch {
+      if (!closed && sequence === skillReadSequence) say('skill-preview', '선택한 버전의 지침을 확인할 수 없습니다.');
+    }
+  });
+  get('older-skills').addEventListener('click', () => loadSkills(true));
+  get('skill-file').addEventListener('change', async () => {
+    const file = get('skill-file').files[0], sequence = ++importSequence;
+    if (!file) return;
+    if (file.size > 8192) return say('skill-note', '지침 파일은 8,192바이트 이하로 선택하세요.');
+    try {
+      const instructions = await file.text();
+      if (closed || sequence !== importSequence) return;
+      get('skill-text').value = instructions;
+      if (!get('skill-name').value) get('skill-name').value = file.name.replace(/\.(md|markdown)$/i, '');
+      say('skill-note', '파일에서 지침을 가져왔습니다. 내용을 확인하고 등록하세요.');
+    } catch { if (sequence === importSequence) say('skill-note', '파일을 읽을 수 없습니다.'); }
+  });
+  get('skill-text').addEventListener('input', () => { ++importSequence; });
+  get('skill-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    if (get('skill-entry').disabled) return;
+    const name = get('skill-name').value.trim(), instructions = get('skill-text').value;
+    if (!name || bytes(name) > 128 || !instructions.trim() || bytes(instructions) > 8192) {
+      return say('skill-note', '이름은 128바이트, 지침은 8,192바이트 안에서 입력하세요.');
+    }
+    savingSkill = true;
+    ++importSequence;
+    controls();
+    try {
+      const {skill} = await api('/skills', {name, instructions});
+      if (closed) return;
+      if (!validId(skill?.id) || skill.name !== name || !Number.isInteger(skill.version)) throw new Error();
+      skillCatalog = new Map([[skill.id, skill], ...skillCatalog]);
+      renderSkillCatalog();
+      get('skill-form').reset();
+      say('skill-note', skillLabel(skill) + ' 등록을 확인했습니다.');
+    } catch (error) {
+      say('skill-note', error.status ? error.message : '등록 결과를 확인하지 못했습니다. 호스트의 버전 목록을 새로고침하세요.');
+    } finally { savingSkill = false; controls(); }
+  });
+
+  function renderSubtaskFolders(group, picked) {
+    const choices = group.querySelector('.subtask-folders');
+    const available = workspace() ? selectedIndices() : picked;
+    choices.replaceChildren(...available.map(index => {
+      const label = make('label'), box = make('input');
+      label.className = 'check';
+      box.type = 'checkbox';
+      box.name = group.id + '-folder';
+      box.value = String(index);
+      box.checked = picked.includes(index);
+      label.append(box, workspace()?.folders[index] ?? ('원래 폴더 번호 ' + (index + 1)));
+      return label;
+    }));
+  }
+
+  function updateSubtaskFolders(clear = false) {
+    for (const group of get('subtasks').children) {
+      const checked = [...group.querySelectorAll('.subtask-folders :checked')].map(box => Number(box.value));
+      renderSubtaskFolders(group, clear ? [] : checked);
+    }
+  }
+
+  function updateSubtaskNumbers() {
+    const groups = [...get('subtasks').children];
+    groups.forEach((group, index) => {
+      group.firstChild.textContent = '하위 작업 ' + (index + 1);
+      group.querySelector('button').disabled = groups.length <= 2;
+    });
+    get('add-subtask').disabled = groups.length >= 4;
+  }
+
+  function addSubtask(draft) {
+    const group = make('fieldset'), legend = make('legend');
+    group.id = 'subtask-' + ++subtaskNumber;
+    group.className = 'subtask';
+    const task = make('textarea'), label = make('label');
+    task.id = task.name = group.id + '-task';
+    task.required = true;
+    task.rows = 2;
+    task.value = draft?.task ?? '';
+    label.htmlFor = task.id;
+    label.textContent = '독립 작업 요청 (필수)';
+    const folders = make('fieldset'), folderTitle = make('legend'), choices = make('div');
+    folderTitle.textContent = '담당 폴더 (하나 이상)';
+    choices.className = 'subtask-folders checklist';
+    folders.append(folderTitle, choices);
+    const engines = make('div');
+    engines.className = 'role-pickers';
+    for (const [role, title] of roles) {
+      const field = make('div'), caption = make('label'), picker = make('select');
+      picker.id = picker.name = group.id + '-' + role;
+      picker.dataset.role = role;
+      picker.required = true;
+      caption.htmlFor = picker.id;
+      caption.textContent = title + ' 엔진';
+      picker.replaceChildren(...Array.from(engineNames, ([id, name]) => option(id, name)));
+      picker.value = draft?.[role + '_engine'] ?? get(role + '-engine').value;
+      picker.addEventListener('change', updateEngineWarning);
+      field.append(caption, picker);
+      engines.append(field);
+    }
+    const remove = make('button');
+    remove.type = 'button';
+    remove.className = 'link-button';
+    remove.textContent = '이 하위 작업 빼기';
+    remove.addEventListener('click', () => {
+      group.remove();
+      updateSubtaskNumbers();
+      updateEngineWarning();
+      get('add-subtask').focus();
+    });
+    group.append(legend, label, task, folders, engines, remove);
+    get('subtasks').append(group);
+    renderSubtaskFolders(group, draft?.indices ?? [Number(get('primary').value)]);
+    updateSubtaskNumbers();
+    updateEngineWarning();
+    return task;
+  }
+
+  function readSubtasks() {
+    return [...get('subtasks').children].map(group => ({
+      task: group.querySelector('textarea').value.trim(),
+      indices: [...group.querySelectorAll('.subtask-folders :checked')].map(box => Number(box.value)),
+      developer_engine: group.querySelector('[data-role=developer]').value,
+      reviewer_engine: group.querySelector('[data-role=reviewer]').value,
+    }));
+  }
+  get('add-subtask').addEventListener('click', () => { if (!get('add-subtask').disabled) addSubtask().focus(); });
+  get('use-parallel').addEventListener('change', () => {
+    if (get('use-parallel').checked && !get('subtasks').children.length) { addSubtask(); addSubtask(); }
+    controls();
+    updateEngineWarning();
+  });
+  get('extras').addEventListener('change', () => updateSubtaskFolders());
+  renderSkillCatalog();
 
   function updateEngineWarning() {
     const warnings = [];
-    for (const [role, title] of get('use-delegation').checked ? [...roles, ...delegationRoles] : roles) {
-      const id = get(role + '-engine').value;
+    const pickers = get('use-parallel').checked ? [...get('subtasks').children].flatMap((group, i) =>
+      roles.map(([role, title]) => ['하위 작업 ' + (i + 1) + ' ' + title, group.querySelector('[data-role=' + role + ']').value])) :
+      roles.map(([role, title]) => [title, get(role + '-engine').value]);
+    if (get('use-delegation').checked) {
+      pickers.push(...delegationRoles.map(([role, title]) => [title, get(role + '-engine').value]));
+    }
+    for (const [title, id] of pickers) {
       const row = engineSnapshot?.engines.find(item => item.engine === id);
       const roleName = title + ' ' + engineNames.get(id);
       if (row?.installed === false) warnings.push(roleName + ' 실행 파일을 찾지 못했습니다.');
@@ -295,6 +527,17 @@ export function mountStudio(win) {
 
   function controls() {
     const unavailable = !host || !online;
+    const parallel = get('use-parallel').checked, needsTeam = parallel || hasSkills() || Boolean(pending?.subtasks || pending?.role_skills);
+    get('skill-entry').disabled = unavailable || !skillsAvailable || savingSkill;
+    get('inspect-skill').disabled = unavailable || !skillsAvailable;
+    get('use-parallel').disabled = !skillsAvailable && !parallel;
+    get('single-run-engines').hidden = parallel;
+    get('parallel-fields').hidden = get('parallel-fields').disabled = !parallel;
+    for (const group of get('role-skills').children) {
+      const picked = assigned.get(group.dataset.role);
+      for (const box of group.querySelectorAll('input')) box.disabled = !box.checked && (!skillsAvailable || picked.size >= 4);
+    }
+    say('team-availability', skillsAvailable ? '' : '이 호스트의 스킬·병렬 작업 지원을 확인할 수 없습니다.');
     get('register').disabled = unavailable || registering;
     get('run-fields').disabled = unavailable || !workspace() || starting || Boolean(pending);
     const needsInbox = pending ? pending.use_inbox === true : get('use-inbox').checked;
@@ -305,7 +548,7 @@ export function mountStudio(win) {
     say('delegation-availability', !needsInbox ? '위임하려면 협업 요청함을 켜세요.' :
       !reportAvailable ? '이 호스트의 복귀 보고를 확인해야 위임할 수 있습니다.' : '');
     get('start').disabled = unavailable || starting || (!pending && !workspace()) ||
-      (needsInbox && !inboxAvailable) || (delegated && !reportAvailable);
+      (needsInbox && !inboxAvailable) || (delegated && !reportAvailable) || (needsTeam && !skillsAvailable);
     for (const button of get('delegation-active').querySelectorAll('button')) {
       button.disabled = unavailable || !reportAvailable || endingDelegation.has(button.dataset.runId);
     }
@@ -341,20 +584,25 @@ export function mountStudio(win) {
     get('folder-fields').hidden = !folders.length;
     if (folders.length) get('primary').value = String(indices[0]);
     renderExtras(indices.slice(1));
+    updateSubtaskFolders();
     controls();
   }
 
   function renderCatalog(preferred) {
     const previous = get('workspace').value;
     const indices = [Number(get('primary').value), ...checkedExtras()];
-    const wanted = preferred ?? previous;
+    const wanted = pending?.workspace_id ?? preferred ?? previous;
     get('workspace').replaceChildren(...workspaces.map(item => option(item.id, item.name)));
     if (workspaces.some(item => item.id === wanted)) get('workspace').value = wanted;
-    if (!workspaces.length) {
+    if (pending && !workspaces.some(item => item.id === wanted)) {
+      get('workspace').add(option(wanted, '원래 작업공간 · ' + wanted + ' (목록에 없음)'));
+      get('workspace').value = wanted;
+    } else if (!workspaces.length) {
       get('workspace').add(option('', '작업공간을 등록하세요'));
       get('registration').open = true;
     }
     renderFolders(previous && previous === get('workspace').value ? indices : [0]);
+    if (previous && previous !== get('workspace').value && !pending) updateSubtaskFolders(true);
   }
 
   async function loadCatalog(preferred) {
@@ -370,6 +618,11 @@ export function mountStudio(win) {
           get('edit-mode').checked = pending.allow_edits;
           get('use-inbox').checked = pending.use_inbox === true;
           renderFolders(pending.indices);
+          if (Array.isArray(pending.subtasks)) {
+            get('use-parallel').checked = true;
+            for (const draft of pending.subtasks) addSubtask(draft);
+            controls();
+          }
         }
         renderRuns();
       }
@@ -749,7 +1002,7 @@ export function mountStudio(win) {
   function renderRunPolicy(run) {
     const policy = run.delegation;
     get('run-delegation').hidden = !policy;
-    detailDelegationActive = Boolean(policy && run.delegation_active === true);
+    detailDelegationActive = Boolean(policy && run.kind !== 'parallel' && run.delegation_active === true);
     get('run-delegation-stop').hidden = !detailDelegationActive;
     get('run-delegation-stop').disabled = !online || endingDelegation.has(run.id);
     if (!policy) { detailPolicy = null; return; }
@@ -768,7 +1021,115 @@ export function mountStudio(win) {
       }));
       detailPolicy = policy;
     }
-    say('run-delegation-status', detailDelegationActive ? '위임 중' : run.delegation_active === false ? '위임 종료' : '위임 상태 미확인');
+    say('run-delegation-status', run.kind === 'parallel' ? '각 하위 작업에서 위임 상태를 확인하고 종료할 수 있습니다.' :
+      detailDelegationActive ? '위임 중' : run.delegation_active === false ? '위임 종료' : '위임 상태 미확인');
+  }
+
+  function skillDescription(run) {
+    return skillRoles.flatMap(([role, title]) => {
+      const ids = run.role_skills?.[role];
+      if (!Array.isArray(ids) || !ids.length) return [];
+      const snapshots = run.role_skill_snapshots?.[role] ?? [];
+      return title + ' · ' + ids.map(id => {
+        const skill = snapshots.find(item => item.id === id) ?? skillCatalog.get(id);
+        return skill ? skillLabel(skill) : id;
+      }).join(', ');
+    }).join('\n');
+  }
+
+  function childCard(item, parent) {
+    const card = make('details'), title = make('summary'), meta = make('p'), skillInfo = make('p');
+    const diagnostic = make('p'), note = make('p'), evidenceBox = make('div');
+    title.textContent = item.task;
+    meta.className = skillInfo.className = 'assignments';
+    note.className = 'assignments';
+    note.setAttribute('role', 'status');
+    diagnostic.className = 'notice error';
+    const open = runLink(item.id);
+    open.textContent = '하위 실행 상세 및 협업 요청 보기';
+    card.className = 'child-result';
+    card.dataset.childId = item.id;
+    card.append(title, meta, skillInfo, diagnostic, note, evidenceBox, open);
+    let reading = false;
+    async function updateEvidence() {
+      if (!card.open || reading) return;
+      reading = true;
+      if (!evidenceBox.children.length) note.textContent = '하위 실행의 근거를 불러오는 중입니다.';
+      try {
+        const {run} = await api('/runs/' + item.id);
+        if (closed || selected !== parent.id || !card.isConnected) return;
+        if (run?.id !== item.id || run.parent_id !== parent.id || run.kind !== 'subtask' ||
+            !parent.base_revision || run.base_revision !== parent.base_revision ||
+            !['workspace_id', 'allow_edits', 'use_inbox'].every(key => run[key] === parent[key]) ||
+            !['task', 'developer_engine', 'reviewer_engine'].every(key => run[key] === item[key]) ||
+            !sameList(run.indices, item.indices) || !sameSkills(run.role_skills, parent.role_skills)) {
+          evidenceBox.replaceChildren();
+          skillInfo.textContent = diagnostic.textContent = '';
+          note.textContent = '하위 실행의 배정이 원래 요청과 달라 근거를 표시할 수 없습니다.';
+          return;
+        }
+        skillInfo.textContent = '배정 스킬 · ' + (skillDescription(run) || '없음');
+        diagnostic.textContent = run.diagnostic ?? '';
+        note.textContent = [run.workspace, run.branch].filter(Boolean).join(' · ');
+        const labels = ['개발자 응답', '테스트 결과', '리뷰 의견', '변경 파일', '변경 내용 diff'];
+        evidence.forEach((key, index) => {
+          let panel = evidenceBox.children[index];
+          if (!panel) {
+            panel = make('details');
+            const summary = make('summary');
+            summary.textContent = labels[index];
+            panel.append(summary, make('pre'));
+            evidenceBox.append(panel);
+          }
+          const value = run[key] || '기록된 내용이 없습니다.';
+          if (panel.lastChild.textContent !== value) panel.lastChild.textContent = value;
+        });
+      } catch {
+        note.textContent = '하위 실행의 최신 근거를 확인할 수 없습니다.';
+      } finally { reading = false; }
+    }
+    card.addEventListener('toggle', updateEvidence);
+    return {card, title, meta, updateEvidence};
+  }
+
+  const childrenById = new Map();
+  function renderTeam(run) {
+    const group = run.kind === 'parallel';
+    get('group-result').hidden = !group;
+    for (const detail of doc.querySelectorAll('.outputs > details')) detail.hidden = group;
+    const parentLink = get('parent-link');
+    if (validId(run.parent_id) && parentLink.dataset.parent !== run.parent_id) {
+      const link = runLink(run.parent_id);
+      link.textContent = '← 원래 병렬 작업 보기';
+      parentLink.replaceChildren(link);
+      parentLink.dataset.parent = run.parent_id;
+    }
+    parentLink.hidden = !validId(run.parent_id);
+    say('assigned-skills', skillDescription(run));
+    get('assigned-skills').hidden = !get('assigned-skills').textContent;
+    const children = group && Array.isArray(run.subtasks) ? run.subtasks : [];
+    for (const [id, node] of childrenById) {
+      if (!children.some(child => child.id === id)) { node.card.remove(); childrenById.delete(id); }
+    }
+    if (!group) return;
+    say('group-revision', '기준 커밋 · ' + (run.base_revision ?? '미확인'));
+    for (const [index, child] of children.entries()) {
+      if (!validId(child?.id)) continue;
+      let node = childrenById.get(child.id);
+      if (!node) {
+        node = childCard(child, run);
+        childrenById.set(child.id, node);
+        get('child-results').append(node.card);
+      }
+      const state = states[child.state]?.[0] ?? child.state ?? '상태 미확인';
+      const heading = (index + 1) + '. ' + child.task + ' · ' + state;
+      if (node.title.textContent !== heading) node.title.textContent = heading;
+      const folders = child.indices?.map(i => run.folders?.[run.indices?.indexOf(i)] ??
+        workspaces.find(item => item.id === run.workspace_id)?.folders[i] ?? ('폴더 ' + (i + 1)));
+      node.meta.textContent = [...roles.map(([role, name]) => name + ' ' + (engineNames.get(child[role + '_engine']) ?? '미확인')),
+        folders?.join(', '), outcomes[child.outcome] ?? child.outcome].filter(Boolean).join(' · ');
+      node.updateEvidence();
+    }
   }
 
   function renderDetail(run) {
@@ -784,18 +1145,21 @@ export function mountStudio(win) {
     say('run-engines', assignments.join(' · '));
     say('run-inbox-mode', inboxMode(run));
     renderRunPolicy(run);
+    renderTeam(run);
+    const group = run.kind === 'parallel';
+    get('run-engines').hidden = group;
     say('detail-workspace', workspaceName(run.workspace_id));
     say('run-id', run.id);
-    get('attempts').hidden = !Number.isInteger(run.attempts);
+    get('attempts').hidden = group || !Number.isInteger(run.attempts);
     say('attempts', Number.isInteger(run.attempts) ? '개발 시도 ' + run.attempts + '회' : '');
     get('retry-note').hidden = !(run.attempts > 1);
-    get('outcome').hidden = !run.outcome;
+    get('outcome').hidden = group || !run.outcome;
     say('outcome', outcomes[run.outcome] ?? (run.outcome ? '종료 결과를 확인할 수 없습니다.' : ''));
     get('diagnostic').hidden = !run.diagnostic;
     say('diagnostic', run.diagnostic || '');
     const tested = Boolean(run.test_output) || testedOutcomes.has(run.outcome) || ['TESTING', 'REVIEWING'].includes(run.state);
     get('test-command').hidden = !run.allow_edits || !tested;
-    get('run-context').hidden = !Array.isArray(run.folders);
+    get('run-context').hidden = group || !Array.isArray(run.folders);
     if (Array.isArray(run.folders)) {
       say('context-mode', run.allow_edits ? '개발·검증 맡기기' : '계획 작성');
       say('context-path', run.workspace ?? '—');
@@ -816,6 +1180,7 @@ export function mountStudio(win) {
       if (run?.id !== id) throw new Error('잘못된 실행 응답');
       if (closed || sequence !== detailSequence) return;
       renderDetail(run);
+      if (run.kind === 'parallel') return;
       try {
         const history = await requestHistory(id);
         if (closed || sequence !== detailSequence) return;
@@ -901,6 +1266,7 @@ export function mountStudio(win) {
       renderRuns();
       online = true;
       inbox = loadInbox(sequence);
+      loadSkills();
       loadReturnReport();
       controls();
       say('connection', host.name + ' 연결됨');
@@ -957,6 +1323,25 @@ export function mountStudio(win) {
   }
 
   function accepted(run) {
+    if (pending) {
+      const sent = pending.subtasks ?? [], got = run.subtasks ?? [];
+      const sameTasks = Boolean(sent.length) === (run.kind === 'parallel') && Array.isArray(got) &&
+        sent.length === got.length && sent.every((child, index) => {
+          const receipt = got[index];
+          // The journal masks sensitive text before exposing task snapshots.
+          return receipt && validId(receipt.id) && receipt.parent_id === pending.id && typeof receipt.task === 'string' &&
+            (child.task === receipt.task || receipt.task.includes('[redacted]') || receipt.task.endsWith('...[truncated]')) &&
+            ['developer_engine', 'reviewer_engine'].every(key => child[key] === receipt[key]) &&
+            sameList(child.indices, receipt.indices);
+        });
+      const changedSettings = (sent.length || pending.role_skills) &&
+        (pending.workspace_id !== run.workspace_id || pending.allow_edits !== run.allow_edits ||
+          (sent.length && !sameList(pending.indices, run.indices)));
+      if (changedSettings || !sameSkills(pending.role_skills, run.role_skills) || !sameTasks) {
+        say('start-note', '접수 기록의 역할별 스킬 또는 하위 작업 배정이 요청과 다릅니다. 원래 요청을 보관했습니다.');
+        return;
+      }
+    }
     if (!samePolicy(pending?.delegation, run.delegation)) {
       keepPending(null);
       say('start-note', '접수한 실행의 위임 범위가 요청과 다릅니다. 복귀 보고에서 이 실행의 위임 상태를 확인하세요.');
@@ -970,6 +1355,11 @@ export function mountStudio(win) {
     if (pending && !Object.hasOwn(pending, 'use_inbox')) get('use-inbox').checked = true;
     keepPending(null);
     resetDelegation();
+    for (const ids of assigned.values()) ids.clear();
+    renderSkillCatalog();
+    get('use-parallel').checked = false;
+    get('subtasks').replaceChildren();
+    updateEngineWarning();
     get('task').value = '';
     say('start-note', '접수했습니다. 실행 상세에서 진행 상황을 확인하세요.');
     runs = [run, ...runs.filter(item => item.id !== run.id)];
@@ -1004,12 +1394,22 @@ export function mountStudio(win) {
       request = {
         id: win.crypto.randomUUID().replaceAll('-', ''),
         workspace_id: workspace().id,
-        indices: [Number(get('primary').value), ...checkedExtras()],
+        indices: selectedIndices(),
         task, allow_edits: get('edit-mode').checked,
         use_inbox: get('use-inbox').checked,
         developer_engine: get('developer-engine').value,
         reviewer_engine: get('reviewer-engine').value,
       };
+      if (hasSkills()) request.role_skills = chosenSkills();
+      if (get('use-parallel').checked) {
+        const children = readSubtasks();
+        const invalid = children.findIndex(child => !child.task || bytes(child.task) > 8192 || !child.indices.length);
+        if (invalid !== -1) {
+          get('subtasks').children[invalid].querySelector(children[invalid].indices.length ? 'textarea' : 'input').focus();
+          return say('start-note', '하위 작업 ' + (invalid + 1) + '에 8,192바이트 이내의 요청과 담당 폴더를 지정하세요.');
+        }
+        request.subtasks = children;
+      }
       if (get('use-delegation').checked) {
         const rules = topics.filter(([topic]) => get('topic-' + topic).checked)
           .map(([topic]) => ({topic, path: get('path-' + topic).value}));
@@ -1070,11 +1470,12 @@ export function mountStudio(win) {
     if (!get('run-delegation-stop').disabled && !get('run-delegation-stop').hidden) stopDelegation(selected);
   });
 
-  get('workspace').addEventListener('change', () => renderFolders());
+  get('workspace').addEventListener('change', () => { renderFolders(); updateSubtaskFolders(true); });
   get('use-inbox').addEventListener('change', controls);
   get('use-delegation').addEventListener('change', () => { updateEngineWarning(); controls(); });
   get('primary').addEventListener('change', () => {
     renderExtras(checkedExtras());
+    updateSubtaskFolders();
   });
   get('refresh').addEventListener('click', refresh);
   doc.addEventListener('visibilitychange', () => {

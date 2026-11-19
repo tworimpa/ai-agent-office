@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import sqlite3
 
-from .models import (ACTIVE, TERMINAL, STATES, OUTCOMES, TRANSITIONS, EVENT_TYPES,
+from .models import (ACTIVE, TERMINAL, TERMINAL_OUTCOMES, STATES, OUTCOMES, TRANSITIONS, EVENT_TYPES,
                      TaskRecord, RunRecord, EventRecord, TaskSpec, OwnerInfo, OfficeError, validate_id, validate_db_file, MAX_SQLITE_INT)
 from .workspace import Worktree
 from .events import snapshot_request, sanitize_payload, encode_payload
@@ -126,20 +126,24 @@ class TaskStore:
         return [self._event(row) for row in self.connection.execute("SELECT * FROM events WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?", (run.run_id, after_seq, limit))]
 
     def create_run(self, spec: TaskSpec, run_id: str, intent: Worktree, owner: OwnerInfo, *, register=None):
+        with self._write():
+            return self._create_run(spec, run_id, intent, owner, register=register)
+
+    def _create_run(self, spec, run_id, intent, owner, *, register=None):
+        """Insert one run inside the caller's transaction."""
         validate_id(spec.task_id)
         validate_id(run_id)
         if type(spec.max_attempts) is not int or not 1 <= spec.max_attempts <= MAX_SQLITE_INT or spec.developer_engine not in SUPPORTED_ENGINES or spec.reviewer_engine not in SUPPORTED_ENGINES:
             raise ValueError("Invalid task specification")
         stamp = now()
-        with self._write():
-            if self.connection.execute("SELECT 1 FROM tasks WHERE task_id=?", (spec.task_id,)).fetchone():
-                raise ValueError("Task already exists; replay is not supported")
-            task = TaskRecord(spec.task_id, spec.project, snapshot_request(spec.request_snapshot), spec.developer_engine, spec.reviewer_engine, str(intent.path), intent.branch, "QUEUED", None, 0, spec.max_attempts, run_id, stamp, stamp)
-            self.connection.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(asdict(task).values()))
-            self.connection.execute("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)", (run_id, spec.task_id, owner.host_name, owner.owner_token, "QUEUED", None, 0, stamp, None, 1))
-            if register is not None:
-                register(self.connection)
-            self._record(run_id, operation_key=f"{run_id}:0:run:RUN_CREATED", event_type="RUN_CREATED", payload={"phase": "run"})
+        if self.connection.execute("SELECT 1 FROM tasks WHERE task_id=?", (spec.task_id,)).fetchone():
+            raise ValueError("Task already exists; replay is not supported")
+        task = TaskRecord(spec.task_id, spec.project, snapshot_request(spec.request_snapshot), spec.developer_engine, spec.reviewer_engine, str(intent.path), intent.branch, "QUEUED", None, 0, spec.max_attempts, run_id, stamp, stamp)
+        self.connection.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(asdict(task).values()))
+        self.connection.execute("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)", (run_id, spec.task_id, owner.host_name, owner.owner_token, "QUEUED", None, 0, stamp, None, 1))
+        if register is not None:
+            register(self.connection)
+        self._record(run_id, operation_key=f"{run_id}:0:run:RUN_CREATED", event_type="RUN_CREATED", payload={"phase": "run"})
         return self.get_run(run_id)
 
     def record_transition(self, run_id, *, operation_key, event_type, state=None, outcome=None, attempts=None, payload=None):
@@ -169,8 +173,7 @@ class TaskStore:
             raise ValueError("Invalid outcome")
         if target in ACTIVE and outcome is not None:
             raise ValueError("Active state cannot have an outcome")
-        expected = {"PLAN_ONLY": {"PLAN_ONLY"}, "READY_FOR_HUMAN_REVIEW": {"APPROVED"}, "WAITING_USER": {"REVIEW_UNDECIDED"}, "CANCELED": {"CANCELED"}, "RECOVERY_REQUIRED": {"INTERRUPTED"}, "FAILED": {"DEVELOPER_FAILED", "TEST_FAILED", "REVIEW_FAILED", "CHANGES_REQUESTED"}}
-        if target in TERMINAL and outcome not in expected[target]:
+        if target in TERMINAL and outcome not in TERMINAL_OUTCOMES[target]:
             raise ValueError("Outcome does not match state")
         for key, expected_value in (("state", target), ("attempt", count), ("outcome", outcome)):
             if key in payload and payload[key] != expected_value:

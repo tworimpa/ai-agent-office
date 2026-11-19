@@ -20,6 +20,7 @@ from .store import TaskStore
 from .events import RunRecorder
 from .models import TaskSpec, OwnerInfo, OfficeError, ACTIVE, validate_id, MAX_SQLITE_INT
 from .ownership import RunGuard, recover_run
+from .role_skills import role_guidance
 from .runtime_paths import resolve_db_path
 from dataclasses import asdict
 
@@ -94,8 +95,9 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
             engine: CLIAdapter(engine, timeout=args.timeout)
             for engine in SUPPORTED_ENGINES
         }
+        guidance = role_guidance(store.connection, run_id, ("developer", "reviewer")) if prepared else {}
         graph = build_graph(adapters, recorder=recorder, save_stage=save_stage, inbox_factory=inbox_factory,
-                            delegated_questions=delegated_questions)
+                            delegated_questions=delegated_questions, skill_guidance=guidance)
         initial = {
             "task": args.task,
             "workspace": str(worktree.path),
