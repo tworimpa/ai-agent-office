@@ -14,10 +14,12 @@ def _html(value):
 
 def terminal_review(record):
     proposal = record["proposal"]
-    evidence = json.dumps(proposal["history"], ensure_ascii=False, indent=2)
+    source = proposal.get("source")
+    evidence = (("검토 출처", source["reference"]) if source else
+                ("인용한 실행", json.dumps(proposal["history"], ensure_ascii=False, indent=2)))
     history = json.dumps(record["history"], ensure_ascii=False, indent=2)
     sections = (("개선안", proposal["title"]), ("이유", proposal["rationale"]),
-                ("기대 효과", proposal["expected"]), ("인용한 실행", evidence),
+                ("기대 효과", proposal["expected"]), evidence,
                 ("기준 커밋", record["base"]), ("현재 안정 커밋", record["stable"]),
                 ("후보 커밋", record["sha"]), ("검사 이미지", record["image"]),
                 ("전체 diff", record["diff"]), ("검증 및 결정 이력", history))
@@ -26,6 +28,8 @@ def terminal_review(record):
 
 def render_review(record):
     p = record["proposal"]
+    source = p.get("source")
+    attribution = f'검토 출처 {_html(source["reference"])}' if source else f'제안 엔진 {_html(p["engine"])}'
     validation = record["validation"]
     states = {"submitted": "검증 대기", "passed": "검증 통과 · 승인 대기", "failed": "검증 실패",
               "verifying": "검증 중", "approved": "승격 승인", "rejected": "거절"}
@@ -63,7 +67,7 @@ padding:.8rem;white-space:pre-wrap;tab-size:4}} code,pre {{font-size:.94em}}
 summary {{cursor:pointer;font-weight:600}} li {{margin-block:.6rem}}
 </style><main>
 <header><p>AI Agent Office · 개선안 검토</p><h1>{_html(p["title"])}</h1>
-<p><strong>{_html(state)}</strong> · 제안 엔진 {_html(p["engine"])}</p>{stale}</header>
+<p><strong>{_html(state)}</strong> · {attribution}</p>{stale}</header>
 <dl><dt>개선안 ID</dt><dd><code>{_html(record["id"])}</code></dd>
 <dt>기준 커밋</dt><dd><code>{_html(record["base"])}</code></dd>
 <dt>검토할 후보 커밋</dt><dd><code>{_html(record["sha"])}</code></dd></dl>

@@ -66,6 +66,19 @@ agent-office improve --release ../office-releases checkout-stable ../approved-of
 
 지정한 새 디렉터리에 현재 안정 커밋의 독립 Git 체크아웃이 생긴다. 다음 개선 주기의 기준이나 별도 배포 절차의 입력으로 사용할 수 있다. 승격의 단위는 **릴리스 기록이 가리키는 소스 커밋**이다. 서비스 설치와 재시작은 운영자의 배포 절차에서 수행한다.
 
+## 운영자가 검토한 Git 커밋을 후보로 접수하기
+
+운영자가 신뢰하는 로컬 체크아웃에서 병합된 PR의 전체 커밋 SHA와 검토 주소를 확인합니다. 해당 커밋의 조상에 현재 안정 커밋이 있어야 합니다. 검토 주소는 릴리스 원장에 기록되며, 명령에서 그 주소를 조회하지 않습니다.
+
+```shell
+agent-office improve --release ../office-releases import-revision --repo . --revision REVIEWED_COMMIT --reference https://github.com/OWNER/REPO/pull/20
+agent-office improve --release ../office-releases verify CANDIDATE_ID
+agent-office improve --release ../office-releases review CANDIDATE_ID --html review.html
+agent-office improve --release ../office-releases approve CANDIDATE_ID --sha REVIEWED_COMMIT
+```
+
+후보에는 지정한 Git 커밋의 SHA와 파일을 그대로 보관합니다. 텍스트 변경은 diff로 검토하고, Git이 바이너리로 구분한 파일은 경로와 Git 객체 ID로 검토합니다. 격리 검증 뒤 운영자 터미널에서 확인 문구를 입력하면 승격됩니다. 서비스 재시작에는 별도 [배포 확인](studio-deployment.md#검토배포복구)이 필요합니다.
+
 ## 작업실 화면 연결
 
 1단계에서 릴리스 저장소를 초기화한 뒤 다음 두 명령을 **각각의 계정**에서 실행한다. 예시는 작업 호스트 기준 경로다. 로컬·원격 모두 같은 방법을 사용한다.
