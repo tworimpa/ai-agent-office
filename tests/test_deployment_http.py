@@ -81,6 +81,10 @@ def test_an_old_or_mismatched_probe_cannot_satisfy_a_selected_version_request():
                     dict(data, health="offline"), dict(data, running=None), dict(data, release_matches=1)):
         with pytest.raises(RemoteUnavailable):
             read(invalid)
+    restored = dict(id="f"*32, state="deploy_failed_restored", requested={"seq": 1, "sha": sha},
+                    previous={"seq": 2, "sha": "d"*40}, time="2026-11-19T13:00:00+00:00", message="restored")
+    with pytest.raises(RemoteUnavailable):
+        read(dict(data, last=restored))
     with pytest.raises(RemoteUnavailable):
         read(data, "d"*32)
     for invalid in ("/deployment/versions/0/" + sha, "/deployment?port=8766", "/deployment/restart",

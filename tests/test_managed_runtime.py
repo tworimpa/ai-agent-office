@@ -241,6 +241,18 @@ def test_windows_stop_pending_before_start(monkeypatch):
     assert seen == [["SYSTEM/sc.exe", "stop", "OfficeStudio"], ["SYSTEM/sc.exe", "start", "OfficeStudio"]]
 
 
+def test_windows_paused_service_can_be_stopped_during_throttled_restart(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    states = iter(["pausing", "paused", "stopping", "stopped"])
+    monkeypatch.setattr(runtime_ops, "_windows_state", lambda name: next(states))
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    seen = []
+    monkeypatch.setattr(runtime_ops, "_run", lambda cfg, action:
+                        seen.append(action) or subprocess.CompletedProcess([], 0))
+    runtime_ops.stop_service(config("windows", "OfficeStudio"))
+    assert seen == ["stop"]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows kernel TCP and process tables")
 def test_windows_verifies_real_listener_and_parent_process():
     from agent_office.windows_binding import owns_windows_process

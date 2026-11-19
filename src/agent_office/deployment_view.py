@@ -120,3 +120,9 @@ def check_reply(code, body, reference):
             _revision(revision)
         if last["state"] == "deploy_failed_restored":
             _require(last["previous"] is not None)
+        if observation is not None:
+            if last["state"] == "deploy_failed_stopped":
+                raise ValueError("Stopped deployment cannot report a running version")
+            confirmed = {"healthy": last["requested"], "deploy_failed_restored": last["previous"]}.get(last["state"])
+            if confirmed is not None:
+                _require(all(observation[k] == confirmed[k] for k in ("seq", "sha")))

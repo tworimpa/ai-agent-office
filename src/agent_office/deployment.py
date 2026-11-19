@@ -462,11 +462,22 @@ def _quiesce_unresponsive(session, op, selected, observed):
     # registered service whose activation this operation already selected.
     # A listener that survives that stop prevents another start on this port.
     reply = observed["probe"]
-    if reply["state"] not in {"timeout", "unhealthy"} or reply["identity"] is not None:
+    manager = observed["manager"]
+    # NSSM may pause while throttling a failed child. systemd can be
+    # activating with no listener while waiting to auto-restart.
+    backoff = (manager in {"paused", "pausing", "continuing"} or
+               (manager == "starting" and session.config["manager"] != "windows"))
+    no_response = reply["state"] in {"timeout", "unhealthy"} and reply["identity"] is None
+    if not (no_response or backoff):
         return observed
-    if observed["manager"] != "running" or not observed["owns"]:
+    identity = reply["identity"]
+    if identity and not (identity == op["previous"] or _matches(session.config, identity, selected)
+                         or _matches(session.config, identity, _pick(op["requested"], op["id"]))):
+        raise ValueError("Recovery could not verify ownership of the service and port")
+    if reply["state"] == "wrong_identity" or not ((backoff and reply["state"] == "refused") or
+                                                  ((manager == "running" or backoff) and observed["owns"])):
         raise ValueError("Unresponsive listener is not owned by a running managed service")
-    _finish(session, op, selected, "restoring", "응답하지 않는 등록 서비스를 중지하고 포트를 확인하는 중")
+    _finish(session, op, selected, "restoring", "등록 서비스를 중지하고 포트 해제를 확인하는 중")
     session.act(runtime_ops.stop_service, observed)
     stopped = session.observe()
     if stopped["manager"] != "stopped" or stopped["probe"]["state"] != "refused":

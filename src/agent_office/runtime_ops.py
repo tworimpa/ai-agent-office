@@ -175,7 +175,9 @@ def _windows_state(service):
     except pywintypes.error:
         return "unknown"
     return {scm.SERVICE_STOPPED: "stopped", scm.SERVICE_START_PENDING: "starting",
-            scm.SERVICE_STOP_PENDING: "stopping", scm.SERVICE_RUNNING: "running"}.get(state, "unknown")
+            scm.SERVICE_STOP_PENDING: "stopping", scm.SERVICE_RUNNING: "running",
+            scm.SERVICE_PAUSED: "paused", scm.SERVICE_PAUSE_PENDING: "pausing",
+            scm.SERVICE_CONTINUE_PENDING: "continuing"}.get(state, "unknown")
 
 
 def manager_state(config):
@@ -198,7 +200,7 @@ def _wait_transition(config):
     deadline = time.monotonic() + 30
     while True:
         state = manager_state(config)
-        if state not in ("starting", "stopping"):
+        if state not in ("starting", "stopping", "pausing", "continuing"):
             return state
         if time.monotonic() >= deadline:
             raise RuntimeError("Service manager transition timed out")
@@ -215,7 +217,7 @@ def stop_service(config):
         state = _wait_transition(config)
         if state == "stopped":
             return
-        if state != "running":
+        if state not in ("running", "paused"):
             raise RuntimeError("Cannot verify service state before stopping")
     _require_success(config, "stop")
     if _wait_transition(config) != "stopped":

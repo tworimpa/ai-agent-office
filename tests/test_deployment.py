@@ -124,6 +124,26 @@ def test_first_boot_failure_stops_and_leaves_a_retryable_target(machine):
     assert machine.run(1)["state"] == "healthy"
 
 
+@pytest.mark.parametrize("previous", [False, True])
+def test_throttled_candidate_is_stopped_before_restoration(machine, release, passing, monkeypatch, previous):
+    root, base = release
+    approve(root, passed(root, proposal(base)))
+    if previous:
+        machine.run(1)
+    prior_restart = machine.restart
+    def restart(config):
+        _, selection = deploy.read_selection(machine.target)
+        if selection["seq"] == 2:
+            machine.state, machine.health, machine.actual = "paused", "refused", None
+            raise RuntimeError("Service did not reach running state")
+        prior_restart(config)
+    monkeypatch.setattr(runtime_ops, "restart_service", restart)
+    result = machine.run(2)
+    assert result["state"] == ("deploy_failed_restored" if previous else "deploy_failed_stopped")
+    assert ("stop", None) in machine.actions
+    assert (machine.actual["sha"] if previous else machine.actual) == (base if previous else None)
+
+
 def test_first_deployment_rejects_already_running_or_foreign_port(machine):
     machine.state = "running"
     with pytest.raises(ValueError, match="stopped"):
