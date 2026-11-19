@@ -12,6 +12,7 @@ from .models import validate_id
 from .office_wire import check_office_reply, office_offset
 from .improvement_wire import check_improvement_reply, improvement_route
 from .version_wire import check_version_reply, version_route
+from .deployment_view import check_reply as check_deployment_reply, deployment_route
 from .engines import SUPPORTED_ENGINES
 from .away_expert import RULES, validate_policy
 from .team_wire import check_run_features, check_skill_reply
@@ -50,6 +51,8 @@ def is_peer_route(method: str, route: str) -> bool:
         return improvement_route(method, route) is not None
     if route.startswith("/versions"):
         return version_route(method, route) is not None
+    if route.startswith("/deployment"):
+        return deployment_route(method, route) is not None
     if office_offset(route) is not None:
         return method == "GET"
     if route in ("/workspaces", "/runs", "/skills"):
@@ -125,6 +128,10 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
     if status >= 400:
         return
 
+    deployment = deployment_route(method, route)
+    if deployment is not None:
+        check_deployment_reply(status, data, deployment)
+        return
     improvement = improvement_route(method, route)
     version = version_route(method, route)
     if version is not None:

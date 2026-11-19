@@ -15,6 +15,8 @@ def add_commands(sub):
     improve = sub.add_parser("improve", help="Propose, verify and promote Office improvements")
     improve.add_argument("--release", type=Path, help="Operator-owned release directory")
     actions = improve.add_subparsers(dest="action", required=True)
+    from .deploy_cli import add_commands as add_deployment_commands
+    add_deployment_commands(actions)
     init = actions.add_parser("init", help="Create a release store from a trusted baseline")
     init.add_argument("--repo", type=Path, required=True)
     init.add_argument("--revision", required=True, help="Initial stable commit")
@@ -137,6 +139,9 @@ def run_command(args, db_path):
             result = {"file": str(args.out), "base": proposal["base"], "title": proposal["title"]}
         elif root is None:
             raise ValueError("Specify the operator directory with improve --release PATH")
+        elif action in {"deployment-init", "deploy", "deployment-status", "deployment-recover"}:
+            from . import deploy_cli
+            result = deploy_cli.run(root, args)
         elif action == "init":
             result = releases.init_release(root, args.repo, args.revision, args.image)
         elif action == "submit":
@@ -173,6 +178,9 @@ def run_command(args, db_path):
         else:
             result = releases.checkout_stable(root, args.dest)
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        if action in {"deploy", "deployment-recover"} and result["state"] in {
+                "deploy_failed_stopped", "deploy_failed_restored", "restore_failed"}:
+            return 1
         return 1 if action == "verify" and result["state"] != "passed" else 0
     except NoImprovementSuggested:
         print(json.dumps({"status": "no_proposal", "runs": args.runs}))

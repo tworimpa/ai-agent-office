@@ -21,6 +21,7 @@ from .office_wire import office_offset
 from . import improvement_api
 from .improvement_wire import improvement_route
 from .version_wire import version_route
+from . import deployment_view
 from .studio_improvements import StudioImprovements
 from .store import TaskStore
 from .studio_catalog import StudioCatalog
@@ -84,7 +85,7 @@ class StudioServer(ThreadingHTTPServer):
         super().server_bind()
 
     def __init__(self, db_path: Path, port: int = 8766, *, remotes=(), accept_remote=False,
-                 improvement_source=None, release_view=None):
+                 improvement_source=None, release_view=None, deployment_target=None):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Invalid port")
         self.runner = None
@@ -92,6 +93,7 @@ class StudioServer(ThreadingHTTPServer):
         self.improvements = None
         self.improvement_source = improvement_source
         self.release_view = release_view
+        self.deployment_target = Path(deployment_target).expanduser().resolve() if deployment_target else None
         self.remotes = {host.journal_id: host for host in remotes}
         if len(self.remotes) != len(remotes) or len({h.alias.casefold() for h in remotes}) != len(remotes):
             raise ValueError("각 원격 호스트의 SSH 별칭과 저널 ID는 고유해야 합니다.")
@@ -229,6 +231,19 @@ class StudioHandler(ObserverHandler):
 
     def _local_api(self, path, write):
         catalog, runner = self.server.catalog, self.server.runner
+        if path.startswith("/api/deployment"):
+            route = deployment_view.deployment_route("POST" if write else "GET", path.removeprefix("/api"))
+            if route is None:
+                self._error(404, "NOT_FOUND")
+            else:
+                try:
+                    status = deployment_view.read_status(self.server.deployment_target, self.server.release_view,
+                                                         self.server.journal_id, route)
+                    deployment_view.check_reply(200, status, route)
+                except (ValueError, KeyError, TypeError):
+                    raise OfficeError("STORE_IO") from None
+                self._reply(200, status)
+            return
         if path.startswith("/api/versions"):
             from . import stable_view
             target = version_route("POST" if write else "GET", path.removeprefix("/api"))
@@ -362,9 +377,10 @@ class StudioHandler(ObserverHandler):
 
 
 def serve_studio(db_path: Path, port: int, *, remotes=(), accept_remote=False,
-                 improvement_source=None, release_view=None):
+                 improvement_source=None, release_view=None, deployment_target=None):
     with StudioServer(db_path, port, remotes=remotes, accept_remote=accept_remote,
-                      improvement_source=improvement_source, release_view=release_view) as server:
+                      improvement_source=improvement_source, release_view=release_view,
+                      deployment_target=deployment_target) as server:
         print(f"Agent Office studio: http://127.0.0.1:{server.server_address[1]}/", flush=True)
         if accept_remote:
             print(f"Remote studio port: {server.server_address[1]} | Journal ID: {server.journal_id}", flush=True)
