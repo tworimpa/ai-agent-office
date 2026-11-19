@@ -20,7 +20,7 @@ For owner-requested work, Codex proceeds through normal feature push, a reviewab
 
 ## ADR-004 — Human-in-the-loop and unattended delegation
 
-Planned: questions are structured events, and a persisted queue may route low-risk technical questions to a delegated agent while away. A separate deterministic policy check must allow any delegated decision. Authorization and security approvals cannot be synthesized from another model's answer.
+Studio persists typed questions and permission requests. For an explicitly delegated question the execution host checks the immutable run policy, reads the named evidence at the pinned Git revision, and requires independent specialist and verifier results. The final handoff is serialized with human answers, revocation and run stop. Permission requests stay with the operator. See the [away delegation plan](superpowers/plans/2026-11-19-away-delegation.md).
 
 ## ADR-005 — Validate before reporting completion
 

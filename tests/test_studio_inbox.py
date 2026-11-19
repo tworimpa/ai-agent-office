@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+import json
 import platform
 import subprocess
 import sys
@@ -268,3 +269,292 @@ def test_generic_journal_and_observer_do_not_create_inbox(tmp_path):
         assert not runner.inbox.pending()
     with TaskStore(path, readonly=True) as observer:
         assert observer.connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+# The provider pair is exercised separately with mock CLI executables. These
+# tests control the consultation timing to cover the journal's race boundaries.
+@pytest.fixture
+def away(journal):
+    from agent_office.away_expert import RULES
+    from agent_office.away_ledger import register_policy
+
+    path, run_id, _, _ = journal
+    policy = {"rules": [{"topic": "test_command", "path": "docs/README.md"}],
+              "specialist_engine": "codex", "verifier_engine": "gemini"}
+    revision = "a" * 40
+    with TaskStore(path, existing=True) as store, store._write():
+        store.connection.execute("UPDATE studio_runs SET folders=? WHERE id=?", ('["docs"]', run_id))
+        register_policy(store.connection, run_id, policy, revision)
+    return policy, revision, RULES["test_command"]
+
+
+def test_away_answer_and_evidence_survive_delivery_completion_and_reopen(journal, away, monkeypatch):
+    from agent_office.away_ledger import get_policy, get_revision, return_report, revoke_policy
+
+    path, run_id, inbox, channel = journal
+    policy, revision, prompt = away
+    evidence = {"path": "docs/README.md", "line": 6, "quote": "pytest -q", "revision": revision}
+    calls = []
+
+    async def consult(repo, rev, rule, specialist, verifier, folders):
+        calls.append((repo, rev, rule, specialist, verifier, folders))
+        return {"answer": "pytest -q", "evidence": evidence}
+
+    monkeypatch.setattr("agent_office.away_consult.run_consultation", consult)
+    assert get_policy(path, run_id) == policy
+    assert return_report(path)["active"] == [{"run_id": run_id, "task": "task"}]
+    row = asyncio.run(asyncio.wait_for(channel.ask("question", prompt, "session"), timeout=5))
+    assert calls == [(path.parent, revision, policy["rules"][0], "codex", "gemini", ["docs"])]
+    assert row["source"] == "delegate" and row["answer"] == "pytest -q"
+    assert inbox.history(run_id)[0]["status"] == "pending"
+    assert not return_report(path)["delegated"]
+    with channel.sending(row["id"]):
+        pass
+    # Transport accepted the answer before revocation. Its receipt stays valid.
+    revoke_policy(path, run_id)
+    with pytest.raises(OfficeError, match="REQUEST_CLOSED"), channel.sending(row["id"]):
+        pytest.fail("a claimed answer was replayed")
+    channel.delivered(row["id"])
+    channel.expire()
+    with TaskStore(path, existing=True) as store:
+        store.record_transition(run_id, operation_key="done", event_type="RUN_FINISHED",
+                                state="PLAN_ONLY", outcome="PLAN_ONLY")
+
+    with closing(LocalRunner(path)):
+        report = return_report(path)
+        assert report["counts"] == {"active": 0, "delegated": 1, "questions": 0, "permissions": 0}
+        assert not report["active"]
+        receipt, = report["delegated"]
+        assert receipt["id"] == row["id"] and receipt["status"] == "delivered"
+        assert receipt["run_state"] == receipt["outcome"] == "PLAN_ONLY"
+        assert receipt["evidence"] == evidence and receipt["topic"] == "test_command"
+        assert receipt["specialist_engine"] == "codex" and receipt["verifier_engine"] == "gemini"
+        revoke_policy(path, run_id)
+        assert get_policy(path, run_id) is None and get_revision(path, run_id) == revision
+        assert return_report(path)["delegated"] == [receipt]
+
+
+@pytest.mark.parametrize("intervene", ["operator", "revoke"])
+def test_completed_proposal_is_pending_until_original_session_writes_it(journal, away, monkeypatch, intervene):
+    from agent_office.away_ledger import return_report, revoke_policy
+    from agent_office.dialogue import DelegationWithdrawn
+
+    path, run_id, inbox, channel = journal
+    _, revision, prompt = away
+
+    async def exercise():
+        async def provider(*args):
+            return {"answer": "pytest", "evidence": {"path": "docs/README.md", "line": 1,
+                                                    "quote": "pytest", "revision": revision}}
+
+        monkeypatch.setattr("agent_office.away_consult.run_consultation", provider)
+        proposal = await asyncio.wait_for(channel.ask("question", prompt, "session"), timeout=5)
+        row, = inbox.pending()
+        assert row["id"] == proposal["id"] and row["decision"] is None and not return_report(path)["delegated"]
+        human = {"action": "answer", "answer": "사람의 답"}
+        if intervene == "revoke":
+            revoke_policy(path, run_id)
+        else:
+            inbox.decide(run_id, row["id"], human)
+        with pytest.raises(DelegationWithdrawn), channel.sending(row["id"]):
+            pytest.fail("a superseded proposal reached the transport")
+        with pytest.raises(OfficeError, match="REQUEST_CLOSED"), channel.sending(row["id"]):
+            pytest.fail("a superseded proposal was replayed")
+        waiter = asyncio.create_task(channel.await_operator(row["id"]))
+        await asyncio.sleep(0)
+        if intervene == "revoke":
+            assert not waiter.done() and inbox.pending()[0]["id"] == row["id"]
+            inbox.decide(run_id, row["id"], human)
+        reply = await asyncio.wait_for(waiter, timeout=5)
+        assert (reply["id"], reply["answer"], reply["source"]) == (row["id"], "사람의 답", "operator")
+        with channel.sending(reply["id"]):
+            pass
+        channel.delivered(reply["id"])
+        assert not return_report(path)["delegated"] and inbox.history(run_id)[0]["status"] == "delivered"
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("failure", ["withdrawn_wait_canceled", "write_unconfirmed"])
+def test_unsent_or_unconfirmed_proposal_never_replays(journal, away, monkeypatch, failure):
+    from agent_office.away_ledger import return_report, revoke_policy
+    from agent_office.dialogue import DelegationWithdrawn
+
+    path, run_id, inbox, channel = journal
+    _, revision, prompt = away
+
+    async def consult(*args):
+        return {"answer": "pytest", "evidence": {"path": "docs/README.md", "line": 1,
+                                                "quote": "pytest", "revision": revision}}
+
+    monkeypatch.setattr("agent_office.away_consult.run_consultation", consult)
+
+    async def exercise():
+        proposal = await asyncio.wait_for(channel.ask("question", prompt, "session"), timeout=5)
+        request_id = proposal["id"]
+        if failure == "withdrawn_wait_canceled":
+            revoke_policy(path, run_id)
+            with pytest.raises(DelegationWithdrawn), channel.sending(request_id):
+                pytest.fail("revoked proposal was sent")
+            waiter = asyncio.create_task(channel.await_operator(request_id))
+            await asyncio.sleep(0)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+            assert not return_report(path)["delegated"]
+        else:
+            with pytest.raises(OSError, match="write unconfirmed"), channel.sending(request_id):
+                raise OSError("write unconfirmed")
+            receipt, = return_report(path)["delegated"]
+            assert receipt["answer"] == "pytest" and receipt["status"] == "expired"
+        row, = inbox.history(run_id)
+        assert row["status"] == "expired" and row["delivered_at"] is None
+        with pytest.raises(OfficeError, match="REQUEST_CLOSED"), channel.sending(request_id):
+            pytest.fail("closed request was replayed")
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("competing", ["operator", "revoke", "stop", "attempt", "scope", "prompt", "policy"])
+def test_away_inflight_decision_rechecks_current_snapshot(journal, away, monkeypatch, competing):
+    from agent_office.away_ledger import return_report, revoke_policy
+
+    path, run_id, inbox, channel = journal
+    policy, revision, prompt = away
+
+    async def exercise():
+        entered, release, exited = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def consult(*args):
+            entered.set()
+            try:
+                await release.wait()
+                return {"answer": "pytest -q", "evidence": {"path": "docs/README.md", "line": 6,
+                                                            "quote": "pytest -q", "revision": revision}}
+            finally:
+                exited.set()
+        monkeypatch.setattr("agent_office.away_consult.run_consultation", consult)
+        waiter = asyncio.create_task(channel.ask("question", prompt, "session"))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        request, = inbox.pending()
+        if competing == "operator":
+            inbox.decide(run_id, request["id"], {"action": "answer", "answer": "사람의 답"})
+        elif competing == "revoke":
+            assert revoke_policy(path, run_id) == revoke_policy(path, run_id) == {"run_id": run_id, "active": False}
+            # The worker must tear down even a consultation that never returns.
+            await asyncio.wait_for(exited.wait(), timeout=5)
+        else:
+            with TaskStore(path, existing=True) as store, store._write():
+                db = store.connection
+                if competing == "stop":
+                    db.execute("UPDATE studio_runs SET stop_requested=1 WHERE id=?", (run_id,))
+                    expire_requests(db, run_id)
+                elif competing == "attempt":
+                    db.execute("UPDATE runs SET attempts=2 WHERE run_id=?", (run_id,))
+                elif competing == "scope":
+                    db.execute("UPDATE studio_runs SET folders=? WHERE id=?", ('["src"]', run_id))
+                elif competing == "prompt":
+                    db.execute("UPDATE studio_requests SET prompt=? WHERE id=?", ("다른 질문", request["id"]))
+                elif competing == "policy":
+                    changed = dict(policy, verifier_engine="antigravity")
+                    db.execute("UPDATE studio_away_policies SET policy_json=? WHERE run_id=?",
+                               (json.dumps(changed), run_id))
+        release.set()
+        await asyncio.wait_for(exited.wait(), timeout=5)
+        if competing in {"stop", "attempt"}:
+            with pytest.raises(OfficeError, match="REQUEST_CLOSED"):
+                await asyncio.wait_for(waiter, timeout=5)
+            assert inbox.history(run_id)[0]["status"] == "expired"
+        else:
+            if competing != "operator":
+                pending_row, = inbox.pending()
+                assert pending_row["delegation_reason"] and pending_row["source"] is None
+                inbox.decide(run_id, request["id"], {"action": "answer", "answer": "사람의 답"})
+            reply = await asyncio.wait_for(waiter, timeout=5)
+            assert reply["answer"] == "사람의 답" and reply["source"] == "operator"
+        assert not return_report(path)["delegated"]
+
+    asyncio.run(exercise())
+
+
+def test_unmatched_permission_and_provider_failure_stay_in_operator_inbox(journal, away, monkeypatch):
+    from agent_office.away_evidence import DelegationDeferred
+    from agent_office.away_ledger import return_report
+
+    path, run_id, inbox, channel = journal
+    _, _, prompt = away
+
+    async def exercise():
+        calls = []
+        async def consult(*args):
+            calls.append(args)
+            raise DelegationDeferred("evidence_unavailable")
+
+        monkeypatch.setattr("agent_office.away_consult.run_consultation", consult)
+        tasks = [asyncio.create_task(channel.ask(kind, question, "session")) for kind, question in [
+            ("permission", prompt), ("question", prompt + " "), ("question", prompt)]]
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        report = return_report(path)
+        assert report["counts"] == {"active": 1, "questions": 2, "permissions": 1, "delegated": 0}
+        assert len(calls) == 1
+        for row in Inbox(path).pending():
+            if row["kind"] == "permission":
+                assert row["delegation_reason"] is None
+                action = {"action": "reject"}
+            else:
+                assert row["delegation_reason"]
+                action = {"action": "answer", "answer": "운영자"}
+            inbox.decide(run_id, row["id"], action)
+        replies = await asyncio.gather(*tasks)
+        assert all(reply["source"] == "operator" for reply in replies)
+        assert len(calls) == 1
+
+    asyncio.run(exercise())
+
+
+def test_report_window_retains_full_history_and_omits_stale_or_foreign_rows(journal, away, monkeypatch):
+    from agent_office import away_ledger
+
+    path, run_id, inbox, channel = journal
+    policy, revision, prompt = away
+    foreign = uuid.uuid4().hex
+    seed(path, foreign)
+    with TaskStore(path, existing=True) as store, store._write():
+        away_ledger.register_policy(store.connection, foreign, policy, revision)
+        store.connection.execute("UPDATE runs SET host_name='other-host' WHERE run_id=?", (foreign,))
+    monkeypatch.setattr(away_ledger, "REPORT_LIMIT", 1)
+    evidence = {"path": "docs/README.md", "line": 1, "quote": "pytest", "revision": revision}
+
+    async def consult(*args):
+        return {"answer": "pytest", "evidence": evidence}
+
+    monkeypatch.setattr("agent_office.away_consult.run_consultation", consult)
+
+    async def exercise():
+        for _ in range(2):
+            reply = await asyncio.wait_for(channel.ask("question", prompt, "session"), timeout=5)
+            with channel.sending(reply["id"]):
+                pass
+            channel.delivered(reply["id"])
+        question = asyncio.create_task(channel.ask("question", "새로운 질문", "session"))
+        permission = asyncio.create_task(channel.ask("permission", prompt, "session"))
+        await asyncio.sleep(0)
+        with TaskStore(path, existing=True) as store, store._write():
+            # Simulate an abandoned channel without first opening the inbox.
+            store.connection.execute("UPDATE studio_requests SET holder=? WHERE kind='permission'", (uuid.uuid4().hex,))
+        report = away_ledger.return_report(path)
+        assert report["limit"] == len(report["delegated"]) == 1
+        assert report["counts"] == {"delegated": 2, "active": 1, "questions": 1, "permissions": 0}
+        history = inbox.history(run_id)
+        assert report["delegated"][0]["id"] == history[1]["id"]
+        assert history[0]["delegation_details"] == {"topic": "test_command", "evidence": evidence,
+                                                     "specialist_engine": "codex", "verifier_engine": "gemini"}
+        assert history[3]["status"] == "expired"
+        with pytest.raises(OfficeError, match="REQUEST_CLOSED"):
+            await permission
+        inbox.decide(run_id, history[2]["id"], {"action": "answer", "answer": "운영자 답변"})
+        await question
+        with pytest.raises(OfficeError, match="NOT_FOUND"):
+            away_ledger.revoke_policy(path, foreign)
+
+    asyncio.run(exercise())

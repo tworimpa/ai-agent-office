@@ -10,7 +10,7 @@ import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 
-from .dialogue import FINAL_MARKER, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_question
+from .dialogue import DelegationWithdrawn, FINAL_MARKER, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_question
 from .engines import CLINE_ACP_VERSION
 from .events import snapshot_request
 
@@ -168,9 +168,12 @@ class _Session:
                 raise ProtocolError("unsupported ACP client operation")
 
     async def ask(self, kind, prompt):
+        return await self.wait_decision(self.inbox.ask(kind, prompt, self.session_id))
+
+    async def wait_decision(self, awaitable):
         # A dead provider cannot consume a later decision. Race its exit even
         # while the normal stdout reader is waiting for the operator.
-        response = asyncio.create_task(self.inbox.ask(kind, prompt, self.session_id))
+        response = asyncio.create_task(awaitable)
         exited = asyncio.create_task(self.process.wait())
         try:
             await asyncio.wait((response, exited), return_when=asyncio.FIRST_COMPLETED)
@@ -376,8 +379,14 @@ class _Session:
         decision_id = None
         for turn in range(MAX_QUESTIONS + 1):
             self.fragments.clear()
-            end = await self.request(4 + turn, "session/prompt", sessionId=self.session_id,
-                                     prompt=[{"type": "text", "text": turn_text}], decision_id=decision_id)
+            try:
+                end = await self.request(4 + turn, "session/prompt", sessionId=self.session_id,
+                                         prompt=[{"type": "text", "text": turn_text}], decision_id=decision_id)
+            except DelegationWithdrawn:
+                row = await self.wait_decision(self.inbox.await_operator(decision_id))
+                end = await self.request(4 + turn, "session/prompt", sessionId=self.session_id,
+                                         prompt=[{"type": "text", "text": continuation_prompt(row["answer"])}],
+                                         decision_id=decision_id)
             if end.get("stopReason") != "end_turn" or self.pending or self.retry_waiting:
                 raise ProtocolError("ACP did not complete its turn")
             text = "".join(self.fragments)
@@ -390,7 +399,7 @@ class _Session:
             if row["decision"] != "answer" or not isinstance(row["answer"], str) or not row["answer"].strip():
                 raise ProtocolError("invalid technical answer")
             decision_id = row["id"]
-            turn_text = continuation_prompt(row["answer"])
+            turn_text = continuation_prompt(row["answer"], source=row.get("source"))
         answer, sep, marker = text.rstrip().rpartition("\n")
         if not sep or marker.strip() != FINAL_MARKER or not answer.strip() or FINAL_MARKER in answer.splitlines():
             raise ProtocolError("ACP did not return a complete final answer")

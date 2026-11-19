@@ -32,9 +32,12 @@ def serve():
             prompt = req["params"]["prompt"][0]["text"]
             if not requested:
                 requested = True
-                text = "AGENT_OFFICE_QUESTION\n어느 규격을 적용할까요?"
+                text = "AGENT_OFFICE_QUESTION\n" + os.environ.get("OFFICE_FIXTURE_QUESTION", "어느 규격을 적용할까요?")
             else:
-                assert "use spec v2" in prompt
+                assert os.environ.get("OFFICE_FIXTURE_ANSWER", "use spec v2") in prompt
+                source = os.environ.get("OFFICE_FIXTURE_SOURCE")
+                if source:
+                    assert ("verified delegated specialist's" in prompt) == (source == "delegate")
                 writing = mode == "act"
                 name = "editor" if writing else "read_files"
                 path = str(Path("web/value.txt").resolve())

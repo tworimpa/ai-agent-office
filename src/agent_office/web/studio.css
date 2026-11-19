@@ -75,6 +75,19 @@ input[type=radio], input[type=checkbox] { flex: none; margin: 5px 2px 0; accent-
 .role-pickers select { min-height: 48px; }
 .inbox-option { margin-top: 16px; font-weight: 650; }
 .inbox-option + small { margin: 4px 0 0 25px; }
+#delegation-availability { margin-inline-start: 25px; color: #795311; }
+.delegation-fields { margin: 12px 0 0; padding: 0 12px 12px; border-inline-start: 3px solid #65836c; background: #f5f7f2; }
+.delegation-fields > small { clear: both; }
+.delegation-topic { padding-top: 12px; }
+.delegation-topic .evidence-path { margin-inline-start: 24px; }
+.delegation-topic .evidence-path label { margin-top: 6px; }
+#delegation-active li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--border); }
+#delegation-decisions li { border-top: 1px solid var(--border); }
+#delegation-decisions summary { font-size: .9rem; }
+#delegation-decisions p { margin-top: 5px; white-space: pre-wrap; }
+#run-delegation { margin-block: 12px; padding: 10px 12px; border-inline-start: 3px solid #65836c; background: #f5f7f2; overflow-wrap: anywhere; }
+#run-delegation h4 { margin: 0 0 4px; font-size: .9rem; }
+#run-delegation-rules { margin: 6px 0; padding-inline-start: 18px; font-size: .84rem; }
 .inbox-list { list-style: none; padding: 0; }
 .inbox-list li { padding: 14px 22px; overflow-wrap: anywhere; }
 .inbox-list li + li { border-top: 1px solid var(--border); }

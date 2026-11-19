@@ -12,6 +12,8 @@ const states = {
   RECOVERY_REQUIRED: ['복구 필요', 'error'],
 };
 const stoppable = new Set(['QUEUED', 'RUNNING', 'TESTING', 'REVIEWING']);
+const checkNote = row => row.delegation_reason ?? (row.delegation_in_progress ?
+  '전문가가 근거를 확인하고 있습니다. 지금 직접 답할 수 있습니다.' : '');
 const outcomes = {
   PLAN_ONLY: '계획 작성을 마쳤습니다.',
   APPROVED: '리뷰어가 변경을 승인했습니다. 최종 검토할 수 있습니다.',
@@ -31,6 +33,12 @@ const engineNames = new Map([
   ['gemini', 'Gemini CLI'], ['cline', 'Cline CLI'],
 ]);
 const roles = [['developer', '개발자', 'codex'], ['reviewer', '리뷰어', 'antigravity']];
+const delegationRoles = [['specialist', '전문가', 'codex'], ['verifier', '독립 검증자', 'antigravity']];
+const topics = [
+  ['test_command', '이 프로젝트의 테스트 명령은 무엇인가요?', 'README.md'],
+  ['python_version', '이 프로젝트가 요구하는 Python 버전은 무엇인가요?', 'pyproject.toml'],
+  ['node_version', '이 프로젝트가 요구하는 Node.js 버전은 무엇인가요?', 'package.json'],
+];
 const capabilityLabels = [['read', '읽기'], ['edit', '수정'], ['review', '리뷰']];
 const inboxStates = {pending: '응답 대기', decided: '결정 접수', delivered: '작업자에게 전달됨', expired: '만료됨'};
 const decisionLabels = {answer: '답변', approve: '이번 요청 승인', reject: '거절'};
@@ -40,7 +48,16 @@ const requestKey = row => row.run_id + '/' + row.id;
 
 function decisionLabel(row) {
   const action = decisionLabels[row.decision];
-  return [inboxStates[row.status] ?? '상태 미확인', action, row.decision === 'answer' && row.answer].filter(Boolean).join(' · ');
+  return [inboxStates[row.status] ?? '상태 미확인', row.source === 'delegate' && '대리 결정', action,
+    row.decision === 'answer' && row.answer].filter(Boolean).join(' · ');
+}
+
+function samePolicy(expected, received) {
+  if (!expected || !received) return !expected && !received;
+  return Object.keys(received).length === 3 && expected.specialist_engine === received.specialist_engine &&
+    expected.verifier_engine === received.verifier_engine && Array.isArray(expected.rules) && Array.isArray(received.rules) &&
+    received.rules.length === expected.rules.length && expected.rules.every(rule =>
+      received.rules.some(item => item && Object.keys(item).length === 2 && item.topic === rule.topic && item.path === rule.path));
 }
 const checkedTime = new Intl.DateTimeFormat('ko-KR', {dateStyle: 'short', timeStyle: 'medium'});
 function timeLabel(value) {
@@ -91,6 +108,9 @@ export function mountStudio(win) {
   let timer, closed = false, starting = false, restoring = true;
   let engineSnapshot = null, engineRequest = null, enginesStale = true;
   const stopping = new Set();
+  const endingDelegation = new Set();
+  let returnReport = null, reportAvailable = false, reportRequest = null;
+  let detailPolicy = null, detailDelegationActive = false;
   const deciding = new Set(), unconfirmed = new Map();
   let pendingRows = [], historySnapshot = null, inboxAvailable = false;
   let pending = null;
@@ -159,7 +179,7 @@ export function mountStudio(win) {
 
   function updateEngineWarning() {
     const warnings = [];
-    for (const [role, title] of roles) {
+    for (const [role, title] of get('use-delegation').checked ? [...roles, ...delegationRoles] : roles) {
       const id = get(role + '-engine').value;
       const row = engineSnapshot?.engines.find(item => item.engine === id);
       const roleName = title + ' ' + engineNames.get(id);
@@ -172,11 +192,56 @@ export function mountStudio(win) {
       warnings.join(' '));
   }
 
-  for (const [role, , defaultId] of roles) {
+  for (const [role, , defaultId] of [...roles, ...delegationRoles]) {
     const picker = get(role + '-engine');
     picker.replaceChildren(...Array.from(engineNames, ([id, name]) => option(id, name)));
-    picker.value = pending?.[role + '_engine'] ?? defaultId;
+    picker.value = pending?.delegation?.[role + '_engine'] ?? pending?.[role + '_engine'] ?? defaultId;
     picker.addEventListener('change', updateEngineWarning);
+  }
+
+  for (const [topic, prompt, path] of topics) {
+    const group = make('div'), label = make('label'), box = make('input');
+    group.className = 'delegation-topic';
+    box.type = 'checkbox';
+    box.id = 'topic-' + topic;
+    box.name = 'delegation_topic';
+    box.value = topic;
+    label.htmlFor = box.id;
+    label.className = 'check';
+    label.append(box, doc.createTextNode(prompt));
+    const entry = make('div'), pathLabel = make('label'), input = make('input');
+    entry.className = 'evidence-path';
+    input.type = 'text';
+    input.id = 'path-' + topic;
+    input.name = 'path_' + topic;
+    input.required = true;
+    input.spellcheck = false;
+    input.maxLength = 240;
+    input.autocapitalize = 'none';
+    pathLabel.htmlFor = input.id;
+    pathLabel.textContent = '근거 파일 경로 (필수 · ' + (topic === 'test_command' ? 'README.md 또는 AGENTS.md' : path) + ')';
+    const saved = pending?.delegation?.rules?.find(item => item.topic === topic);
+    box.checked = Boolean(saved);
+    input.value = saved?.path ?? path;
+    const showPath = () => { entry.hidden = input.disabled = !box.checked; };
+    showPath();
+    box.addEventListener('change', showPath);
+    entry.append(pathLabel, input);
+    group.append(label, entry);
+    get('delegation-topics').append(group);
+  }
+  get('use-delegation').checked = Boolean(pending?.delegation);
+
+  function resetDelegation() {
+    get('use-delegation').checked = false;
+    for (const [topic, , path] of topics) {
+      const box = get('topic-' + topic), input = get('path-' + topic);
+      box.checked = false;
+      input.value = path;
+      input.parentElement.hidden = input.disabled = true;
+    }
+    for (const [role, , engine] of delegationRoles) get(role + '-engine').value = engine;
+    updateEngineWarning();
   }
 
   function renderEngineRows(snapshot) {
@@ -233,7 +298,18 @@ export function mountStudio(win) {
     get('register').disabled = unavailable || registering;
     get('run-fields').disabled = unavailable || !workspace() || starting || Boolean(pending);
     const needsInbox = pending ? pending.use_inbox === true : get('use-inbox').checked;
-    get('start').disabled = unavailable || starting || (!pending && !workspace()) || (needsInbox && !inboxAvailable);
+    const delegated = get('use-delegation').checked;
+    get('use-inbox').disabled = delegated;
+    get('use-delegation').disabled = !delegated && (!needsInbox || !reportAvailable || !inboxAvailable);
+    get('delegation-fields').hidden = get('delegation-fields').disabled = !delegated;
+    say('delegation-availability', !needsInbox ? '위임하려면 협업 요청함을 켜세요.' :
+      !reportAvailable ? '이 호스트의 복귀 보고를 확인해야 위임할 수 있습니다.' : '');
+    get('start').disabled = unavailable || starting || (!pending && !workspace()) ||
+      (needsInbox && !inboxAvailable) || (delegated && !reportAvailable);
+    for (const button of get('delegation-active').querySelectorAll('button')) {
+      button.disabled = unavailable || !reportAvailable || endingDelegation.has(button.dataset.runId);
+    }
+    get('run-delegation-stop').disabled = unavailable || !detailDelegationActive || endingDelegation.has(selected);
     get('stop').disabled = unavailable || stopping.has(selected);
     for (const card of get('inbox-list').children) {
       card.querySelector('fieldset').disabled = unavailable || !inboxAvailable || deciding.has(card.dataset.key);
@@ -312,6 +388,150 @@ export function mountStudio(win) {
     return requests;
   }
 
+  function runLink(id, task) {
+    const link = make('a'), url = new URL('/', win.location.href);
+    if (hostId !== 'local') url.searchParams.set('host', hostId);
+    url.searchParams.set('run', id);
+    url.hash = 'detail';
+    link.href = url.pathname + url.search + url.hash;
+    link.className = 'inbox-link';
+    link.textContent = (task ? task.slice(0, 100) + ' · ' : '') + '실행 상세 ' + id.slice(0, 8);
+    link.addEventListener('click', event => {
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
+      event.preventDefault();
+      selectRun(id);
+      get('detail-title').focus();
+    });
+    return link;
+  }
+
+  function delegationEvidence(row) {
+    const meta = make('p'), citation = make('p'), quote = make('pre');
+    meta.className = citation.className = 'inbox-meta';
+    meta.textContent = delegationRoles.map(([role, name]) => name + ' ' + (engineNames.get(row[role + '_engine']) ?? '미확인')).join(' · ');
+    const source = row.evidence;
+    citation.textContent = source ? '근거 · ' + source.path + ' ' + source.line + '행 · 기준 커밋 ' + source.revision : '근거 미확인';
+    quote.textContent = source?.quote ?? '';
+    return [meta, citation, quote];
+  }
+
+  function delegatedCard(row) {
+    const li = make('li'), details = make('details'), title = make('summary'), answer = make('p');
+    const delivery = make('p'), outcome = make('p');
+    title.textContent = row.prompt;
+    answer.textContent = '대리 답변 · ' + row.answer;
+    delivery.className = 'inbox-meta';
+    delivery.textContent = [inboxStates[row.status] ?? '전달 상태 미확인', timeLabel(row.decided_at)].filter(Boolean).join(' · ');
+    outcome.textContent = ['작업 상태 · ' + (states[row.run_state]?.[0] ?? '미확인'), outcomes[row.outcome] ?? row.outcome].filter(Boolean).join(' · ');
+    details.append(title, answer, delivery, ...delegationEvidence(row), runLink(row.run_id, row.task), outcome);
+    li.append(details);
+    return li;
+  }
+
+  function activeDelegation(row) {
+    const li = make('li'), button = make('button');
+    button.type = 'button';
+    button.className = 'stop';
+    button.textContent = '이 실행의 위임 종료';
+    button.dataset.runId = row.run_id;
+    button.addEventListener('click', () => stopDelegation(row.run_id));
+    li.append(runLink(row.run_id, row.task), button);
+    return li;
+  }
+
+  async function stopDelegation(id) {
+    const active = (id === selected && detailDelegationActive) || (reportAvailable && returnReport?.active.some(row => row.run_id === id));
+    if (!online || endingDelegation.has(id) || !active) return;
+    endingDelegation.add(id);
+    controls();
+    const inform = message => {
+      say('delegation-stop-note', message);
+      if (id === selected) say('run-delegation-note', message);
+    };
+    try {
+      const receipt = await api('/runs/' + id + '/delegation/stop', {});
+      if (receipt?.run_id !== id || receipt.active !== false) throw new Error();
+      if (closed) return;
+      inform('실행 ' + id.slice(0, 8) + '의 위임을 종료했습니다. 이후 질문은 직접 처리합니다.');
+      if (id === selected) {
+        ++detailSequence;
+        detailDelegationActive = false;
+        get('run-delegation-stop').hidden = true;
+        say('run-delegation-status', '위임 종료');
+      }
+      if (reportAvailable && returnReport.active.some(row => row.run_id === id)) {
+        const counts = {...returnReport.counts};
+        if (counts.active > 0) counts.active--;
+        renderReport({...returnReport, counts, active: returnReport.active.filter(row => row.run_id !== id)});
+      }
+    } catch {
+      if (!closed) inform('실행 ' + id.slice(0, 8) + '의 위임 종료 여부를 확인하지 못했습니다. 실행 상세에서 위임 상태를 다시 확인하세요.');
+    } finally {
+      endingDelegation.delete(id);
+      if (!closed && online) {
+        reportRequest = null;
+        loadReturnReport();
+        if (id === selected) loadDetail();
+        controls();
+      }
+    }
+  }
+
+  function renderReport(report) {
+    const {delegated, active, counts} = report;
+    if (JSON.stringify(active) !== JSON.stringify(returnReport?.active)) {
+      get('delegation-active').replaceChildren(...active.map(activeDelegation));
+    }
+    if (JSON.stringify(delegated) !== JSON.stringify(returnReport?.delegated)) {
+      const list = get('delegation-decisions');
+      const previous = new Map([...list.children].map(li => [li.dataset.key, li]));
+      for (const [i, row] of delegated.entries()) {
+        const key = requestKey(row), snapshot = JSON.stringify(row);
+        let li = previous.get(key);
+        previous.delete(key);
+        if (li?.dataset.snapshot !== snapshot) {
+          const next = delegatedCard(row);
+          next.firstChild.open = Boolean(li?.firstChild.open);
+          next.dataset.key = key;
+          next.dataset.snapshot = snapshot;
+          li?.replaceWith(next);
+          li = next;
+        }
+        if (list.children[i] !== li) list.insertBefore(li, list.children[i] ?? null);
+      }
+      for (const li of previous.values()) li.remove();
+    }
+    returnReport = report;
+    const shown = counts.delegated > delegated.length ? ' (최근 ' + delegated.length + '건 표시)' : '';
+    say('report-note', host.name + ' · 대리 답변 ' + counts.delegated + '건' + shown + ' · 답변 대기 ' + counts.questions +
+      '건 · 권한 승인 대기 ' + counts.permissions + '건' +
+      (counts.active > active.length ? ' · 위임 중인 실행 ' + counts.active + '개 중 최근 ' + active.length + '개 표시' : ''));
+  }
+
+  function reportUnavailable() {
+    reportAvailable = false;
+    say('report-note', returnReport ? '마지막으로 받은 복귀 보고입니다. 최신 위임 상태를 확인할 수 없습니다.' :
+      '이 호스트의 복귀 보고를 확인할 수 없습니다.');
+  }
+
+  async function loadReturnReport() {
+    if (reportRequest) return;
+    const request = reportRequest = api('/return-report');
+    try {
+      const report = await request;
+      if (closed || request !== reportRequest) return;
+      if (!['delegated', 'questions', 'permissions'].every(key => Number.isSafeInteger(report.counts?.[key]) && report.counts[key] >= 0) ||
+          !Array.isArray(report.delegated) || report.delegated.some(row => !validId(row?.run_id) || !validId(row.id)) ||
+          !Array.isArray(report.active) || report.active.some(row => !validId(row?.run_id))) throw new Error();
+      renderReport(report);
+      reportAvailable = true;
+    } catch {
+      if (!closed && request === reportRequest) reportUnavailable();
+    } finally {
+      if (!closed && request === reportRequest) { reportRequest = null; controls(); }
+    }
+  }
+
   function requestCard(row, actionable) {
     const card = make('li'), title = make('h3'), meta = make('p'), prompt = make('pre');
     const question = row.kind === 'question';
@@ -325,11 +545,16 @@ export function mountStudio(win) {
       timeLabel(row.created_at)].filter(Boolean).join(' · ');
     prompt.textContent = row.prompt;
     card.append(title, meta, prompt);
+    const reason = make('p');
+    reason.className = 'inbox-meta delegation-reason';
+    reason.textContent = checkNote(row);
+    card.append(reason);
     if (!actionable) {
       const status = make('p');
       status.className = 'inbox-meta inbox-status';
       status.textContent = decisionLabel(row);
       card.append(status);
+      if (row.source === 'delegate' && row.delegation_details) card.append(...delegationEvidence(row.delegation_details));
       const dates = [['decided_at', '결정'], ['delivered_at', '전달'], ['expired_at', '만료']]
         .filter(([field]) => timeLabel(row[field])).map(([field, label]) => label + ' ' + timeLabel(row[field]));
       if (dates.length) {
@@ -339,21 +564,9 @@ export function mountStudio(win) {
       }
       return card;
     }
-    const link = make('a'), fields = make('fieldset'), legend = make('legend'), actions = make('div');
-    const url = new URL('/', win.location.href);
-    if (hostId !== 'local') url.searchParams.set('host', hostId);
-    url.searchParams.set('run', row.run_id);
-    url.hash = 'detail';
-    link.href = url.pathname + url.search + url.hash;
-    link.className = 'inbox-link';
+    const fields = make('fieldset'), legend = make('legend'), actions = make('div');
     const task = runs.find(run => run.id === row.run_id)?.task;
-    link.textContent = (task ? task.slice(0, 100) + ' · ' : '') + '실행 상세 ' + row.run_id.slice(0, 8);
-    link.addEventListener('click', event => {
-      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
-      event.preventDefault();
-      selectRun(row.run_id);
-      get('detail-title').focus();
-    });
+    const link = runLink(row.run_id, task);
     legend.className = 'sr-only';
     legend.textContent = title.textContent + ' 응답';
     fields.append(legend);
@@ -389,6 +602,8 @@ export function mountStudio(win) {
     for (const [index, row] of pendingRows.entries()) {
       const key = requestKey(row);
       const card = previous.get(key) ?? requestCard(row, true);
+      const reason = card.querySelector('.delegation-reason');
+      if (reason.textContent !== checkNote(row)) reason.textContent = checkNote(row);
       previous.delete(key);
       if (list.children[index] !== card) list.insertBefore(card, list.children[index] ?? null);
     }
@@ -512,6 +727,9 @@ export function mountStudio(win) {
       ++detailSequence;
       selected = id;
       historySnapshot = null;
+      detailPolicy = null;
+      detailDelegationActive = false;
+      say('run-delegation-note', '');
       get('history-inbox-list').replaceChildren();
       say('history-inbox-note', '요청 내역을 불러오는 중입니다.');
       get('detail-body').hidden = true;
@@ -528,6 +746,31 @@ export function mountStudio(win) {
     return loadDetail();
   }
 
+  function renderRunPolicy(run) {
+    const policy = run.delegation;
+    get('run-delegation').hidden = !policy;
+    detailDelegationActive = Boolean(policy && run.delegation_active === true);
+    get('run-delegation-stop').hidden = !detailDelegationActive;
+    get('run-delegation-stop').disabled = !online || endingDelegation.has(run.id);
+    if (!policy) { detailPolicy = null; return; }
+    if (!Array.isArray(policy.rules) || policy.rules.some(rule => !rule || typeof rule.path !== 'string' || typeof rule.topic !== 'string')) {
+      say('run-delegation-roles', '접수 당시의 위임 범위를 확인할 수 없습니다.');
+      get('run-delegation-rules').replaceChildren();
+      detailPolicy = null;
+    } else if (!samePolicy(policy, detailPolicy)) {
+      say('run-delegation-roles', delegationRoles.map(([role, name]) =>
+        name + ' ' + (engineNames.get(policy[role + '_engine']) ?? '미확인')).join(' · '));
+      get('run-delegation-rules').replaceChildren(...policy.rules.map(rule => {
+        const li = make('li'), path = make('code');
+        path.textContent = rule.path;
+        li.append((topics.find(([key]) => key === rule.topic)?.[1] ?? rule.topic) + ' · ', path);
+        return li;
+      }));
+      detailPolicy = policy;
+    }
+    say('run-delegation-status', detailDelegationActive ? '위임 중' : run.delegation_active === false ? '위임 종료' : '위임 상태 미확인');
+  }
+
   function renderDetail(run) {
     get('detail-body').hidden = false;
     get('detail-note').hidden = true;
@@ -540,6 +783,7 @@ export function mountStudio(win) {
     });
     say('run-engines', assignments.join(' · '));
     say('run-inbox-mode', inboxMode(run));
+    renderRunPolicy(run);
     say('detail-workspace', workspaceName(run.workspace_id));
     say('run-id', run.id);
     get('attempts').hidden = !Number.isInteger(run.attempts);
@@ -599,6 +843,8 @@ export function mountStudio(win) {
     ++detailSequence;
     engineRequest = null;
     engineUnavailable();
+    reportRequest = null;
+    reportUnavailable();
     online = false;
     inboxAvailable = false;
     controls();
@@ -655,6 +901,7 @@ export function mountStudio(win) {
       renderRuns();
       online = true;
       inbox = loadInbox(sequence);
+      loadReturnReport();
       controls();
       say('connection', host.name + ' 연결됨');
       get('connection').dataset.online = 'true';
@@ -710,6 +957,11 @@ export function mountStudio(win) {
   }
 
   function accepted(run) {
+    if (!samePolicy(pending?.delegation, run.delegation)) {
+      keepPending(null);
+      say('start-note', '접수한 실행의 위임 범위가 요청과 다릅니다. 복귀 보고에서 이 실행의 위임 상태를 확인하세요.');
+      return;
+    }
     if (pending?.use_inbox === true && run.use_inbox !== true) {
       keepPending(null);
       say('start-note', '접수한 실행에서 선택한 협업 요청함 설정을 확인할 수 없습니다. 실행 상세를 확인하세요.');
@@ -717,6 +969,7 @@ export function mountStudio(win) {
     }
     if (pending && !Object.hasOwn(pending, 'use_inbox')) get('use-inbox').checked = true;
     keepPending(null);
+    resetDelegation();
     get('task').value = '';
     say('start-note', '접수했습니다. 실행 상세에서 진행 상황을 확인하세요.');
     runs = [run, ...runs.filter(item => item.id !== run.id)];
@@ -757,6 +1010,15 @@ export function mountStudio(win) {
         developer_engine: get('developer-engine').value,
         reviewer_engine: get('reviewer-engine').value,
       };
+      if (get('use-delegation').checked) {
+        const rules = topics.filter(([topic]) => get('topic-' + topic).checked)
+          .map(([topic]) => ({topic, path: get('path-' + topic).value}));
+        if (!rules.length) {
+          get('topic-' + topics[0][0]).focus();
+          return say('start-note', '위임할 질문을 하나 이상 선택하세요.');
+        }
+        request.delegation = {rules, specialist_engine: get('specialist-engine').value, verifier_engine: get('verifier-engine').value};
+      }
       keepPending(request);
     }
     const previous = selected;
@@ -804,9 +1066,13 @@ export function mountStudio(win) {
       if (selected === id) refresh();
     }
   });
+  get('run-delegation-stop').addEventListener('click', () => {
+    if (!get('run-delegation-stop').disabled && !get('run-delegation-stop').hidden) stopDelegation(selected);
+  });
 
   get('workspace').addEventListener('change', () => renderFolders());
   get('use-inbox').addEventListener('change', controls);
+  get('use-delegation').addEventListener('change', () => { updateEngineWarning(); controls(); });
   get('primary').addEventListener('change', () => {
     renderExtras(checkedExtras());
   });

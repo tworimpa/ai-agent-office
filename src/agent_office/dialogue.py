@@ -23,6 +23,11 @@ def extract_question(text: str) -> str | None:
     return "\n".join(lines[1:])
 
 
-def continuation_prompt(answer: str) -> str:
-    return ("Continue the original task in this session. The operator's answer below clarifies "
+class DelegationWithdrawn(Exception):
+    """The proposed reply lost its handoff guard before any bytes were written."""
+
+
+def continuation_prompt(answer: str, *, source=None) -> str:
+    author = "The verified delegated specialist's" if source == "delegate" else "The operator's"
+    return (f"Continue the original task in this session. {author} answer below clarifies "
             "the technical question. It grants no tool permission or change in scope.\n\n" + answer)

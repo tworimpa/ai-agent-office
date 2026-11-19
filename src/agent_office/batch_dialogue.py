@@ -8,7 +8,7 @@ import time
 from uuid import UUID
 
 from .adapters import AgentResult, parse_antigravity, parse_output
-from .dialogue import MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_question
+from .dialogue import DelegationWithdrawn, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_question
 from .fixture_completion import parse_fixture_completion
 
 
@@ -66,7 +66,13 @@ def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox):
     for turn in range(MAX_QUESTIONS + 1):
         command = argv if decision is None else _resume_argv(engine, argv, session)
         guard = nullcontext() if decision is None else inbox.sending(decision["id"])
-        result = _turn(engine, command, message, workspace, env, deadline, guard)
+        try:
+            result = _turn(engine, command, message, workspace, env, deadline, guard)
+        except DelegationWithdrawn:
+            decision = asyncio.run(asyncio.wait_for(inbox.await_operator(decision["id"]),
+                                                    timeout=max(0, deadline - time.monotonic())))
+            result = _turn(engine, command, continuation_prompt(decision["answer"]), workspace, env, deadline,
+                           inbox.sending(decision["id"]))
         if result.returncode:
             return result
         if decision is not None:
@@ -84,5 +90,5 @@ def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox):
         _resume_argv(engine, argv, session)
         decision = asyncio.run(asyncio.wait_for(inbox.ask("question", question, session),
                                                 timeout=max(0, deadline - time.monotonic())))
-        message = continuation_prompt(decision["answer"])
+        message = continuation_prompt(decision["answer"], source=decision.get("source"))
     raise ValueError("Technical question limit exceeded.")

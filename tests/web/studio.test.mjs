@@ -28,7 +28,7 @@ async function waitFor(predicate) {
   assert.ok(predicate(), '화면 상태 전환 시간 초과');
 }
 
-function mount(t, {workspaces = [workspace], runs = [], inbox = [], suffix = '', pending, pendingHost = 'local', route} = {}) {
+function mount(t, {workspaces = [workspace], runs = [], inbox = [], report, suffix = '', pending, pendingHost = 'local', route} = {}) {
   const dom = new JSDOM(html, {url: 'http://127.0.0.1:8766/' + suffix, pretendToBeVisual: true});
   const {window} = dom, doc = window.document;
   const key = 'agent-office.studio.pending' + (pendingHost === 'local' ? '' : '.' + pendingHost);
@@ -48,6 +48,7 @@ function mount(t, {workspaces = [workspace], runs = [], inbox = [], suffix = '',
     if (path === '/api/hosts') return Response.json({hosts});
     if (path.startsWith(remoteAPI + '/')) path = '/api' + path.slice(remoteAPI.length);
     if (path === '/api/engines') return Response.json(catalog);
+    if (path === '/api/return-report') return Response.json(report ?? {counts: {delegated: 0, questions: 0, permissions: 0}, delegated: [], active: []});
     if (path === '/api/inbox') return Response.json({requests: inbox.filter(row => row.status === 'pending')});
     if (path.endsWith('/inbox')) return Response.json({requests: inbox.filter(row => row.run_id === path.split('/')[3])});
     if (path.endsWith('/decision')) {
@@ -96,6 +97,7 @@ test('register local workspace, choose primary and extra folders, start in plann
   assert.match(request.id, /^[0-9a-f]{32}$/);
   assert.equal(request.allow_edits, false);
   assert.equal(request.use_inbox, true);
+  assert.ok(!Object.hasOwn(request, 'delegation'));
   assert.equal(request.developer_engine, 'codex');
   assert.equal(request.reviewer_engine, 'antigravity');
   assert.deepEqual(request.indices, [1, 0]);
@@ -630,4 +632,159 @@ test('delayed request history cannot replace a new run’s expired decision and 
   assert.equal(get('history-inbox-list').children.length, 1);
   assert.ok(!get('history-inbox-list').textContent.includes(q.answer));
   assert.ok(requests.every(r => r.method === 'GET'));
+});
+
+test('away policy requires explicit topics and survives an ambiguous remote submission unchanged', async t => {
+  const ui = mount(t, {suffix: '?host=' + remote, route(path, method) {
+    if (method === 'POST') throw new Error('lost receipt');
+  }});
+  await waitFor(() => !ui.get('start').disabled && !ui.get('use-delegation').disabled);
+  ui.get('task').value = '원격 위임 작업';
+  assert.ok(!ui.get('use-delegation').checked && ui.get('delegation-fields').hidden);
+  ui.get('use-delegation').click();
+  assert.ok(ui.get('use-inbox').checked && ui.get('use-inbox').disabled);
+  ui.get('start').click();
+  assert.equal(ui.doc.activeElement, ui.get('topic-test_command'));
+  assert.ok(ui.requests.every(req => req.method === 'GET'));
+  ui.get('topic-python_version').click();
+  ui.get('path-python_version').value = 'service/pyproject.toml';
+  ui.get('specialist-engine').value = 'gemini';
+  ui.get('verifier-engine').value = 'gemini';
+  ui.get('start').click();
+  await waitFor(() => ui.get('start-note').textContent.includes('같은 요청'));
+  const sent = ui.requests.find(req => req.method === 'POST').body;
+  const policy = {rules: [{topic: 'python_version', path: 'service/pyproject.toml'}], specialist_engine: 'gemini', verifier_engine: 'gemini'};
+  assert.deepEqual(sent.delegation, policy);
+  assert.equal(sent.use_inbox, true);
+  const saved = JSON.parse(ui.window.sessionStorage.getItem('agent-office.studio.pending.' + remote));
+  assert.deepEqual(saved, sent);
+  const other = mount(t, {pending: saved, pendingHost: remote});
+  await waitFor(() => !other.get('start').disabled);
+  assert.ok(!other.get('use-delegation').checked);
+  assert.equal(other.get('task').value, '');
+  const reload = mount(t, {suffix: '?host=' + remote, pending: saved, pendingHost: remote});
+  await waitFor(() => reload.get('start-note').textContent.includes('아직 접수'));
+  assert.ok(reload.get('use-delegation').checked && reload.get('topic-python_version').checked);
+  assert.equal(reload.get('path-python_version').value, 'service/pyproject.toml');
+  assert.equal(reload.get('verifier-engine').value, 'gemini');
+  assert.ok(reload.get('use-delegation').matches(':disabled'));
+  assert.ok(!reload.get('topic-node_version').checked);
+  reload.get('start').click();
+  await waitFor(() => reload.get('start-note').textContent.includes('접수했습니다'));
+  assert.deepEqual(reload.requests.filter(req => req.method === 'POST'), [{path: remoteAPI + '/runs', method: 'POST', body: sent}]);
+  assert.ok(!reload.get('use-delegation').checked && !reload.get('topic-python_version').checked);
+});
+
+test('a peer with a missing or stale report still supports manual decisions and runs without silently dropping a policy', async t => {
+  let unavailable = false;
+  const q = question();
+  const {get, requests} = mount(t, {suffix: '?host=' + remote, inbox: [q], runs: [run(runA, 'RUNNING')], route(path) {
+    if (unavailable && path.endsWith('/return-report')) return Response.json({}, {status: 404});
+  }});
+  await waitFor(() => !get('use-delegation').disabled && !get('start').disabled);
+  get('use-delegation').click();
+  get('topic-test_command').click();
+  get('task').value = '위임 가용성 확인';
+  unavailable = true;
+  get('refresh').click();
+  await waitFor(() => get('report-note').textContent.includes('마지막'));
+  assert.ok(get('use-delegation').checked && get('start').disabled);
+  const draft = get('inbox-list').querySelector('textarea');
+  draft.value = '직접 답변';
+  get('inbox-list').querySelector('button').click();
+  await waitFor(() => get('inbox-count').textContent === '0');
+  get('use-delegation').click();
+  assert.ok(get('use-delegation').disabled && !get('start').disabled);
+  get('start').click();
+  await waitFor(() => get('request').textContent === '위임 가용성 확인');
+  const created = requests.find(req => req.method === 'POST' && req.path.endsWith('/runs')).body;
+  assert.ok(created.use_inbox && !Object.hasOwn(created, 'delegation'));
+});
+
+test('a receipt changing a policy is explicit and does not trigger another submission', async t => {
+  const {get, requests} = mount(t, {route(path, method, body) {
+    if (method === 'POST') return Response.json({run: {...body, delegation: null}});
+  }});
+  await waitFor(() => !get('use-delegation').disabled && !get('start').disabled);
+  get('task').value = '접수한 범위 확인';
+  get('use-delegation').click();
+  get('topic-test_command').click();
+  get('start').click();
+  await waitFor(() => get('start-note').textContent.includes('위임 범위가 요청과 다릅니다'));
+  assert.ok(get('use-delegation').checked);
+  assert.equal(get('task').value, '접수한 범위 확인');
+  assert.equal(requests.filter(req => req.method === 'POST').length, 1);
+});
+
+test('selected run retains its original policy and can end delegation outside the host report window', async t => {
+  const policy = {rules: [{topic: 'node_version', path: 'ui/package.json'}], specialist_engine: 'cline', verifier_engine: 'gemini'};
+  const item = {...run(runB, 'RUNNING'), delegation: policy, delegation_active: true};
+  const {get, requests} = mount(t, {runs: [item], suffix: '?host=' + remote + '&run=' + runB, route(path, method) {
+    if (path.endsWith('/return-report')) return Response.json({}, {status: 503});
+    if (path.endsWith('/delegation/stop') && method === 'POST') {
+      item.delegation_active = false;
+      return Response.json({run_id: item.id, active: false});
+    }
+  }});
+  await waitFor(() => get('run-delegation-status').textContent === '위임 중' && !get('run-delegation-stop').disabled);
+  assert.match(get('run-delegation-roles').textContent, /전문가 Cline CLI · 독립 검증자 Gemini CLI/);
+  const rule = get('run-delegation-rules').textContent;
+  assert.match(rule, /Node\.js 버전은 무엇인가요\? · ui\/package\.json/);
+  assert.equal(get('delegation-active').children.length, 0);
+  get('run-delegation-stop').click();
+  await waitFor(() => get('run-delegation-status').textContent === '위임 종료');
+  assert.ok(get('run-delegation-stop').hidden);
+  assert.equal(get('run-delegation-rules').textContent, rule);
+  assert.deepEqual(requests.filter(req => req.method === 'POST'), [{path: remoteAPI + '/runs/' + runB + '/delegation/stop', method: 'POST', body: {}}]);
+});
+
+test('remote return report links the original run, quotes literal evidence and ends delegation only on explicit request', async t => {
+  const item = {...question(), task: '버전 확인', prompt: '이 프로젝트가 요구하는 Python 버전은 무엇인가요?', answer: '>=3.11',
+    status: 'delivered', source: 'delegate', decision: 'answer', decided_at: stamp, topic: 'python_version',
+    specialist_engine: 'codex', verifier_engine: 'antigravity', run_state: 'PLAN_ONLY', outcome: 'PLAN_ONLY',
+    evidence: {path: 'web/pyproject.toml', line: 12, quote: '<b>requires-python = ">=3.11"</b>', revision: 'c'.repeat(40)}};
+  item.delegation_details = {topic: item.topic, specialist_engine: item.specialist_engine,
+    verifier_engine: item.verifier_engine, evidence: item.evidence};
+  const q = {...question(), id: 'f'.repeat(32), run_id: runB};
+  const p = permission();
+  const report = {counts: {delegated: 1, questions: 1, permissions: 1}, delegated: [item], active: [{run_id: runB, task: '계속 작업'}]};
+  const {get, doc, requests} = mount(t, {suffix: '?host=' + remote, runs: [run(runB, 'RUNNING'), run(runA, 'PLAN_ONLY')],
+    inbox: [item, q, p], report, route(path, method) {
+      if (path === remoteAPI + '/runs/' + runB + '/delegation/stop' && method === 'POST') {
+        report.active = [];
+        return Response.json({run_id: runB, active: false});
+      }
+    }});
+  await waitFor(() => get('inbox-list').children.length === 2 && get('delegation-decisions').children.length === 1);
+  assert.match(get('report-note').textContent, /연구실 · 대리 답변 1건 · 답변 대기 1건 · 권한 승인 대기 1건/);
+  const details = get('delegation-decisions').querySelector('details');
+  details.open = true;
+  assert.equal(details.querySelector('summary').textContent, item.prompt);
+  assert.equal(details.querySelector('pre').textContent, item.evidence.quote);
+  assert.equal(details.querySelector('pre *'), null);
+  for (const text of ['대리 답변 · >=3.11', 'web/pyproject.toml 12행', item.evidence.revision,
+    '전문가 Codex', '독립 검증자 Antigravity', '계획 작성을 마쳤습니다.']) assert.ok(details.textContent.includes(text));
+  assert.match(details.querySelector('a').href, new RegExp('host=' + remote + '&run=' + runA));
+  details.querySelector('a').click();
+  await waitFor(() => get('history-inbox-list').textContent.includes('대리 결정'));
+  assert.ok(get('history-inbox-list').textContent.includes(item.evidence.revision));
+  assert.equal(get('history-inbox-list').querySelectorAll('pre')[1].textContent, item.evidence.quote);
+  assert.equal(get('run-id').textContent, runA);
+  const draft = get('inbox-list').querySelector('textarea');
+  draft.value = '작성 중';
+  q.delegation_reason = '사전 위임한 질문과 정확히 일치하지 않습니다.';
+  get('refresh').click();
+  draft.focus();
+  await waitFor(() => get('inbox-list').textContent.includes(q.delegation_reason));
+  assert.equal(doc.activeElement, draft);
+  assert.equal(draft.value, '작성 중');
+  assert.ok(details.open && details.isConnected);
+  assert.ok(requests.every(req => req.method === 'GET'));
+  get('delegation-active').querySelector('button').click();
+  await waitFor(() => get('delegation-stop-note').textContent.includes('종료했습니다'));
+  assert.equal(get('delegation-active').children.length, 0);
+  assert.deepEqual(requests.filter(req => req.method === 'POST'), [
+    {path: remoteAPI + '/runs/' + runB + '/delegation/stop', method: 'POST', body: {}},
+  ]);
+  assert.equal(get('inbox-list').querySelectorAll('[data-kind="permission"] button').length, 2);
 });

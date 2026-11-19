@@ -10,6 +10,7 @@ from typing import BinaryIO
 
 from .models import validate_id
 from .engines import SUPPORTED_ENGINES
+from .away_expert import RULES, validate_policy
 
 
 _TIMEOUT = 12
@@ -43,10 +44,10 @@ def is_peer_route(method: str, route: str) -> bool:
         return False
     if route in ("/workspaces", "/runs"):
         return True
-    if route in ("/engines", "/inbox"):
+    if route in ("/engines", "/inbox", "/return-report"):
         return method == "GET"
     pattern = (r"/runs/[0-9a-f]{32}(?:/inbox)?" if method == "GET"
-               else r"/runs/[0-9a-f]{32}/(?:stop|inbox/[0-9a-f]{32}/decision)")
+               else r"/runs/[0-9a-f]{32}/(?:stop|delegation/stop|inbox/[0-9a-f]{32}/decision)")
     return re.fullmatch(pattern, route) is not None
 
 
@@ -110,6 +111,15 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
     if status >= 400:
         return
 
+    if route == "/return-report":
+        if status != 200:
+            raise RemoteUnavailable()
+        _check_return_report(data)
+        return
+    if route.endswith("/delegation/stop"):
+        if status != 200 or data.get("run_id") != route.split("/")[2] or data.get("active") is not False:
+            raise RemoteUnavailable()
+        return
     if "/inbox" in route:
         _check_inbox_reply(status, data, method, route, payload)
         return
@@ -165,6 +175,11 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
             if row["id"] != expected_id:
                 raise RemoteUnavailable()
         if not workspace:
+            if method == "POST" and route == "/runs":
+                proposed = payload.get("delegation")
+                expected = validate_policy(proposed) if proposed is not None else None
+                if row.get("delegation") != expected:
+                    raise RemoteUnavailable()
             if (method == "POST" and route == "/runs" and "use_inbox" in payload
                     and row.get("use_inbox") is not payload["use_inbox"]):
                 raise RemoteUnavailable()
@@ -173,6 +188,42 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
                     raise RemoteUnavailable()
                 if method == "POST" and route == "/runs" and role in payload and row.get(role) != payload[role]:
                     raise RemoteUnavailable()
+
+
+def _check_citation(prompt, details):
+    if not isinstance(details, dict) or not isinstance(details.get("evidence"), dict):
+        raise RemoteUnavailable()
+    evidence = details["evidence"]
+    topic = details.get("topic")
+    if (not isinstance(topic, str) or RULES.get(topic) != prompt or type(evidence.get("line")) is not int
+            or evidence["line"] < 1 or not isinstance(evidence.get("quote"), str) or not evidence["quote"].strip()
+            or not isinstance(evidence.get("revision"), str)
+            or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", evidence["revision"])):
+        raise RemoteUnavailable()
+    validate_policy({"rules": [{"topic": topic, "path": evidence.get("path")}],
+                     "specialist_engine": details.get("specialist_engine"), "verifier_engine": details.get("verifier_engine")})
+
+
+def _check_return_report(data):
+    counts = data.get("counts")
+    if not isinstance(counts, dict) or not all(type(counts.get(k)) is int and counts[k] >= 0
+                                               for k in ("active", "delegated", "questions", "permissions")):
+        raise RemoteUnavailable()
+    for key in ("active", "delegated"):
+        rows = data.get(key)
+        if not isinstance(rows, list) or len(rows) > counts[key]:
+            raise RemoteUnavailable()
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("task"), str):
+                raise RemoteUnavailable()
+            validate_id(row.get("run_id"))
+            if key == "active":
+                continue
+            validate_id(row.get("id"))
+            if (row.get("status") not in ("decided", "delivered", "expired")
+                    or not isinstance(row.get("answer"), str) or not isinstance(row.get("decided_at"), str)):
+                raise RemoteUnavailable()
+            _check_citation(row.get("prompt"), row)
 
 
 def _check_inbox_reply(status, data, method, route, payload):
@@ -194,6 +245,10 @@ def _check_inbox_reply(status, data, method, route, payload):
                 or not isinstance(row.get("prompt"), str)):
             raise RemoteUnavailable()
         action = row.get("decision")
+        if row.get("source") == "delegate":
+            if row["kind"] != "question" or action != "answer":
+                raise RemoteUnavailable()
+            _check_citation(row["prompt"], row.get("delegation_details"))
         if (row["kind"] == "question" and action not in (None, "answer")
                 or row["kind"] == "permission" and action not in (None, "approve", "reject")
                 or row["status"] == "pending" and action is not None
