@@ -95,6 +95,12 @@ def test_native_connector_question_gets_no_authorization_and_technical_turn_can_
     assert operator.requests == [("question", "일정은?")] and operator.confirmed == ["1"]
 
 
+def test_readonly_codex_handles_remote_control_status_during_startup(tmp_path, monkeypatch):
+    operator, result = fixture(tmp_path, monkeypatch, "remote-status", edits=False)
+    assert (result.returncode, result.session_id, result.message) == (0, "thread", "작업 완료")
+    assert not operator.requests and not operator.confirmed
+
+
 def test_timeout_expires_unsent_codex_decision(tmp_path, monkeypatch):
     operator, result = fixture(tmp_path, monkeypatch, "timeout", operator=Operator(delay=True))
     assert result.returncode == 124 and not operator.sent and not operator.confirmed
@@ -162,12 +168,14 @@ def server():
     init = read()
     assert init["method"] == "initialize"
     emit(id=init["id"], result={"userAgent": "fixture"})
+    if scenario == "remote-status":
+        emit(method="remoteControl/status/changed", params={"status": "disabled", "environmentId": None})
     assert read()["method"] == "initialized"
     start = read()
     params = start["params"]
     assert start["method"] == "thread/start" and params["approvalsReviewer"] == "user"
     assert params["approvalPolicy"] == "on-request" and Path(params["cwd"]) == Path.cwd()
-    read_only = scenario in ("read-only", "direction-plan", "room-choice", "room-product")
+    read_only = scenario in ("read-only", "direction-plan", "room-choice", "room-product", "remote-status")
     assert params["sandbox"] == ("read-only" if read_only else "workspace-write")
     policy = {"type": "readOnly"} if read_only else {
         "type": "workspaceWrite", "excludeTmpdirEnvVar": True, "excludeSlashTmp": True}
