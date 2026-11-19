@@ -1,9 +1,10 @@
 """Shared engine IDs, executable aliases and the owner's initial profile."""
 import os
 import shutil
-ENGINE_COMMANDS = {"codex": "codex", "antigravity": "agy", "claude": "claude"}
+ENGINE_COMMANDS = {"codex": "codex", "antigravity": "agy", "claude": "claude", "gemini": "gemini", "cline": "cline"}
 SUPPORTED_ENGINES = tuple(ENGINE_COMMANDS)
 INITIAL_ENGINES = ("codex", "antigravity")
+CLINE_ACP_VERSION = "3.0.74"
 DEFAULT_DEVELOPER = "codex"
 DEFAULT_REVIEWER = "antigravity"
 

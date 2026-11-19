@@ -9,6 +9,7 @@ import threading
 from typing import BinaryIO
 
 from .models import validate_id
+from .engines import SUPPORTED_ENGINES
 
 
 _TIMEOUT = 12
@@ -42,6 +43,8 @@ def is_peer_route(method: str, route: str) -> bool:
         return False
     if route in ("/workspaces", "/runs"):
         return True
+    if route == "/engines":
+        return method == "GET"
     pattern = r"/runs/[0-9a-f]{32}" if method == "GET" else r"/runs/[0-9a-f]{32}/stop"
     return re.fullmatch(pattern, route) is not None
 
@@ -106,6 +109,33 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
     if status >= 400:
         return
 
+    if route == "/engines":
+        rows = data.get("engines")
+        if not (status == 200 and isinstance(data.get("platform"), str) and isinstance(rows, list)):
+            raise RemoteUnavailable()
+        seen = set()
+        for row in rows:
+            if not isinstance(row, dict) or row.get("engine") not in SUPPORTED_ENGINES or row["engine"] in seen:
+                raise RemoteUnavailable()
+            if (type(row.get("installed")) is not bool or type(row.get("headless_support")) is not bool
+                    or row.get("auth_status") not in ("unknown", "authenticated", "not_authenticated")
+                    or not isinstance(row.get("label"), str)
+                    or not (row.get("version") is None or isinstance(row["version"], str))):
+                raise RemoteUnavailable()
+            seen.add(row["engine"])
+            checks = row.get("capabilities")
+            if not isinstance(checks, dict):
+                raise RemoteUnavailable()
+            for name in ("read", "edit", "review"):
+                check = checks.get(name)
+                if not isinstance(check, dict) or check.get("status") not in ("not_checked", "passed", "failed"):
+                    raise RemoteUnavailable()
+                if check["status"] != "not_checked" and not isinstance(check.get("checked_at"), str):
+                    raise RemoteUnavailable()
+        if seen != set(SUPPORTED_ENGINES):
+            raise RemoteUnavailable()
+        return
+
     collection = route in ("/workspaces", "/runs")
     listing = method == "GET" and collection
     workspace = route == "/workspaces"
@@ -130,6 +160,12 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
             expected_id = payload.get("id") if route == "/runs" else route.split("/")[2]
             if row["id"] != expected_id:
                 raise RemoteUnavailable()
+        if not workspace:
+            for role in ("developer_engine", "reviewer_engine"):
+                if role in row and row[role] not in SUPPORTED_ENGINES:
+                    raise RemoteUnavailable()
+                if method == "POST" and route == "/runs" and role in payload and row.get(role) != payload[role]:
+                    raise RemoteUnavailable()
 
 
 def _read_response(stream: BinaryIO, journal_id: str, method: str, route: str, payload: dict | None) -> tuple[int, dict]:

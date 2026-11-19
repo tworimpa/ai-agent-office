@@ -2,26 +2,9 @@
 import os
 from pathlib import Path
 import stat
-import subprocess
 
 from .events import snapshot_request
-
-
-def _git(root, *args):
-    # The supervisor imposes an overall deadline on this preview process tree.
-    with subprocess.Popen(
-        ["git", "-c", "core.fsmonitor=false", "-c", "core.quotepath=false", "--no-pager", *args],
-        cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-    ) as proc:
-        data = proc.stdout.read(16385)
-        if len(data) > 16384:
-            proc.kill()
-        code = proc.wait()
-    if len(data) > 16384:
-        return data[:16384], True
-    if code:
-        raise OSError("Git preview unavailable")
-    return data, False
+from .workspace import read_git_prefix
 
 
 def _new_source(root, relative):
@@ -56,14 +39,14 @@ def _new_source(root, relative):
 def changes_in(root):
     if root.resolve() != root or not (root / ".git").is_file():
         return "", ""
-    status, clipped = _git(root, "status", "--short", "--untracked-files=all", "--ignore-submodules=all")
+    status, clipped = read_git_prefix(root, "status", "--short", "--untracked-files=all", "--ignore-submodules=all")
     changes = status.decode("utf-8", errors="replace") + ("\n...[truncated]" if clipped else "")
-    raw, clipped = _git(root, "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "HEAD", "--")
+    raw, clipped = read_git_prefix(root, "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "HEAD", "--")
     diff = raw.decode("utf-8", errors="replace")
     if clipped:
         diff += "\n...[truncated]"
     if any(line.startswith("?? ") for line in changes.splitlines()) and len(raw) < 8192:
-        names, omitted = _git(root, "ls-files", "--others", "--exclude-standard", "-z")
+        names, omitted = read_git_prefix(root, "ls-files", "--others", "--exclude-standard", "-z")
         for name in names.split(b"\0")[:-1]:
             try:
                 patch = _new_source(root, Path(os.fsdecode(name)))

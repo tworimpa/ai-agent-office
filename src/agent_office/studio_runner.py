@@ -13,7 +13,7 @@ import threading
 from types import SimpleNamespace
 import uuid
 
-from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER
+from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .events import snapshot_request
 from .models import ACTIVE, OfficeError, OwnerInfo, TaskSpec, validate_id
 from .ownership import RunGuard, RunBusyError, recover_run
@@ -31,10 +31,19 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS studio_runs(
     proposed_state TEXT, proposed_outcome TEXT, preview TEXT)"""
 SUMMARY = """SELECT s.id,s.workspace_id,t.request_snapshot AS task,
     CASE WHEN s.stop_requested AND r.ended_at IS NULL THEN 'STOP_REQUESTED' ELSE r.state END AS state,
-    r.outcome,r.task_id,t.workspace,t.branch,r.attempts,r.started_at AS created_at,
+    r.outcome,r.task_id,t.workspace,t.branch,t.developer_engine,t.reviewer_engine,r.attempts,r.started_at AS created_at,
     t.updated_at,s.allow_edits"""
 SOURCE = """ FROM studio_runs s JOIN runs r ON r.run_id=s.id JOIN tasks t ON t.task_id=r.task_id"""
 DETAIL = ",s.folders,s.developer_output,s.test_output,s.review_output,s.changes,s.diff,s.diagnostic"
+
+
+def _request_digest(parts, developer_engine, reviewer_engine):
+    if developer_engine not in SUPPORTED_ENGINES or reviewer_engine not in SUPPORTED_ENGINES:
+        raise ValueError("지원하는 개발자·리뷰어 엔진을 선택하세요.")
+    # Default-role requests must match the exact digest persisted by Stage 1/2.
+    if (developer_engine, reviewer_engine) != (DEFAULT_DEVELOPER, DEFAULT_REVIEWER):
+        parts = [*parts, developer_engine, reviewer_engine]
+    return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()
 
 
 def finish_drained(store, run_id, *, worker_succeeded, preview_finished):
@@ -119,20 +128,22 @@ class LocalRunner:
             raise OfficeError("REQUEST_CONFLICT")
         return self._detail(store, run_id)
 
-    def submit(self, catalog, run_id, workspace_id, indices, task, allow_edits):
+    def submit(self, catalog, run_id, workspace_id, indices, task, allow_edits, *,
+               developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER):
         # A registered folder's index is stable even if its checkout was moved
         # after the original request succeeded and its HTTP response was lost.
-        request = json.dumps([workspace_id, indices, task, allow_edits], ensure_ascii=False)
-        digest = hashlib.sha256(request.encode()).hexdigest()
+        digest = _request_digest([workspace_id, indices, task, allow_edits], developer_engine, reviewer_engine)
         with self.lock, TaskStore(self.path, existing=True) as store:
             existing = self._previous(store, run_id, digest)
             if existing:
                 return existing
         repo, folders = catalog.select(workspace_id, indices)
-        return self.start(run_id, workspace_id, repo, folders, task, allow_edits, request_digest=digest)
+        return self.start(run_id, workspace_id, repo, folders, task, allow_edits, request_digest=digest,
+                          developer_engine=developer_engine, reviewer_engine=reviewer_engine)
 
     def start(self, run_id: str, workspace_id: str, repo: Path, folders: list[str],
-              task: str, allow_edits: bool, *, request_digest=None):
+              task: str, allow_edits: bool, *, request_digest=None,
+              developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER):
         validate_id(run_id)
         if not isinstance(task, str) or not task.strip() or len(task.encode("utf-8")) > 8192:
             raise ValueError("Task must be between 1 and 8192 UTF-8 bytes")
@@ -140,8 +151,8 @@ class LocalRunner:
             raise ValueError("Invalid Studio request")
         repo = Path(repo).resolve()
         folder_json = json.dumps(folders, ensure_ascii=False)
-        request = json.dumps([workspace_id, str(repo), folders, task, allow_edits], ensure_ascii=False)
-        digest = request_digest or hashlib.sha256(request.encode()).hexdigest()
+        digest = request_digest or _request_digest([workspace_id, str(repo), folders, task, allow_edits],
+                                                   developer_engine, reviewer_engine)
         with self.lock, TaskStore(self.path, existing=True) as store:
             if self.closed:
                 raise OfficeError("RUN_BUSY")
@@ -150,7 +161,7 @@ class LocalRunner:
             if existing:
                 return existing
             map_folders(repo, folders)
-            spec = TaskSpec(uuid.uuid4().hex, str(repo), task, DEFAULT_DEVELOPER, DEFAULT_REVIEWER, 2)
+            spec = TaskSpec(uuid.uuid4().hex, str(repo), task, developer_engine, reviewer_engine, 2)
 
             def register(connection):
                 connection.execute(

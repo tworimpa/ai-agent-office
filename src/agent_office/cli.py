@@ -34,6 +34,9 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", type=Path, help="Local task database; use a separate candidate path")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("engines", help="Inspect the initial engine profile without model calls")
+    verify = sub.add_parser("verify-engine", help="Call a provider on a disposable fixture and record the result")
+    verify.add_argument("engine", choices=SUPPORTED_ENGINES)
+    verify.add_argument("capability", choices=("read", "edit", "review"))
 
     diag = sub.add_parser("doctor", help="Inspect Git, Python and installed agent CLIs")
     diag.add_argument("--require", nargs="*", choices=SUPPORTED_ENGINES,
@@ -174,6 +177,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "events" and not 0 <= args.after_seq <= MAX_SQLITE_INT:
             raise ValueError("Invalid cursor")
         db_path = resolve_db_path(args.db)
+        if args.command == "verify-engine":
+            from .engine_evidence import verify_engine
+            result = verify_engine(db_path, args.engine, args.capability)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result["status"] == "passed" else 1
         if args.command == "studio":
             from .studio_server import serve_studio
             from .studio_ssh import RemoteHost

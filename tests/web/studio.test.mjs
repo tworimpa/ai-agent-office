@@ -11,6 +11,14 @@ const remote = 'b'.repeat(32);
 const hosts = [{id: 'local', name: '이 컴퓨터'}, {id: remote, name: '연구실'}];
 const remoteAPI = '/api/hosts/' + remote;
 const run = (id, state) => ({id, state, workspace_id: workspace.id, task: '주문 목록 확인'});
+const stamp = '2026-11-19T00:00:00Z';
+const catalog = {
+  platform: 'win32', checked_at: stamp,
+  engines: ['codex', 'antigravity', 'claude', 'gemini', 'cline'].map(engine => ({
+    engine, installed: true, version: '1.2.3', probe_status: 'ok', headless_support: true,
+    auth_status: 'authenticated', capabilities: {},
+  })),
+};
 
 async function waitFor(predicate) {
   for (let i = 0; i < 100; i++) {
@@ -39,6 +47,7 @@ function mount(t, {workspaces = [workspace], runs = [], suffix = '', pending, pe
     if (override) return override;
     if (path === '/api/hosts') return Response.json({hosts});
     if (path.startsWith(remoteAPI + '/')) path = '/api' + path.slice(remoteAPI.length);
+    if (path === '/api/engines') return Response.json(catalog);
     if (path === '/api/workspaces') {
       if (method === 'GET') return Response.json({workspaces});
       const added = {id: 'f'.repeat(32), name: body.name, folders: body.paths};
@@ -78,6 +87,8 @@ test('register local workspace, choose primary and extra folders, start in plann
   const request = requests.find(r => r.path === '/api/runs' && r.method === 'POST').body;
   assert.match(request.id, /^[0-9a-f]{32}$/);
   assert.equal(request.allow_edits, false);
+  assert.equal(request.developer_engine, 'codex');
+  assert.equal(request.reviewer_engine, 'antigravity');
   assert.deepEqual(request.indices, [1, 0]);
   assert.equal(get('request').textContent, '구조를 설명해 줘');
   assert.equal(new URL(window.location.href).searchParams.get('run'), request.id);
@@ -90,21 +101,28 @@ test('an ambiguous POST and page reload retain the same operation and edit choic
   }});
   await waitFor(() => !first.get('start').disabled);
   first.get('task').value = '코드 수정 및 검증';
+  first.get('developer-engine').value = 'claude';
+  first.get('reviewer-engine').value = 'cline';
   first.get('edit-mode').click();
   first.get('start').click();
   await waitFor(() => first.get('start-note').textContent.includes('같은 요청'));
   const sent = first.requests.find(r => r.method === 'POST').body;
   assert.equal(sent.allow_edits, true);
+  assert.equal(sent.developer_engine, 'claude');
+  assert.equal(sent.reviewer_engine, 'cline');
   assert.ok(first.get('run-fields').disabled);
   const saved = JSON.parse(first.window.sessionStorage.getItem('agent-office.studio.pending'));
   const second = mount(t, {pending: saved});
   await waitFor(() => second.get('task').value === sent.task);
   assert.equal(second.requests.filter(r => r.method === 'POST').length, 0);
   assert.equal(second.get('edit-mode').checked, true);
+  assert.equal(second.get('developer-engine').value, 'claude');
+  assert.equal(second.get('reviewer-engine').value, 'cline');
   second.get('start').click();
   await waitFor(() => second.get('run-id').textContent === sent.id);
   assert.deepEqual(second.requests.find(r => r.method === 'POST').body, sent);
   assert.equal(second.window.sessionStorage.getItem('agent-office.studio.pending'), null);
+  assert.equal(second.get('run-engines').textContent, '개발자 Claude Code · 리뷰어 Cline CLI');
 });
 
 test('reopening a run exposes literal evidence; stale responses cannot replace a new selection', async t => {
@@ -120,6 +138,7 @@ test('reopening a run exposes literal evidence; stale responses cannot replace a
   assert.equal(get('test-command').hidden, false);
   assert.equal(get('context-path').textContent, a.workspace);
   assert.equal(get('context-branch').textContent, a.branch);
+  assert.equal(get('run-engines').textContent, '개발자 Codex · 리뷰어 Antigravity');
   assert.equal(get('context-primary').textContent, a.folders[0]);
   assert.equal(get('context-extras').textContent, a.folders[1]);
   for (const id of ['developer_output', 'test_output', 'review_output', 'changes', 'diff']) assert.equal(get(id).textContent, a[id]);
@@ -226,10 +245,15 @@ test('host links discard previous run IDs and a remote host owns registration, s
   await waitFor(() => !get('start').disabled);
   doc.querySelector('#extras input').click();
   get('task').value = '문서 검토';
+  get('developer-engine').value = 'gemini';
+  get('reviewer-engine').value = 'codex';
   get('start').click();
   await waitFor(() => !get('stop').hidden);
   const added = requests.find(r => r.method === 'POST' && r.path === remoteAPI + '/runs');
   assert.deepEqual(added.body.indices, [0, 1]);
+  assert.equal(added.body.developer_engine, 'gemini');
+  assert.equal(added.body.reviewer_engine, 'codex');
+  assert.equal(get('run-engines').textContent, '개발자 Gemini CLI · 리뷰어 Codex');
   assert.deepEqual(requests.find(r => r.method === 'POST' && r.path.endsWith('/workspaces')).body.paths,
     ['/srv/repos/app', '/srv/repos/app/docs']);
   assert.equal(window.location.search, '?host=' + remote + '&run=' + added.body.id);
@@ -276,6 +300,8 @@ test('an accepted remote operation with a lost response is recovered by host and
   }});
   await waitFor(() => first.get('run-id').textContent === runA);
   first.get('task').value = '원격 작업 확인';
+  first.get('developer-engine').value = 'cline';
+  first.get('reviewer-engine').value = 'gemini';
   first.get('start').click();
   await waitFor(() => first.get('connection').dataset.online === 'false');
   const remoteKey = 'agent-office.studio.pending.' + remote;
@@ -286,12 +312,14 @@ test('an accepted remote operation with a lost response is recovered by host and
   const local = mount(t, {pending: saved, pendingHost: remote});
   await waitFor(() => !local.get('start').disabled);
   assert.equal(local.get('task').value, '');
+  assert.equal(local.get('developer-engine').value, 'codex');
   assert.ok(!local.requests.some(r => r.path.includes(saved.id)));
   assert.ok(local.window.sessionStorage.getItem(remoteKey));
   const recovered = mount(t, {suffix: runLink, pending: saved, pendingHost: remote, runs: items});
   await waitFor(() => recovered.get('developer_output').textContent === '완료');
   assert.equal(recovered.window.sessionStorage.getItem(remoteKey), null);
   assert.equal(recovered.get('run-id').textContent, saved.id);
+  assert.equal(recovered.get('run-engines').textContent, '개발자 Cline CLI · 리뷰어 Gemini CLI');
   assert.ok(recovered.requests.some(r => r.path === remoteAPI + '/runs/' + saved.id));
   assert.ok(recovered.requests.every(r => r.method === 'GET'));
   offline = false;
@@ -348,6 +376,8 @@ test('a deliberate retry checks the remote run ID before sending the same reques
   const pending = {id: runB, workspace_id: workspace.id, indices: [0], task: '재시도', allow_edits: false};
   const {get, requests} = mount(t, {suffix: '?host=' + remote, pending, pendingHost: remote});
   await waitFor(() => get('start-note').textContent.includes('아직 접수'));
+  assert.equal(get('developer-engine').value, 'codex');
+  assert.equal(get('reviewer-engine').value, 'antigravity');
   const before = requests.length;
   get('start').click();
   await waitFor(() => get('run-id').textContent === runB);
@@ -355,6 +385,81 @@ test('a deliberate retry checks the remote run ID before sending the same reques
     {path: remoteAPI + '/runs/' + runB, method: 'GET', body: undefined},
     {path: remoteAPI + '/runs', method: 'POST', body: pending},
   ]);
+});
+
+test('a slow remote catalog leaves role selection usable and separates CLI metadata from dated fixture evidence', async t => {
+  let release, available = false;
+  const remoteCatalog = structuredClone(catalog);
+  remoteCatalog.platform = 'linux';
+  const cline = remoteCatalog.engines.find(row => row.engine === 'cline');
+  Object.assign(cline, {installed: false, probe_status: 'missing', version: null, headless_support: false, auth_status: 'unknown'});
+  const gemini = remoteCatalog.engines.find(row => row.engine === 'gemini');
+  Object.assign(gemini, {version: '4.5.6', protocol: 'acp', probe_status: 'pending', headless_support: false});
+  const {get, window, requests} = mount(t, {suffix: '?host=' + remote, route: path => {
+    if (path === remoteAPI + '/engines') {
+      if (available) return Response.json(remoteCatalog);
+      return new Promise(resolve => { release = () => resolve(Response.json(remoteCatalog)); });
+    }
+  }});
+  await waitFor(() => release && !get('start').disabled);
+  const picker = get('developer-engine');
+  assert.deepEqual(Array.from(picker.options, o => o.value), ['codex', 'antigravity', 'claude', 'gemini', 'cline']);
+  picker.value = 'cline';
+  picker.focus();
+  get('refresh').click();
+  await waitFor(() => requests.filter(r => r.path === remoteAPI + '/runs').length > 1);
+  assert.equal(requests.filter(r => r.path.endsWith('/engines')).length, 1);
+  available = true;
+  release();
+  await waitFor(() => get('engine-status').textContent.includes('진단 중'));
+  assert.match(get('engine-status').textContent, /연구실 · linux/);
+  assert.match(get('engine-warning').textContent, /개발자 Cline CLI 실행 파일/);
+  assert.equal(get('start').disabled, false);
+  assert.doesNotMatch(get('engine-list').textContent, /통과/);
+  picker.value = 'gemini';
+  picker.dispatchEvent(new window.Event('change'));
+  assert.equal(get('engine-warning').textContent, '');
+  Object.assign(gemini, {probe_status: 'ok', headless_support: true,
+    capabilities: {read: {status: 'passed', checked_at: stamp}, edit: {status: 'failed', checked_at: stamp},
+      review: {status: 'not_checked', checked_at: null}}});
+  get('refresh').click();
+  await waitFor(() => get('engine-list').textContent.includes('읽기 통과'));
+  const row = Array.from(get('engine-list').children).find(li => li.firstChild.textContent === 'Gemini CLI');
+  assert.match(row.textContent, /4\.5\.6.*로그인 확인.*프로토콜 acp.*비대화형 옵션 확인/);
+  assert.match(row.textContent, /읽기 통과 \([^)]+\) \/ 수정 실패 \([^)]+\) \/ 리뷰 미검증/);
+  assert.equal(picker.value, 'gemini');
+  assert.equal(window.document.activeElement, picker);
+  Object.assign(cline, {installed: true, version: '9.9.9', probe_status: 'unsupported_version'});
+  remoteCatalog.engines.find(row => row.engine === 'claude').probe_status = 'unknown_version';
+  get('reviewer-engine').value = 'cline';
+  get('refresh').click();
+  await waitFor(() => get('engine-warning').textContent.includes('리뷰어 Cline CLI의 설치 버전'));
+  assert.match(get('engine-list').textContent, /작업실에서 지원하지 않는 버전/);
+  assert.match(get('engine-list').textContent, /CLI 버전 확인 실패/);
+  assert.equal(get('start').disabled, false);
+  assert.ok(requests.every(r => r.method === 'GET' && (r.path === '/api/hosts' || r.path.startsWith(remoteAPI + '/'))));
+});
+
+test('diagnostic failure keeps the last host snapshot marked stale and recovers independently of run controls', async t => {
+  let unavailable = true;
+  const {get, requests} = mount(t, {route: path => {
+    if (unavailable && path === '/api/engines') return Response.json({}, {status: 503});
+  }});
+  await waitFor(() => !get('start').disabled && get('engine-status').textContent.includes('불러오지 못했습니다'));
+  assert.equal(get('engine-list').children.length, 0);
+  get('reviewer-engine').value = 'claude';
+  unavailable = false;
+  get('refresh').click();
+  await waitFor(() => get('engine-status').textContent.includes('win32'));
+  assert.equal(get('engine-list').children.length, 5);
+  assert.equal(get('engine-warning').textContent, '');
+  unavailable = true;
+  get('refresh').click();
+  await waitFor(() => get('engine-status').textContent.includes('마지막으로 받은 진단'));
+  assert.equal(get('engine-list').children.length, 5);
+  assert.match(get('engine-warning').textContent, /최신 엔진 진단/);
+  assert.equal(get('reviewer-engine').value, 'claude');
+  assert.ok(requests.every(r => r.method === 'GET'));
 });
 
 test('unknown, empty and ambiguous host links fail closed without local lookups or mutations', async t => {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Protocol, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from .adapters import AgentResult
-from .workspace import git_summary
+from .workspace import git_summary, read_git_prefix
 
 
 class Adapter(Protocol):
@@ -50,10 +51,21 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             recorder.record(operation_key=f"{recorder.run_id}:{count}:{phase}:{event}", event_type=event,
                             state=state, attempts=count, payload=payload)
 
-    def folder_context(state):
+    def folder_context(state, engine):
         folders = state.get("selected_folders", [])
-        return ("Focus the task on the selected folders in this worktree (primary first):\n"
-                + "\n".join(folders) + "\n\n") if folders else ""
+        context = ("Focus the task on the selected folders in this worktree (primary first):\n"
+                   + "\n".join(folders) + "\n\n") if folders else ""
+        if engine == "cline":
+            root = Path(state["workspace"]).resolve()
+            selected = [str(Path(folder).relative_to(root)) for folder in folders]
+            try:
+                data, _ = read_git_prefix(root, "--literal-pathspecs", "ls-files", "-z", "--", *selected)
+            except OSError:
+                return context
+            names = [path.decode("utf-8", errors="replace") for path in data.split(b"\0")[:-1][:64]]
+            context += (f"Worktree root: {root}\nSample of tracked file names relative to this root: "
+                        + json.dumps(names, ensure_ascii=False) + "\n\n")
+        return context
 
     def develop(state: TaskState) -> dict:
         count = state.get("attempts", 0) + 1
@@ -67,7 +79,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             "or change security/approval policy. "
             "If requirements are ambiguous or approval is needed, explicitly "
             "explain the blocker; do not silently assume permission.\n\n"
-            f"{folder_context(state)}"
+            f"{folder_context(state, state['developer'])}"
             f"Task:\n{state['task']}\n\n"
             f"Feedback from last attempt:\n{state.get('feedback', '(none)')}"
         )
@@ -141,7 +153,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             "Respond using a standalone line exactly 'VERDICT: APPROVED' "
             "or 'VERDICT: CHANGES_REQUESTED', followed by reasons. "
             "Do not approve absent evidence.\n\n"
-            f"{folder_context(state)}"
+            f"{folder_context(state, state['reviewer'])}"
             f"Original task:\n{state['task']}\n\n"
             f"Working-tree status:\n{git_summary(Path(state['workspace']))}\n\n"
             f"Test results:\n{state.get('test_output', '')}"

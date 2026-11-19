@@ -77,3 +77,20 @@ def map_folders(root: Path, folders: list[str]) -> list[Path]:
             raise ValueError("Selected folder is missing from this checkout")
         mapped.append(path)
     return mapped
+
+
+def read_git_prefix(root, *args):
+    """Read up to 16 KiB of output from a Git command in a working directory."""
+    with subprocess.Popen(
+        ["git", "-c", "core.fsmonitor=false", "-c", "core.quotepath=false", "--no-pager", *args],
+        cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    ) as proc:
+        data = proc.stdout.read(16385)
+        if len(data) > 16384:
+            proc.kill()
+        code = proc.wait()
+    if len(data) > 16384:
+        return data[:16384], True
+    if code:
+        raise OSError("Git output unavailable")
+    return data, False
