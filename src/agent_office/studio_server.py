@@ -176,6 +176,9 @@ class StudioHandler(ObserverHandler):
                     or self.headers.get_all("X-Agent-Office") != ["studio"]):
                 self._error(403, "FORBIDDEN")
                 return
+        # Closing with unread body bytes can reset the connection and discard
+        # the rejection response on Windows. Read once after the origin checks.
+        payload = self._json_body() if write else None
         if parsed.query:
             studio_page = parsed.path == "/" and _valid_page_query(parsed.query)
             office_page = parsed.path in ("/office", "/versions") and re.fullmatch(r"host=(?:local|[a-f0-9]{32})", parsed.query)
@@ -202,7 +205,7 @@ class StudioHandler(ObserverHandler):
                 self._error(404, "NOT_FOUND")
                 return
             if kind == "hosts":
-                self._forward(journal_id, method, route)
+                self._forward(journal_id, method, route, payload)
                 return
             if not self.server.accept_remote:
                 self._reply(403, {"error": {"code": "PEER_DISABLED", "message": "원격 실행 접수가 꺼져 있습니다."}})
@@ -212,14 +215,13 @@ class StudioHandler(ObserverHandler):
                 return
             self._peer_reply = True
             path = "/api" + route
-        self._local_api(path, write)
+        self._local_api(path, payload)
 
-    def _forward(self, journal_id, method, route):
+    def _forward(self, journal_id, method, route, payload):
         host = self.server.remotes.get(journal_id)
         if host is None:
             self._reply(404, {"error": {"code": "UNKNOWN_HOST", "message": "등록되지 않은 원격 호스트입니다."}})
             return
-        payload = self._json_body() if method == "POST" else None
         status, result = remote_request(host, method, route, payload)
         if status >= 400:
             error = result.get("error")
@@ -229,7 +231,8 @@ class StudioHandler(ObserverHandler):
                 status = 503
         self._reply(status, result)
 
-    def _local_api(self, path, write):
+    def _local_api(self, path, data):
+        write = data is not None
         catalog, runner = self.server.catalog, self.server.runner
         if path.startswith("/api/deployment"):
             route = deployment_view.deployment_route("POST" if write else "GET", path.removeprefix("/api"))
@@ -258,7 +261,7 @@ class StudioHandler(ObserverHandler):
             if target is None:
                 self._error(404, "NOT_FOUND")
             else:
-                status, data = improvement_api.dispatch(self.server, target, self._json_body() if write else None)
+                status, data = improvement_api.dispatch(self.server, target, data)
                 # Earlier SSH clients validate the exact candidate schema.
                 if (target[0] in ("candidate", "candidates") and getattr(self, "_peer_reply", False)
                         and self.headers.get("X-Agent-Office-Candidate-Basis") != "1"):
@@ -300,7 +303,6 @@ class StudioHandler(ObserverHandler):
             else:
                 self._error(404, "NOT_FOUND")
             return
-        data = self._json_body()
         if path == "/api/skills":
             if set(data) != {"name", "instructions"}:
                 raise ValueError("스킬 이름과 Markdown 지침을 입력하세요.")

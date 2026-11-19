@@ -1,6 +1,8 @@
 from io import BytesIO
 import json
 from pathlib import Path
+import select
+import socket
 
 import pytest
 
@@ -91,3 +93,18 @@ def test_an_old_or_mismatched_probe_cannot_satisfy_a_selected_version_request():
                     "/deployment/versions/1/HEAD"):
         assert not is_peer_route("GET", invalid)
     assert not is_peer_route("POST", "/deployment")
+
+
+def test_rejected_deployment_post_receives_a_complete_http_response(tmp_path):
+    from http.client import HTTPResponse
+
+    with studio(tmp_path / "desk.db") as desk, socket.create_connection(desk.server_address, timeout=5) as client:
+        host = f"127.0.0.1:{desk.server_port}"
+        header = (f"POST /api/deployment/restart HTTP/1.0\r\nHost: {host}\r\nOrigin: http://{host}\r\n"
+                  "X-Agent-Office: studio\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n")
+        client.sendall(header.encode("ascii"))
+        assert not select.select([client], [], [], 0.2)[0]
+        client.sendall(b"{}")
+        with HTTPResponse(client) as response:
+            response.begin()
+            assert response.status == 404 and json.loads(response.read())["error"]["code"] == "NOT_FOUND"
