@@ -208,7 +208,7 @@ def _check_ref(db, git, version):
 
 def _comparison(root, first, second):
     from .release_store import _diff, _paths
-    return {"from": first, "to": second, "diff": _diff(_paths(root)[1], first["sha"], second["sha"])}
+    return {"from": first, "to": second, "diff": _diff(_paths(root)[1], first["sha"], second["sha"], allow_binary=True)}
 
 
 def compare(root, from_seq, to_seq):

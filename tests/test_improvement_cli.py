@@ -16,6 +16,75 @@ class OperatorTerminal(io.StringIO):
         return True
 
 
+def test_import_revision_keeps_git_identity_and_normal_approval(tmp_path, monkeypatch, capsys, request):
+    from agent_office import release_store, release_view, stable_history, stable_view
+    from test_studio_http import studio
+
+    journal, repo, base = proposal_fixture(tmp_path, monkeypatch)
+    root = tmp_path / "release"
+    docker = os.environ.get("OFFICE_DOCKER_ACCEPTANCE") == "1"
+    image = request.getfixturevalue("trusted_validator_image") if docker else "sha256:" + "b" * 64
+    release_store.init_release(root, repo, base, image)
+    (repo / "office.webp").write_bytes(b"RIFF\x00\x80WEBP")
+    (repo / "message.txt").write_text("new room\n", encoding="utf-8")
+    release_store.run_git(repo, "add", ".")
+    release_store.run_git(repo, "commit", "-m", "New room and artwork")
+    sha = release_store.run_git(repo, "rev-parse", "HEAD").decode().strip()
+    command = ["improve", "--release", str(root)]
+    flags = ["import-revision", "--repo", str(repo), "--reference", "https://example.org/reviews/20"]
+
+    def run(*args, code=0):
+        exit_code = cli.main([*command, *args])
+        output = capsys.readouterr()
+        assert exit_code == code, output
+        return json.loads(output.out or output.err)
+
+    assert "full commit" in run(*flags, "--revision", sha[:12], code=2)["error"]
+    unrelated = release_store.run_git(repo, "commit-tree", sha + "^{tree}", "-m", "Unrelated source").decode().strip()
+    assert "descend" in run(*flags, "--revision", unrelated, code=2)["error"]
+    assert run("list") == {"candidates": []}
+    candidate = run(*flags, "--revision", sha)
+    assert candidate["sha"] == sha and candidate["state"] == "submitted"
+    assert run(*flags, "--revision", sha) == candidate
+    assert release_store.release_status(root)["stable"] == base
+    with monkeypatch.context() as terminal:
+        screen = OperatorTerminal()
+        terminal.setattr(sys, "stderr", screen)
+        terminal.setattr(sys, "stdin", OperatorTerminal("approve " + sha + "\n"))
+        assert cli.main([*command, "approve", candidate["id"], "--sha", sha]) == 2
+        assert "passed validation" in screen.getvalue()
+    review = run("review", candidate["id"])
+    assert "Binary files" in review["diff"] and "+new room" in review["diff"]
+    assert review["proposal"]["source"] == {
+        "kind": "git_revision", "revision": sha, "reference": "https://example.org/reviews/20",
+    }
+
+    if not docker:
+        def validate(git, revision, pinned_image):
+            assert revision == sha and pinned_image == image
+            assert ("office.webp", 0o644, b"RIFF\x00\x80WEBP") in release_validation.committed_files(git, revision)
+            return dict(sha=revision, image=image, passed=True, exit_code=0, output="fixture passed")
+        monkeypatch.setattr(release_validation, "validate_candidate", validate)
+    assert run("verify", candidate["id"])["state"] == "passed"
+    approval = ["approve", candidate["id"], "--sha", sha]
+    monkeypatch.setattr(sys, "stdin", io.StringIO("approve " + sha + "\n"))
+    assert "interactive operator terminal" in run(*approval, code=2)["error"]
+    with monkeypatch.context() as terminal:
+        screen = OperatorTerminal()
+        terminal.setattr(sys, "stderr", screen)
+        terminal.setattr(sys, "stdin", OperatorTerminal("approve " + sha + "\n"))
+        assert cli.main([*command, *approval]) == 0
+        assert "https://example.org/reviews/20" in screen.getvalue()
+    assert json.loads(capsys.readouterr().out)["state"] == "approved"
+    assert release_store.release_status(root)["stable"] == sha
+    assert "Binary files" in stable_history.review_rollback(root, 1)["diff"]
+    publication = tmp_path / "published.sqlite3"
+    with studio(journal) as server:
+        published = release_view.sync_once(journal, root, publication, stable_history=True)
+        assert published["stable"] == sha and published["candidates"] == 0
+        assert stable_view.versions(publication, server.journal_id)["current"]["sha"] == sha
+
+
 def proposal_fixture(tmp_path, monkeypatch):
     db = tmp_path / "history.db"
     with seeded(db) as store:

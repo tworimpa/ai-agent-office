@@ -10,6 +10,7 @@ import re
 import sqlite3
 import subprocess
 import tempfile
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from . import release_validation, stable_history
@@ -270,8 +271,73 @@ def submit(root, proposal, image=None, *, studio_job=None, prior_candidate=None,
         return _admitted(db, id, studio_job)
 
 
-def _diff(git, base, sha):
-    raw = run_git(git, "diff", "--text", "--full-index", "--no-ext-diff", "--no-textconv",
+def _check_review_reference(reference):
+    if (not isinstance(reference, str) or not 1 <= len(reference) <= 512
+            or any(not char.isascii() or char.isspace() or not char.isprintable() for char in reference)):
+        raise ValueError("Specify a bounded HTTPS review URL")
+    address = urlsplit(reference)
+    if (address.scheme != "https" or not address.hostname or address.username is not None
+            or not address.path.strip("/") or address.query or address.fragment):
+        raise ValueError("Specify a HTTPS review URL without credentials, query or fragment")
+
+
+def _revision_source(proposal, sha):
+    source = proposal.get("source")
+    if source is None:
+        return None
+    if (not isinstance(source, dict) or set(source) != {"kind", "revision", "reference"}
+            or source["kind"] != "git_revision" or source["revision"] != sha or proposal.get("history") != []):
+        raise ValueError("Git review provenance disagrees with the candidate")
+    _check_review_reference(source["reference"])
+    return source
+
+
+def import_revision(root, repo, revision, reference, *, image=None):
+    """Admit an operator-selected Git commit without rewriting its objects or stable pointer."""
+    if not isinstance(revision, str) or not release_validation.COMMIT_ID.fullmatch(revision):
+        raise ValueError("Specify a full commit SHA from a trusted checkout")
+    _check_review_reference(reference)
+    repo = Path(repo).expanduser().resolve(strict=True)
+    top = Path(os.fsdecode(run_git(repo, "rev-parse", "--show-toplevel").rstrip(b"\r\n"))).resolve()
+    if run_git(top, "cat-file", "-t", revision).strip() != b"commit":
+        raise ValueError("The selected revision must be a commit")
+    _, git = _paths(root)
+    with _db(root, write=True) as db:
+        stable = stable_history.latest(db)
+        base, seq = stable["sha"], stable["seq"]
+        if revision == base:
+            raise ValueError("This commit is already stable")
+        image = _release(db)["image"] if image is None else image
+        _check_image(image)
+        proposal = {"title": f"운영자 Git 커밋 {revision[:12]}",
+                    "rationale": f"운영자가 지정한 검토 출처 {reference}",
+                    "expected": "검토한 Git 커밋의 소스를 그대로 승격합니다.", "history": [],
+                    "source": {"kind": "git_revision", "revision": revision, "reference": reference}}
+        encoded = json.dumps(proposal, sort_keys=True, ensure_ascii=False, allow_nan=False)
+        fingerprint = hashlib.sha256(f"git-revision\0{seq}\0{base}\0{image}\0{encoded}".encode("utf-8")).hexdigest()
+        existing = db.execute("SELECT id FROM candidates WHERE fingerprint=?", (fingerprint,)).fetchone()
+        if existing:
+            return _candidate(db, existing["id"])
+        stable_history._check_ref(db, git, stable)
+        run_git(git, "fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--", top.as_uri(), revision)
+        try:
+            run_git(git, "merge-base", "--is-ancestor", base, revision)
+        except ValueError:
+            raise ValueError("The selected Git revision must descend from the current stable commit") from None
+        release_validation.committed_files(git, revision)
+        if not _diff(git, base, revision, allow_binary=True):
+            raise ValueError("The selected Git revision makes no source changes")
+        cid = uuid4().hex
+        run_git(git, "update-ref", "refs/candidates/" + cid, revision)
+        db.execute("INSERT INTO candidates(id,fingerprint,base,sha,state,proposal,image,base_seq) VALUES(?,?,?,?,?,?,?,?)",
+                   (cid, fingerprint, base, revision, "submitted", encoded, image, seq))
+        _log(db, cid, "submitted", {"base": base, "sha": revision, "image": image, "source": proposal["source"]})
+        return _candidate(db, cid)
+
+
+def _diff(git, base, sha, *, allow_binary=False):
+    flags = () if allow_binary else ("--text",)
+    raw = run_git(git, "diff", *flags, "--full-index", "--no-ext-diff", "--no-textconv",
                   "--no-color", "--no-renames", "--ignore-submodules=none", base, sha, "--")
     if b"\0" in raw:
         raise ValueError("The complete change must be reviewable as text")
@@ -302,7 +368,9 @@ def review_with_version(root, id):
         result["stable"] = current["sha"]
         result["stale_base"] = (result["state"] not in ("approved", "rejected")
                                 and (base_seq, result["base"]) != (current["seq"], current["sha"]))
-    result.update(proposal=json.loads(proposal), diff=_diff(git, result["base"], result["sha"]),
+    proposal = json.loads(proposal)
+    source = _revision_source(proposal, result["sha"])
+    result.update(proposal=proposal, diff=_diff(git, result["base"], result["sha"], allow_binary=source is not None),
                   history=history, validation=next((row["details"] for row in reversed(history)
                                                      if row["event"] == "validation_finished"), None))
     return result, current, base_seq, release_id

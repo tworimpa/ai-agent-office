@@ -31,6 +31,11 @@ def add_commands(sub):
     submit = actions.add_parser("submit", help="Import a proposal as an immutable candidate")
     submit.add_argument("file", type=Path)
     submit.add_argument("--image", help="Pin a trusted validator with change-specific regression tests")
+    revision = actions.add_parser("import-revision", help="Admit an exact commit from an operator-trusted local checkout")
+    revision.add_argument("--repo", type=Path, required=True)
+    revision.add_argument("--revision", required=True, help="Full commit SHA")
+    revision.add_argument("--reference", required=True, help="HTTPS URL of the review evidence")
+    revision.add_argument("--image", help="Pin a trusted validator image")
     actions.add_parser("list", help="List candidates and decisions")
     actions.add_parser("status", help="Show the current stable commit and default validation image")
     history = actions.add_parser("history", help="Show stable versions, newest first")
@@ -148,6 +153,8 @@ def run_command(args, db_path):
             proposal = validate_proposal(_read_proposal(args.file))
             verify_history(db_path, proposal)
             result = releases.submit(root, proposal, image=args.image)
+        elif action == "import-revision":
+            result = releases.import_revision(root, args.repo, args.revision, args.reference, image=args.image)
         elif action == "list":
             result = {"candidates": releases.list_candidates(root)}
         elif action == "status":
