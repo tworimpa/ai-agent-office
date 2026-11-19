@@ -10,6 +10,7 @@ from typing import BinaryIO
 
 from .models import validate_id
 from .office_wire import check_office_reply, office_offset
+from .improvement_wire import check_improvement_reply, improvement_route
 from .engines import SUPPORTED_ENGINES
 from .away_expert import RULES, validate_policy
 from .team_wire import check_run_features, check_skill_reply
@@ -44,6 +45,8 @@ class RemoteUnavailable(RuntimeError):
 def is_peer_route(method: str, route: str) -> bool:
     if method not in ("GET", "POST") or not isinstance(route, str):
         return False
+    if route.startswith("/improvements"):
+        return improvement_route(method, route) is not None
     if office_offset(route) is not None:
         return method == "GET"
     if route in ("/workspaces", "/runs", "/skills"):
@@ -115,6 +118,11 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
     if journal_headers != [journal_id.encode("ascii")]:
         raise RemoteUnavailable()
     if status >= 400:
+        return
+
+    improvement = improvement_route(method, route)
+    if improvement is not None:
+        check_improvement_reply(status, data, improvement, payload)
         return
 
     offset = office_offset(route)

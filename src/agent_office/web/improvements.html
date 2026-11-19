@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>개선안 · Agent Office</title>
+  <link rel="stylesheet" href="/studio.css">
+  <link rel="stylesheet" href="/improvements.css">
+  <script type="module" src="/improvements.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">본문으로 이동</a>
+  <header class="mast"><div class="bar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>Agent Office</div>
+    <span class="connection" id="connection" role="status">연결 확인 중</span>
+  </div></header>
+  <main id="main">
+    <header class="page-head">
+      <h1>작업실 개선안</h1>
+      <nav class="view-links" aria-label="보기 선택">
+        <a class="history-link" id="studio-link" href="/">작업실로 이동</a>
+        <a class="history-link" id="office-link" href="/office">오피스 보기</a>
+      </nav>
+    </header>
+    <div class="improvement-toolbar">
+      <nav class="host-picker" aria-label="실행 호스트"><strong>실행 호스트</strong><ul id="hosts"></ul></nav>
+      <button id="refresh" type="button" class="link-button">새로고침</button>
+    </div>
+    <p class="notice error" id="host-error" role="status"></p>
+    <div class="layout">
+      <section class="card composer" aria-labelledby="compose-title">
+        <div class="card-head"><h2 id="compose-title">새 개선안</h2></div>
+        <form id="proposal-form" class="compose-body">
+          <p class="form-intro">종료된 실행을 고르면 제안 엔진이 기록을 검토해 소스 변경안을 작성합니다.</p>
+          <p id="source-note" class="notice" role="status"></p>
+          <fieldset id="evidence" disabled>
+            <legend>근거로 사용할 실행</legend>
+            <p id="selection-count" role="status">0개 선택 · 최대 8개</p>
+            <ul id="runs" class="evidence-list" aria-describedby="selection-count"></ul>
+          </fieldset>
+          <p id="runs-note" class="list-note" role="status"></p>
+          <nav class="pager" id="runs-pages" aria-label="종료된 실행 페이지"></nav>
+          <label for="engine">제안 엔진</label>
+          <select id="engine" disabled>
+            <option value="codex">Codex</option><option value="antigravity">Antigravity</option>
+            <option value="claude">Claude Code</option><option value="gemini">Gemini CLI</option>
+            <option value="cline">Cline CLI</option>
+          </select>
+          <small id="base"></small>
+          <button class="primary" type="submit" id="generate" disabled>개선안 생성</button>
+          <p class="notice" id="submit-note" role="status"></p>
+        </form>
+      </section>
+      <div class="right">
+        <section class="card" aria-labelledby="jobs-title">
+          <div class="card-head"><h2 id="jobs-title">생성 내역</h2></div>
+          <p id="jobs-note" class="list-note" role="status">생성 내역을 확인하고 있습니다.</p>
+          <ul id="jobs" class="record-list"></ul>
+          <nav class="pager" id="jobs-pages" aria-label="생성 내역 페이지"></nav>
+        </section>
+        <section class="card" aria-labelledby="candidates-title">
+          <div class="card-head"><h2 id="candidates-title">검토 후보</h2></div>
+          <div class="publication"><p>후보 접수·검증과 최종 승인·거절은 운영자 터미널에서 진행합니다.</p><p id="published">마지막 게시 시각 확인 중</p></div>
+          <p id="candidates-note" class="list-note" role="status"></p>
+          <ul id="candidates" class="record-list"></ul>
+          <nav class="pager" id="candidates-pages" aria-label="검토 후보 페이지"></nav>
+        </section>
+        <section class="card" id="detail" aria-labelledby="detail-title">
+          <div class="card-head"><h2 id="detail-title" tabindex="-1">상세 기록</h2></div>
+          <p id="detail-note" class="list-note" role="status">생성 내역이나 검토 후보를 선택하세요.</p>
+          <div id="detail-body" class="inspection" hidden></div>
+        </section>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

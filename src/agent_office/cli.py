@@ -71,6 +71,8 @@ def make_parser() -> argparse.ArgumentParser:
     observer.add_argument("--port", type=int, default=8765)
     studio = sub.add_parser("studio", help="Open the local workspace and task controls")
     studio.add_argument("--port", type=int, default=8766)
+    studio.add_argument("--improvement-source", type=Path, help="Trusted source checkout for proposal generation")
+    studio.add_argument("--release-view", type=Path, help="Read-only candidate view published by the operator")
     studio.add_argument("--accept-remote", action="store_true",
                         help="Enable the journal-specific peer API on this loopback studio")
     studio.add_argument("--remote", nargs=3, action="append", default=[],
@@ -195,7 +197,8 @@ def main(argv: list[str] | None = None) -> int:
             from .studio_server import serve_studio
             from .studio_ssh import RemoteHost
             remotes = [RemoteHost(alias, int(port), journal) for alias, port, journal in args.remote]
-            serve_studio(db_path, args.port, remotes=remotes, accept_remote=args.accept_remote)
+            serve_studio(db_path, args.port, remotes=remotes, accept_remote=args.accept_remote,
+                         improvement_source=args.improvement_source, release_view=args.release_view)
             return 0
         if args.command == "serve":
             from .observer import serve

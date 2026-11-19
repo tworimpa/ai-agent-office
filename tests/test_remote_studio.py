@@ -52,6 +52,7 @@ def test_cli_registers_explicit_peers_without_opening_a_connection(tmp_path, mon
     assert main(args) == 0
     assert captured == [(tmp_path / "local.db", 0, {
         "remotes": [RemoteHost("build-box", 8766, journal)], "accept_remote": True,
+        "improvement_source": None, "release_view": None,
     })]
     assert main([*args[:-2], "0", journal]) == 2
     assert len(captured) == 1

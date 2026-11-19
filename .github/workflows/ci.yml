@@ -40,7 +40,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
         env:
           OFFICE_DOCKER_ACCEPTANCE: '1'
-        run: python -m pytest -q tests/test_release_validation.py tests/test_improvement_cli.py
+        run: python -m pytest -q tests/test_release_validation.py tests/test_improvement_cli.py tests/test_improvement_http.py
       - name: CLI command help
         run: python -m agent_office.cli --help
       - name: Doctor (no vendor credentials required)

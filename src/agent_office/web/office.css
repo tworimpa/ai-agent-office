@@ -22,7 +22,8 @@ button:disabled { cursor: default; opacity: .5; }
 .mast { background: var(--ink); color: #fffae6; border-bottom: 4px solid #b4c69d; }
 main, .mast-inner { width: min(1140px, calc(100% - 64px)); margin-inline: auto; }
 .mast-inner, .brand, .toolbar, .host-head, .pager, .state, .identity { display: flex; align-items: center; }
-.mast-inner { justify-content: space-between; min-height: 56px; }
+.mast-inner { justify-content: space-between; min-height: 56px; gap: 12px; flex-wrap: wrap; }
+.mast .view-links { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
 .brand { font: bold 19px var(--mono); gap: 12px; letter-spacing: -.06em; }
 .brand-mark { width: 18px; height: 18px; background: linear-gradient(to right,#c0df9d 7px,transparent 7px),linear-gradient(#c0df9d 7px,transparent 7px 11px,#c0df9d 11px); }
 .mast a { font-size: .85rem; color: #eff5e4; padding: 8px 0; }

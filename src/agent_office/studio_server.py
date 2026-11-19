@@ -18,6 +18,9 @@ from .engine_evidence import StudioEngineCatalog
 from .observer import ObserverHandler
 from .office_state import office_snapshot
 from .office_wire import office_offset
+from . import improvement_api
+from .improvement_wire import improvement_route
+from .studio_improvements import StudioImprovements
 from .store import TaskStore
 from .studio_catalog import StudioCatalog
 from .role_skills import RoleSkillRegistry
@@ -33,6 +36,9 @@ ASSETS = {
     "/office.css": ("office.css", "text/css"),
     "/office.js": ("office.js", "text/javascript"),
     "/office-agents.webp": ("office-agents.webp", "image/webp"),
+    "/improvements": ("improvements.html", "text/html"),
+    "/improvements.js": ("improvements.js", "text/javascript"),
+    "/improvements.css": ("improvements.css", "text/css"),
 }
 MAX_BODY = 128 * 1024
 
@@ -54,6 +60,15 @@ def _valid_page_query(query):
             and all(re.fullmatch(r"[a-f0-9]{32}", value) for value in params.values()))
 
 
+def _improvements_query(query):
+    pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True, max_num_fields=2)
+    params = dict(pairs)
+    return (len(params) == len(pairs) and not params.keys() - {"host", "job", "candidate"}
+            and not {"job", "candidate"} <= params.keys()
+            and all(re.fullmatch(r"[a-f0-9]{32}", v) or (k == "host" and v == "local")
+                    for k, v in pairs))
+
+
 class StudioServer(ThreadingHTTPServer):
     # Finish accepting/handling in-flight HTTP requests before releasing runner ownership.
     daemon_threads = False
@@ -64,11 +79,15 @@ class StudioServer(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
 
-    def __init__(self, db_path: Path, port: int = 8766, *, remotes=(), accept_remote=False):
+    def __init__(self, db_path: Path, port: int = 8766, *, remotes=(), accept_remote=False,
+                 improvement_source=None, release_view=None):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Invalid port")
         self.runner = None
         self.engines = None
+        self.improvements = None
+        self.improvement_source = improvement_source
+        self.release_view = release_view
         self.remotes = {host.journal_id: host for host in remotes}
         if len(self.remotes) != len(remotes) or len({h.alias.casefold() for h in remotes}) != len(remotes):
             raise ValueError("각 원격 호스트의 SSH 별칭과 저널 ID는 고유해야 합니다.")
@@ -85,8 +104,9 @@ class StudioServer(ThreadingHTTPServer):
             self.skills = RoleSkillRegistry(self.db_path)
             self.engines = StudioEngineCatalog(self.db_path)
             self.runner = LocalRunner(self.db_path)
+            self.improvements = StudioImprovements(self.db_path, improvement_source)
         except BaseException:
-            super().server_close()
+            self.server_close()
             raise
 
     def get_request(self):
@@ -96,6 +116,8 @@ class StudioServer(ThreadingHTTPServer):
 
     def server_close(self):
         super().server_close()
+        if self.improvements is not None:
+            self.improvements.close()
         if self.engines is not None:
             self.engines.close()
         if self.runner is not None:
@@ -151,7 +173,8 @@ class StudioHandler(ObserverHandler):
         if parsed.query:
             studio_page = parsed.path == "/" and _valid_page_query(parsed.query)
             office_page = parsed.path == "/office" and re.fullmatch(r"host=(?:local|[a-f0-9]{32})", parsed.query)
-            if write or not (studio_page or office_page):
+            improvements_page = parsed.path == "/improvements" and _improvements_query(parsed.query)
+            if write or not (studio_page or office_page or improvements_page):
                 raise ValueError("요청 주소를 확인하세요.")
         if not write and parsed.path in ASSETS:
             name, mime = ASSETS[parsed.path]
@@ -202,6 +225,14 @@ class StudioHandler(ObserverHandler):
 
     def _local_api(self, path, write):
         catalog, runner = self.server.catalog, self.server.runner
+        if path.startswith("/api/improvements"):
+            target = improvement_route("POST" if write else "GET", path.removeprefix("/api"))
+            if target is None:
+                self._error(404, "NOT_FOUND")
+            else:
+                status, data = improvement_api.dispatch(self.server, target, self._json_body() if write else None)
+                self._reply(status, data)
+            return
         if not write and path.startswith("/api/"):
             offset = office_offset(path.removeprefix("/api"))
             if offset is not None:
@@ -311,8 +342,10 @@ class StudioHandler(ObserverHandler):
     do_PUT = do_PATCH = do_DELETE = do_OPTIONS = _write_not_allowed
 
 
-def serve_studio(db_path: Path, port: int, *, remotes=(), accept_remote=False):
-    with StudioServer(db_path, port, remotes=remotes, accept_remote=accept_remote) as server:
+def serve_studio(db_path: Path, port: int, *, remotes=(), accept_remote=False,
+                 improvement_source=None, release_view=None):
+    with StudioServer(db_path, port, remotes=remotes, accept_remote=accept_remote,
+                      improvement_source=improvement_source, release_view=release_view) as server:
         print(f"Agent Office studio: http://127.0.0.1:{server.server_address[1]}/", flush=True)
         if accept_remote:
             print(f"Remote studio port: {server.server_address[1]} | Journal ID: {server.journal_id}", flush=True)

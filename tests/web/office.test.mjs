@@ -110,6 +110,7 @@ test('manual refresh supersedes late responses and unchanged data preserves keyb
   await until(() => calls.filter(p => p === remoteOffice).length === 3);
   assert.equal(doc.activeElement, focused);
   assert.equal(get('studio-link').getAttribute('href'), '/?host=' + remote);
+  assert.equal(get('improvements-link').getAttribute('href'), '/improvements?host=' + remote);
   Object.defineProperty(doc, 'hidden', {configurable: true, value: true});
   doc.dispatchEvent(new window.Event('visibilitychange'));
   const before = calls.length;
