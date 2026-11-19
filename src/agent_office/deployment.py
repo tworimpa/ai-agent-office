@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import stat
 import sys
@@ -161,6 +162,25 @@ def _sync_directory(path):
             os.close(fd)
 
 
+@contextmanager
+def _publish_slot(slot):
+    if os.name != "nt":
+        with release_store._publish_directory(slot) as stage:
+            yield stage
+        return
+    # Python 3.13's private temporary directories suppress DACL inheritance.
+    # Stage beside the final slot so both it and its files inherit the slots
+    # directory's provisioned ACL. Windows rename refuses an existing target.
+    stage = slot.with_name(".office-stage-" + uuid4().hex)
+    stage.mkdir()
+    try:
+        yield stage
+        stage.rename(slot)
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage)
+
+
 def _stage(target, git, sha):
     files = committed_files(git, sha)
     manifest = _manifest(files)
@@ -169,7 +189,7 @@ def _stage(target, git, sha):
         raise ValueError("Unexpected slots directory")
     slot = slots / sha
     if not os.path.lexists(slot):
-        with release_store._publish_directory(slot) as stage:
+        with _publish_slot(slot) as stage:
             for name, mode, data in files:
                 file = stage / name
                 file.parent.mkdir(parents=True, exist_ok=True)

@@ -34,6 +34,35 @@ jobs:
         run: npm run test:web
       - name: Compile source
         run: python -m compileall -q src tests
+      - name: Deploy and recover a disposable Windows NSSM Studio in Edge
+        if: matrix.os == 'windows-latest' && matrix.python-version == '3.13' && runner.environment == 'github-hosted'
+        shell: pwsh
+        env:
+          OFFICE_NSSM_ACCEPTANCE: '1'
+        run: |
+          $scratch = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP "office-nssm-$([guid]::NewGuid())")
+          $zip = Join-Path $scratch.FullName "nssm.zip"
+          try {
+            Invoke-WebRequest 'https://nssm.cc/ci/nssm-2.24-101-g897c7ad.zip' -OutFile $zip -TimeoutSec 25
+          } catch {
+            $package = Join-Path $scratch.FullName "nssm.nupkg"
+            Invoke-WebRequest 'https://community.chocolatey.org/api/v2/package/nssm/2.24.101' -OutFile $package -TimeoutSec 25
+            $archive = [IO.Compression.ZipFile]::OpenRead($package)
+            try {
+              [IO.Compression.ZipFileExtensions]::ExtractToFile(
+                $archive.GetEntry("tools/nssm-2.24-101-g897c7ad.zip"), $zip, $true)
+            } finally {
+              $archive.Dispose()
+            }
+          }
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne '99F5045FFFBFFB745D67FE3A065A953C4A3D9C253B868892D9B685B0EE7D07B8') {
+            throw "NSSM archive SHA-256 mismatch"
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath $scratch.FullName
+          $env:OFFICE_NSSM_EXE = Join-Path $scratch.FullName 'nssm-2.24-101-g897c7ad/win64/nssm.exe'
+          python -m pip install pywinpty==3.0.2 playwright==1.55.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest -q -rA tests/test_deployment_nssm.py
       - name: Unit and subprocess smoke tests
         run: python -m pytest -q
       - name: Isolated release validator with real Docker
