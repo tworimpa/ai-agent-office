@@ -18,7 +18,7 @@ from agent_office import deployment, release_store, release_validation
 from agent_office.release_view import sync_once
 from agent_office.studio_server import StudioServer
 from agent_office.windows_binding import inspect_windows, operator_sid
-from test_deployment_systemd import CSS_MARKER, PACKAGE, _copy_package, _promote
+from test_deployment_systemd import CSS_MARKER, _copy_package, _promote
 from test_release_store import IMAGE
 from test_studio_http import request, studio
 
@@ -43,6 +43,7 @@ def _grant(path, sid, access):
 def _service(name, wrapper, python, target, journal, log):
     import pywintypes
     import win32service as scm
+    import winreg
 
     account = "NT SERVICE\\" + name
     manager = scm.OpenSCManager(None, None, scm.SC_MANAGER_CREATE_SERVICE)
@@ -60,11 +61,15 @@ def _service(name, wrapper, python, target, journal, log):
                 ),
                 "AppDirectory": str(journal.parent),
                 "AppStderr": str(log),
-                "AppNoConsole": "1",
-                "AppRestartDelay": "120000",
+                "AppNoConsole": 1,
+                "AppRestartDelay": 120000,
             }
-            for key, value in settings.items():
-                _native([wrapper, "set", name, key, value])
+            # SCM creates the service; initialize NSSM's Parameters before its first start.
+            with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE,
+                                  rf"SYSTEM\CurrentControlSet\Services\{name}\Parameters") as params:
+                for key, value in settings.items():
+                    kind = winreg.REG_DWORD if isinstance(value, int) else winreg.REG_SZ
+                    winreg.SetValueEx(params, key, 0, kind, value)
             yield
         finally:
             try:
@@ -198,6 +203,9 @@ def test_nssm_restarts_and_restores_previous_boot_visible_in_studio(monkeypatch)
     monkeypatch.setattr(release_validation, "validate_candidate", compile_fixture)
     with tempfile.TemporaryDirectory(prefix="office-nssm-", dir=Path(os.environ["SystemDrive"] + "\\")) as tmp:
         scratch = Path(tmp)
+        icacls = Path(os.environ["SystemRoot"]) / "System32" / "icacls.exe"
+        _native([icacls, scratch, "/inheritance:r", "/grant:r", f"*{operator_sid()}:(OI)(CI)F",
+                 "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"])
         wrapper = scratch / "nssm.exe"
         shutil.copyfile(wrapper_source, wrapper)
         source, release, target = scratch / "source", scratch / "release", scratch / "target"
@@ -213,6 +221,10 @@ def test_nssm_restarts_and_restores_previous_boot_visible_in_studio(monkeypatch)
         purelib = _native([python, "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"]).stdout.strip()
         _copy_package(Path(purelib) / "agent_office")
         _copy_package(source / "src" / "agent_office")
+        # Git's fixture plumbing disables autocrlf. Match unified diff context to the fixture bytes.
+        css_path, server_path = "src/agent_office/web/versions.css", "src/agent_office/studio_server.py"
+        for path in (source / css_path, source / server_path):
+            path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
         release_store.run_git(source, "init", "--template=")
         release_store.run_git(source, "add", "--", "src")
         release_store.run_git(source, "commit", "-m", "Disposable Studio source")
@@ -229,15 +241,13 @@ def test_nssm_restarts_and_restores_previous_boot_visible_in_studio(monkeypatch)
             try:
                 _deploy(python, release, target, config, 1, first, None, 0)
                 first_boot = _running(target, 1, first, account_sid)
-                css_path = "src/agent_office/web/versions.css"
-                css = (PACKAGE / "web" / "versions.css").read_text(encoding="utf-8")
+                css = (source / css_path).read_text(encoding="utf-8")
                 second = _promote(release, first, css_path, css, css + CSS_MARKER + "\n")
                 _deploy(python, release, target, config, 2, second, first_boot, 0)
                 second_boot = _running(target, 2, second, account_sid)
                 assert second_boot["boot_id"] != first_boot["boot_id"]
 
-                server_path = "src/agent_office/studio_server.py"
-                server = (PACKAGE / "studio_server.py").read_text(encoding="utf-8")
+                server = (source / server_path).read_text(encoding="utf-8")
                 failure = "disposable Windows Studio startup failure"
                 broken = server.replace("from http.server import", f"raise RuntimeError({failure!r})\nfrom http.server import", 1)
                 assert broken != server
