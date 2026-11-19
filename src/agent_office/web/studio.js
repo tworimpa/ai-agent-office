@@ -104,6 +104,7 @@ export function mountStudio(win) {
     return hosts.length === 1 && (hosts[0] === 'local' || validId(hosts[0])) ? hosts[0] : null;
   };
   const hostId = addressHost();
+  if (validId(hostId)) get('office-link').href = '/office?host=' + hostId;
   const pendingKey = hostId === 'local' ? 'agent-office.studio.pending' : 'agent-office.studio.pending.' + hostId;
   let host = null, hosts = [], online = false, registering = false;
   let selected = validId(fromAddress()) ? fromAddress() : null;

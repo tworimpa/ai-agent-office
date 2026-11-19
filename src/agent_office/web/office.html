@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>오피스 보기 · Agent Office</title>
+  <link rel="stylesheet" href="/office.css">
+  <script type="module" src="/office.js"></script>
+</head>
+<body>
+  <a class="skip" href="#title">본문으로 이동</a>
+  <header class="mast">
+    <div class="mast-inner">
+      <span class="brand"><i class="brand-mark" aria-hidden="true"></i>Agent Office</span>
+      <a id="studio-link" href="/">작업실로 이동 <span aria-hidden="true">↗</span></a>
+    </div>
+  </header>
+  <main>
+    <header class="hero">
+      <div class="intro">
+        <h1 id="title" tabindex="-1">오피스 보기</h1>
+        <p>캐릭터를 선택하면 담당 실행의 요청과 결과가 열립니다.</p>
+      </div>
+      <div class="room" aria-hidden="true">
+        <div class="window"></div>
+        <div class="shelf"></div>
+        <div class="desk"><i class="monitor"></i><i class="keyboard"></i><i class="mug"></i></div>
+        <div class="plant"><i></i></div>
+      </div>
+    </header>
+    <dl class="counters" aria-label="연결된 호스트의 현황">
+      <div><dt>진행 중인 실행</dt><dd id="active-count">—</dd></div>
+      <div><dt>기술 질문</dt><dd id="question-count">—</dd></div>
+      <div><dt>권한 요청</dt><dd id="permission-count">—</dd></div>
+    </dl>
+    <div class="toolbar">
+      <nav aria-label="호스트 선택" id="host-filters"><a href="/office">전체 호스트</a></nav>
+      <button type="button" id="refresh"><span aria-hidden="true">↻</span> 새로고침</button>
+    </div>
+    <p id="notice" role="status">호스트를 확인하고 있습니다.</p>
+    <div id="hosts"></div>
+  </main>
+</body>
+</html>

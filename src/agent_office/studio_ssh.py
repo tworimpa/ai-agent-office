@@ -9,6 +9,7 @@ import threading
 from typing import BinaryIO
 
 from .models import validate_id
+from .office_wire import check_office_reply, office_offset
 from .engines import SUPPORTED_ENGINES
 from .away_expert import RULES, validate_policy
 from .team_wire import check_run_features, check_skill_reply
@@ -43,6 +44,8 @@ class RemoteUnavailable(RuntimeError):
 def is_peer_route(method: str, route: str) -> bool:
     if method not in ("GET", "POST") or not isinstance(route, str):
         return False
+    if office_offset(route) is not None:
+        return method == "GET"
     if route in ("/workspaces", "/runs", "/skills"):
         return True
     if route.startswith("/skills/"):
@@ -114,6 +117,12 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
     if status >= 400:
         return
 
+    offset = office_offset(route)
+    if offset is not None:
+        if status != 200:
+            raise RemoteUnavailable()
+        check_office_reply(data, offset)
+        return
     if route == "/skills" or route.startswith("/skills/"):
         check_skill_reply(status, data, method, route, payload)
         return

@@ -146,11 +146,54 @@ def test_dead_studio_run_requires_recovery_and_never_replays(tmp_path, repo, mon
         runner = stack.enter_context(closing(LocalRunner(db)))
         assert runner.detail(rid)["state"] == "QUEUED"
         prior.__exit__(None, None, None)
-        assert runner.start(rid, wid, repo, ["."], "original", False)["state"] == "RECOVERY_REQUIRED"
         with TaskStore(db, readonly=True) as store:
+            wait_for(lambda: store.get_run(rid).state == "RECOVERY_REQUIRED")
             run = store.get_run(rid)
             assert run.attempts == 0
             assert [event.event_type for event in store.list_events(run.task_id)] == ["RUN_CREATED", "RECOVERY_REQUIRED"]
+        assert runner.start(rid, wid, repo, ["."], "original", False)["state"] == "RECOVERY_REQUIRED"
+
+
+def test_owner_records_single_supervisor_exit_without_studio_reads(tmp_path, repo, monkeypatch):
+    from agent_office.office_state import office_snapshot
+
+    db = tmp_path / "db"
+    rid, wid = uuid.uuid4().hex, uuid.uuid4().hex
+    release = tmp_path / "release"
+    launches = []
+    popen = subprocess.Popen
+    supervisor = (
+        "import pathlib, sys, time\n"
+        "from agent_office.ownership import RunGuard\n"
+        "from agent_office.store import TaskStore\n"
+        "db, rid, release = sys.argv[1:]\n"
+        "sys.stdin.buffer.readline()\n"
+        "with RunGuard(pathlib.Path(db), rid), TaskStore(pathlib.Path(db), existing=True) as store:\n"
+        "    store.record_transition(rid, operation_key='dev', event_type='STAGE_STARTED', "
+        "state='RUNNING', attempts=1, payload={'role':'developer','engine':'codex'})\n"
+        "    while not pathlib.Path(release).exists(): time.sleep(.02)\n"
+        "sys.exit(1)\n")
+
+    def launch(argv, **kwargs):
+        if argv[1:3] == ["-m", "agent_office.studio_process"]:
+            launches.append(argv[-1])
+            argv = [sys.executable, "-c", supervisor, str(db), rid, str(release)]
+        return popen(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    with closing(LocalRunner(db)) as runner, TaskStore(db, readonly=True) as store:
+        runner.start(rid, wid, repo, ["."], "original", False)
+        try:
+            wait_for(lambda: store.get_run(rid).state == "RUNNING")
+            assert office_snapshot(db)["agents"][0]["activity"] == "working"
+        finally:
+            release.touch()
+        wait_for(lambda: store.get_run(rid).state == "RECOVERY_REQUIRED")
+        snapshot = office_snapshot(db)
+        assert snapshot["counts"]["active_runs"] == 0 and snapshot["agents"][0]["activity"] == "recovery"
+        assert runner.start(rid, wid, repo, ["."], "original", False)["state"] == "RECOVERY_REQUIRED"
+        wait_for(lambda: runner.scheduler is None)
+    assert launches == [rid]
 
 
 def test_final_state_published_after_detached_worker_has_exited(tmp_path, repo, monkeypatch):

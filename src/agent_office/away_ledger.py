@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import platform
+import sqlite3
 
 from .away_expert import RULES, in_scope
 from .models import OfficeError, validate_id
@@ -26,6 +27,27 @@ def ensure_schema(db):
     db.execute("""CREATE TABLE IF NOT EXISTS studio_away_checks(
         request_id TEXT PRIMARY KEY REFERENCES studio_requests(id), reason TEXT,
         topic TEXT, specialist_engine TEXT, verifier_engine TEXT, evidence TEXT)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS studio_away_role_stages(
+        request_id TEXT NOT NULL REFERENCES studio_away_checks(request_id),
+        role TEXT NOT NULL CHECK(role IN ('specialist','verifier')), engine TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('RUNNING','COMPLETED','FAILED','INTERRUPTED')),
+        updated_at TEXT NOT NULL, PRIMARY KEY(request_id, role))""")
+
+
+def record_role_stage(db, request_id, role, engine, status):
+    """Best-effort observation. Stage rows confer no authority to answer or send."""
+    try:
+        if status == "RUNNING":
+            db.execute("""INSERT INTO studio_away_role_stages(request_id,role,engine,status,updated_at)
+                SELECT q.id,?,?,?,? FROM studio_requests q JOIN studio_away_checks c ON c.request_id=q.id
+                WHERE q.id=? AND q.status='pending' AND c.reason IS NULL AND c.evidence IS NULL
+                ON CONFLICT(request_id,role) DO NOTHING""", (role, engine, status, now(), request_id))
+        else:
+            db.execute("""UPDATE studio_away_role_stages SET status=?,updated_at=?
+                WHERE request_id=? AND role=? AND status='RUNNING'""", (status, now(), request_id, role))
+    except sqlite3.Error:
+        # A missing observation cannot veto a verified answer or authorize one.
+        pass
 
 
 def register_policy(db, run_id, policy, revision):

@@ -21,13 +21,14 @@ def main():
     assert evidence["topic"] == "python_version"
     with Path(os.environ["OFFICE_AWAY_CALLS"]).open("a", encoding="utf-8") as file:
         file.write(json.dumps([role, str(Path.cwd())]) + "\n")
-    if os.environ.get("OFFICE_DELAY_SPECIALIST") and role == "AWAY_SPECIALIST":
+    portfile = os.environ.get("OFFICE_DELAY_" + role.removeprefix("AWAY_"))
+    if portfile:
         import socket
         import time
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             sock.listen()
-            Path(os.environ["OFFICE_DELAY_SPECIALIST"]).write_text(str(sock.getsockname()[1]))
+            Path(portfile).write_text(str(sock.getsockname()[1]))
             time.sleep(60)
     citation = evidence["evidence"][0]
     value = {"answer": ">=3.11", **citation}

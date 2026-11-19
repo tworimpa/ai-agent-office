@@ -125,6 +125,8 @@ class LocalRunner:
                         self.stale.add(row[0])
                         if store.connection.execute("SELECT 1 FROM studio_team_children WHERE id=?", (row[0],)).fetchone():
                             self.team_workers.add(row[0])
+            if self.stale:
+                self._start_monitor()
         except BaseException:
             self.guard.__exit__(None, None, None)
             raise
@@ -246,10 +248,9 @@ class LocalRunner:
                 skills.pin_selection(db, child_id, selected)
 
             queued = {}
-            if plan and (self.scheduler is None or not self.scheduler.is_alive()):
-                # Hold self.lock across registration so dispatch can only see committed work.
-                self.scheduler = threading.Thread(target=self._dispatch_pending, daemon=True)
-                self.scheduler.start()
+            # Hold self.lock across registration and launch so the monitor sees
+            # committed work and never tries to recover the supervisor handoff.
+            self._start_monitor()
             with ExitStack() as guards:
                 with store._write():
                     if plan:
@@ -314,29 +315,39 @@ class LocalRunner:
                 else:
                     self.stale.add(child_id)
 
-    def _dispatch_pending(self):
-        while not self.shutdown.wait(0.15):
+    def _start_monitor(self):
+        if self.scheduler is None or not self.scheduler.is_alive():
+            self.scheduler = threading.Thread(target=self._monitor, daemon=True)
+            self.scheduler.start()
+
+    def _monitor(self):
+        interval = 0.15
+        while not self.shutdown.wait(interval):
             with self.lock:
-                if self.closed or not self.pending:
+                if self.closed or not (self.pending or self.children or self.stale):
                     self.scheduler = None
                     return
+                can_dispatch = self.pending and len(self.team_workers) < team_runs.MAX_ACTIVE
+                if not (self.stale or can_dispatch or any(child.poll() is not None for child in self.children.values())):
+                    continue
                 try:
                     with TaskStore(self.path, existing=True) as store:
                         self._refresh(store)
                         self._schedule(store)
+                    interval = 0.15
                 except Exception as exc:
                     if (isinstance(exc, sqlite3.OperationalError)
                             and getattr(exc, "sqlite_errorcode", 0) & 255 in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)):
                         continue
-                    # An owner that can no longer dispatch drops the raw prompts. Reads and
-                    # restart perform the same guarded recovery as an interrupted process.
+                    # Drop undispatched prompts and recover their journal rows
+                    # on a later owner tick. Recovery never relaunches a child.
                     self.stale.update(self.pending)
                     for _, guard in self.pending.values():
                         guard.__exit__(None, None, None)
                     self.pending.clear()
-                    self.scheduler = None
-                    logging.getLogger(__name__).exception("Studio team dispatcher interrupted")
-                    return
+                    if interval == 0.15:
+                        logging.getLogger(__name__).exception("Studio owner monitor interrupted")
+                    interval = 2.0
 
     def _detail(self, store, run_id):
         db = store.connection

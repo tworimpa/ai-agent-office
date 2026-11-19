@@ -74,7 +74,8 @@ class ObserverHandler(BaseHTTPRequestHandler):
     def _reply(self, status, body, mime="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
-        for key, value in {"Content-Type": mime + "; charset=utf-8", "Content-Length": str(len(data)),
+        content_type = mime + "; charset=utf-8" if mime.startswith("text/") or mime == "application/json" else mime
+        for key, value in {"Content-Type": content_type, "Content-Length": str(len(data)),
                            "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
                            "Content-Security-Policy": CSP, "X-Frame-Options": "DENY",
                            "Referrer-Policy": "no-referrer"}.items():

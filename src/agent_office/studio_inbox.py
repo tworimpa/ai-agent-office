@@ -13,7 +13,7 @@ from . import away_ledger
 from .dialogue import DelegationWithdrawn
 from .events import snapshot_request
 from .models import OfficeError, validate_id
-from .ownership import RunBusyError, RunGuard
+from .ownership import RunGuard
 from .role_skills import role_guidance
 from .store import TaskStore, now
 
@@ -113,20 +113,15 @@ def expire_requests(connection, run_id):
     _expire(connection, "run_id=?", (run_id,))
 
 
-def _holder_alive(path, holder):
-    # The same nonblocking OS primitive used for run recovery. A killed worker
-    # releases its lock even when the supervisor has not marked the run terminal.
-    try:
-        with RunGuard(path, holder):
-            return False
-    except RunBusyError:
-        return True
+def holder_alive(path, holder):
+    # A killed worker releases its lock even before the run becomes terminal.
+    return RunGuard(path, holder).is_held()
 
 
 def _refresh(db, path, row, run):
     if row["status"] in ("pending", "decided") and (
         not _active(run, row["role"], row["engine"]) or row["attempt"] != run["attempts"]
-        or not _holder_alive(path, row["holder"])
+        or not holder_alive(path, row["holder"])
     ):
         _expire(db, "id=?", (row["id"],))
         return _request(db, row["run_id"], row["id"])
@@ -304,11 +299,16 @@ class InboxChannel:
             if changed_reason:
                 away_ledger.defer(db, request_id, changed_reason)
             return
+
+        def on_stage(role, status):
+            engine = plan.specialist if role == "specialist" else plan.verifier
+            away_ledger.record_role_stage(db, request_id, role, engine, status)
+
         try:
             guidance = role_guidance(db, self.run_id, ("specialist", "verifier"))
             result = await run_consultation(plan.repo, plan.revision, plan.rule,
                                             plan.specialist, plan.verifier, json.loads(plan.folders_json),
-                                            **({"skill_guidance": guidance} if guidance else {}))
+                                            skill_guidance=guidance, on_stage=on_stage)
             answer = _text(result["answer"])
             evidence = result["evidence"]
             if (evidence["path"] != plan.path or evidence["revision"] != plan.revision
