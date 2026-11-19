@@ -14,15 +14,22 @@ from agent_office.away_evidence import DelegationDeferred
 from agent_office.studio_process import run_until_owner_closes
 
 
+# Two roles with four 8 KiB instructions each, including JSON escaping, and the
+# original evidence parameters. The evidence result has a separate, smaller cap.
+MAX_CONSULT_INPUT = 160 * 1024
+
+
 def _command(mode):
     return [sys.executable, "-I", str(Path(__file__).resolve()), mode]
 
 
-async def run_consultation(repo, revision, rule, specialist_engine, verifier_engine, folders):
+async def run_consultation(repo, revision, rule, specialist_engine, verifier_engine, folders, *, skill_guidance=None):
     # Only the closest selected ancestor is needed to check this evidence file.
     scope = next((str(parent) for parent in PurePosixPath(rule["path"]).parents if str(parent) in folders), None)
     payload = json.dumps([str(repo), revision, rule, specialist_engine, verifier_engine,
-                          [scope] if scope else []]).encode("ascii") + b"\n"
+                          [scope] if scope else [], skill_guidance or {}], ensure_ascii=False).encode("utf-8") + b"\n"
+    if len(payload) > MAX_CONSULT_INPUT:
+        raise DelegationDeferred("specialist_failed")
     with tempfile.TemporaryFile() as output:
         child = await asyncio.create_subprocess_exec(
             *_command("supervise"), stdin=asyncio.subprocess.PIPE, stdout=output, stderr=subprocess.DEVNULL,
@@ -50,8 +57,8 @@ async def run_consultation(repo, revision, rule, specialist_engine, verifier_eng
 
 
 def _supervise():
-    payload = sys.stdin.buffer.readline(16385)
-    if not payload.endswith(b"\n") or len(payload) > 16384:
+    payload = sys.stdin.buffer.readline(MAX_CONSULT_INPUT + 1)
+    if not payload.endswith(b"\n") or len(payload) > MAX_CONSULT_INPUT:
         return 1
     # This supervisor outlives cancelled role processes. Keep their temporary
     # repositories underneath a directory it can remove once the tree is drained.
@@ -67,9 +74,9 @@ if __name__ == "__main__":
         sys.exit(2)
     from agent_office.away_expert import assess
 
-    repo, revision, rule, specialist, verifier, folders = json.load(sys.stdin.buffer)
+    repo, revision, rule, specialist, verifier, folders, guidance = json.load(sys.stdin.buffer)
     try:
-        response = assess(Path(repo), revision, rule, specialist, verifier, folders=folders)
+        response = assess(Path(repo), revision, rule, specialist, verifier, folders=folders, skill_guidance=guidance)
     except DelegationDeferred as exc:
         response = {"reason": exc.reason}
     sys.stdout.buffer.write(json.dumps(response, ensure_ascii=False).encode("utf-8"))

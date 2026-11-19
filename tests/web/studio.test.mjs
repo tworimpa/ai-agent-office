@@ -97,6 +97,8 @@ test('register local workspace, choose primary and extra folders, start in plann
   assert.match(request.id, /^[0-9a-f]{32}$/);
   assert.equal(request.allow_edits, false);
   assert.equal(request.use_inbox, true);
+  assert.ok(!Object.hasOwn(request, 'subtasks'));
+  assert.ok(!Object.hasOwn(request, 'role_skills'));
   assert.ok(!Object.hasOwn(request, 'delegation'));
   assert.equal(request.developer_engine, 'codex');
   assert.equal(request.reviewer_engine, 'antigravity');
@@ -787,4 +789,132 @@ test('remote return report links the original run, quotes literal evidence and e
     {path: remoteAPI + '/runs/' + runB + '/delegation/stop', method: 'POST', body: {}},
   ]);
   assert.equal(get('inbox-list').querySelectorAll('[data-kind="permission"] button').length, 2);
+});
+
+const skillV1 = {id: 'c'.repeat(32), name: '검증 기준', version: 1, digest: 'a'.repeat(64)};
+const skillV2 = {...skillV1, id: 'd'.repeat(32), version: 2};
+
+test('host skill registration, literal preview and pagination retain assigned immutable versions', async t => {
+  const page = [skillV2];
+  const {get, doc, requests, window} = mount(t, {suffix: '?host=' + remote, route(path, method, body) {
+    if (path === remoteAPI + '/skills' && method === 'GET') return Response.json({skills: page, next_cursor: skillV2.id});
+    if (path === remoteAPI + '/skills' && method === 'POST') {
+      assert.deepEqual(body, {name: '검증 기준', instructions: '새 지침'});
+      const skill = {...skillV2, id: 'e'.repeat(32), version: 3};
+      page.unshift(skill);
+      return Response.json({skill}, {status: 201});
+    }
+    if (path === remoteAPI + '/skills/before/' + skillV2.id) return Response.json({skills: [skillV1], next_cursor: null});
+    if (path === remoteAPI + '/skills/' + skillV1.id) return Response.json({skill: {...skillV1, instructions: '<img src=x> 원본'}});
+  }});
+  await waitFor(() => !get('skill-entry').disabled);
+  doc.querySelector('[name=developer_skill]').click();
+  get('older-skills').click();
+  await waitFor(() => get('older-skills').hidden);
+  get('inspect-skill').value = skillV1.id;
+  get('inspect-skill').dispatchEvent(new window.Event('change'));
+  await waitFor(() => get('skill-preview').textContent.includes('원본'));
+  assert.equal(get('skill-preview').children.length, 0);
+  doc.querySelector('[name=reviewer_skill][value="' + skillV1.id + '"]').click();
+  get('skill-name').value = '검증 기준';
+  get('skill-text').value = '새 지침';
+  get('save-skill').click();
+  await waitFor(() => get('skill-note').textContent.includes('v3'));
+  assert.ok(doc.querySelector('[name=developer_skill][value="' + skillV2.id + '"]').checked);
+  assert.ok(doc.querySelector('[name=reviewer_skill][value="' + skillV1.id + '"]').checked);
+  get('task').value = '역할별 지침 적용';
+  get('start').click();
+  await waitFor(() => requests.some(row => row.method === 'POST' && row.path.endsWith('/runs')));
+  assert.deepEqual(requests.find(row => row.method === 'POST' && row.path.endsWith('/runs')).body.role_skills,
+    {developer: [skillV2.id], reviewer: [skillV1.id]});
+  assert.ok(requests.every(row => row.path === '/api/hosts' || row.path.startsWith(remoteAPI + '/')));
+});
+
+test('parallel drafts pin separate goals, folders, engines and roles across a lost remote receipt', async t => {
+  const skills = path => path === remoteAPI + '/skills' && Response.json({skills: [skillV1]});
+  const first = mount(t, {suffix: '?host=' + remote, route(path, method) {
+    if (path === remoteAPI + '/runs' && method === 'POST') throw new Error('연결 끊김');
+    return skills(path);
+  }});
+  await waitFor(() => !first.get('use-parallel').disabled && !first.get('start').disabled);
+  first.doc.querySelector('#extras input').click();
+  for (const role of ['developer', 'reviewer', 'specialist', 'verifier']) first.doc.querySelector('[name=' + role + '_skill]').click();
+  first.get('use-parallel').click();
+  const [a, b] = first.get('subtasks').children;
+  a.querySelector('textarea').value = '화면 상태 점검';
+  b.querySelector('textarea').value = '규격 테스트 점검';
+  b.querySelector('[value="0"]').click();
+  b.querySelector('[value="1"]').click();
+  b.querySelector('[data-role=developer]').value = 'gemini';
+  b.querySelector('[data-role=reviewer]').value = 'cline';
+  first.get('add-subtask').click();
+  first.get('subtasks').lastChild.querySelector('button').click();
+  first.get('task').value = '주문 기능 점검';
+  first.get('start').click();
+  await waitFor(() => first.get('start-note').textContent.includes('같은 요청'));
+  const key = 'agent-office.studio.pending.' + remote;
+  const saved = JSON.parse(first.window.sessionStorage.getItem(key));
+  assert.deepEqual(saved.subtasks, [
+    {task: '화면 상태 점검', indices: [0], developer_engine: 'codex', reviewer_engine: 'antigravity'},
+    {task: '규격 테스트 점검', indices: [1], developer_engine: 'gemini', reviewer_engine: 'cline'},
+  ]);
+  assert.deepEqual(Object.keys(saved.role_skills), ['developer', 'reviewer', 'specialist', 'verifier']);
+  let available = false;
+  const second = mount(t, {pending: saved, pendingHost: remote, suffix: '?host=' + remote, route(path, method, body) {
+    if (path === remoteAPI + '/skills') return available ? skills(path) : Response.json({}, {status: 404});
+    if (path === remoteAPI + '/runs' && method === 'POST') return Response.json({run: {...body, kind: 'parallel',
+      subtasks: body.subtasks.map((child, i) => ({...child, id: [runA, runB][i], parent_id: body.id, state: 'QUEUED'}))}});
+  }});
+  await waitFor(() => second.get('subtasks').children.length === 2);
+  assert.ok(second.get('run-fields').disabled && second.get('start').disabled);
+  assert.equal(second.get('subtasks').lastChild.querySelector('[data-role=developer]').value, 'gemini');
+  assert.equal(second.get('subtasks').lastChild.querySelector('input:checked').value, '1');
+  assert.equal(second.doc.querySelectorAll('#role-skills :checked').length, 4);
+  assert.equal(second.requests.filter(r => r.method === 'POST').length, 0);
+  available = true;
+  second.get('refresh').click();
+  await waitFor(() => !second.get('start').disabled);
+  assert.equal(second.requests.filter(r => r.method === 'POST').length, 0);
+  second.get('start').click();
+  await waitFor(() => !second.window.sessionStorage.getItem(key));
+  assert.deepEqual(second.requests.filter(r => r.method === 'POST').map(r => r.body), [saved]);
+});
+
+test('parent reload exposes individual failed evidence, pinned skills and links to child and original run', async t => {
+  const childId = '3'.repeat(32);
+  const a = {base_revision: 'a'.repeat(40), ...run(runB, 'READY_FOR_HUMAN_REVIEW'), parent_id: runA, kind: 'subtask',
+    indices: [0], task: '화면', developer_engine: 'codex', reviewer_engine: 'antigravity', role_skills: {developer: [skillV1.id]}};
+  const b = {...a, id: childId, state: 'FAILED', outcome: 'TEST_FAILED', task: '규격', indices: [1], review_output: '',
+    test_output: '1 failed', changes: 'M test.py', diff: '+<img src=x>', diagnostic: '테스트 회귀',
+    role_skills: {developer: [skillV1.id]}, role_skill_snapshots: {developer: [skillV1]}};
+  const parent = {...run(runA, 'FAILED'), task: '독립 배정', kind: 'parallel', base_revision: 'a'.repeat(40), subtasks: [a, b],
+    role_skills: {developer: [skillV1.id]}};
+  const {get, doc, window, requests} = mount(t, {runs: [parent, a, b], suffix: '?host=' + remote + '&run=' + runA});
+  await waitFor(() => get('child-results').children.length === 2);
+  assert.match(get('group-revision').textContent, /a{40}/);
+  assert.match(get('child-results').lastChild.textContent, /규격 · 실패/);
+  assert.ok(get('developer_output').parentElement.hidden);
+  assert.ok(!requests.some(r => r.path.endsWith(runA + '/inbox')));
+  const card = get('child-results').lastChild;
+  card.open = true;
+  await waitFor(() => card.textContent.includes('1 failed'));
+  assert.match(card.textContent, /검증 기준 · v1/);
+  assert.match(card.textContent, /테스트 회귀/);
+  assert.match(card.textContent, /변경 내용 diff\+<img src=x>/);
+  assert.equal(doc.querySelector('img'), null);
+  card.querySelector('a').click();
+  await waitFor(() => get('run-id').textContent === childId);
+  assert.ok(get('group-result').hidden);
+  assert.ok(!get('developer_output').parentElement.hidden);
+  get('parent-link').firstChild.click();
+  await waitFor(() => get('run-id').textContent === runA);
+  assert.equal(new URL(window.location.href).searchParams.get('host'), remote);
+  assert.equal(new URL(window.location.href).searchParams.get('run'), runA);
+  assert.equal(requests.filter(r => r.method === 'POST').length, 0);
+  // With the original assignment intact, a changed role assignment in the child detail must hide its evidence.
+  b.role_skills = {developer: [skillV2.id]};
+  const changed = get('child-results').lastChild;
+  changed.open = true;
+  await waitFor(() => changed.textContent.includes('배정이 원래 요청과 달라'));
+  assert.ok(!changed.textContent.includes('1 failed'));
 });

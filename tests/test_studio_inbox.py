@@ -289,13 +289,26 @@ def away(journal):
 
 def test_away_answer_and_evidence_survive_delivery_completion_and_reopen(journal, away, monkeypatch):
     from agent_office.away_ledger import get_policy, get_revision, return_report, revoke_policy
+    from agent_office.role_skills import RoleSkillRegistry, pin_selection
 
     path, run_id, inbox, channel = journal
     policy, revision, prompt = away
     evidence = {"path": "docs/README.md", "line": 6, "quote": "pytest -q", "revision": revision}
     calls = []
+    registry = RoleSkillRegistry(path)
+    old = registry.create("문서 근거", "EXACT_QUOTE")
+    verifier_skill = registry.create("검토", "COMPARE_EVIDENCE")
+    developer_skill = registry.create("작업자 전용", "WORKER_ONLY")
+    with TaskStore(path) as store, store._write():
+        pin_selection(store.connection, run_id, {"specialist": [old["id"]], "verifier": [verifier_skill["id"]],
+                                                 "developer": [developer_skill["id"]]})
+    registry.create("문서 근거", "UPDATED_QUOTE")
 
-    async def consult(repo, rev, rule, specialist, verifier, folders):
+    async def consult(repo, rev, rule, specialist, verifier, folders, *, skill_guidance):
+        assert set(skill_guidance) == {"specialist", "verifier"}
+        assert "EXACT_QUOTE" in skill_guidance["specialist"] and "COMPARE_EVIDENCE" not in skill_guidance["specialist"]
+        assert "COMPARE_EVIDENCE" in skill_guidance["verifier"] and "EXACT_QUOTE" not in skill_guidance["verifier"]
+        assert all("WORKER_ONLY" not in text and "UPDATED_QUOTE" not in text for text in skill_guidance.values())
         calls.append((repo, rev, rule, specialist, verifier, folders))
         return {"answer": "pytest -q", "evidence": evidence}
 

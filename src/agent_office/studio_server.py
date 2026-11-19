@@ -18,6 +18,7 @@ from .engine_evidence import StudioEngineCatalog
 from .observer import ObserverHandler
 from .store import TaskStore
 from .studio_catalog import StudioCatalog
+from .role_skills import RoleSkillRegistry
 from .studio_runner import LocalRunner
 from .away_ledger import return_report, revoke_policy
 from .studio_ssh import RemoteUnavailable, is_peer_route, remote_request
@@ -75,6 +76,7 @@ class StudioServer(ThreadingHTTPServer):
                 raise ValueError("이 컴퓨터의 저널 ID를 원격 호스트로 등록할 수 없습니다.")
             self.identity = self.db_path.stat()
             self.catalog = StudioCatalog(self.db_path)
+            self.skills = RoleSkillRegistry(self.db_path)
             self.engines = StudioEngineCatalog(self.db_path)
             self.runner = LocalRunner(self.db_path)
         except BaseException:
@@ -187,8 +189,15 @@ class StudioHandler(ObserverHandler):
         route = re.fullmatch(r"/api/runs/([a-f0-9]{32})(/stop)?", path)
         inbox_route = re.fullmatch(r"/api/runs/([a-f0-9]{32})/inbox(?:/([a-f0-9]{32})/decision)?", path)
         revoke = re.fullmatch(r"/api/runs/([a-f0-9]{32})/delegation/stop", path)
+        skill_route = re.fullmatch(r"/api/skills/(?:(before)/)?([a-f0-9]{32})", path)
         if not write:
-            if path == "/api/return-report":
+            if path == "/api/skills":
+                self._reply(200, self.server.skills.page())
+            elif skill_route and skill_route[1]:
+                self._reply(200, self.server.skills.page(before=skill_route[2]))
+            elif skill_route:
+                self._reply(200, {"skill": self.server.skills.detail(skill_route[2])})
+            elif path == "/api/return-report":
                 self._reply(200, return_report(self.server.db_path))
             elif path == "/api/inbox":
                 self._reply(200, {"requests": runner.inbox.pending()})
@@ -206,14 +215,22 @@ class StudioHandler(ObserverHandler):
                 self._error(404, "NOT_FOUND")
             return
         data = self._json_body()
-        if path == "/api/workspaces":
+        if path == "/api/skills":
+            if set(data) != {"name", "instructions"}:
+                raise ValueError("스킬 이름과 Markdown 지침을 입력하세요.")
+            self._reply(201, {"skill": self.server.skills.create(data["name"], data["instructions"])})
+        elif path == "/api/workspaces":
             if set(data) != {"name", "paths"}:
                 raise ValueError("작업공간 이름과 폴더를 입력하세요.")
             self._reply(201, {"workspace": catalog.create(data["name"], data["paths"])})
         elif path == "/api/runs":
             required_keys = {"id", "workspace_id", "indices", "task", "allow_edits"}
-            if not required_keys <= data.keys() or data.keys() - required_keys - {"developer_engine", "reviewer_engine", "use_inbox", "delegation"}:
+            optional_keys = {"developer_engine", "reviewer_engine", "use_inbox", "delegation", "role_skills", "subtasks"}
+            if not required_keys <= data.keys() or data.keys() - required_keys - optional_keys:
                 raise ValueError("작업 요청의 입력 항목을 확인하세요.")
+            if ("role_skills" in data and not isinstance(data["role_skills"], dict)
+                    or "subtasks" in data and not isinstance(data["subtasks"], list)):
+                raise ValueError("역할별 스킬과 하위 작업 입력을 확인하세요.")
             run_id = validate_id(data["id"])
             workspace_id = validate_id(data["workspace_id"])
             task = data["task"]
@@ -223,7 +240,8 @@ class StudioHandler(ObserverHandler):
             run = runner.submit(catalog, run_id, workspace_id, data["indices"], task, data["allow_edits"],
                                 developer_engine=data.get("developer_engine", DEFAULT_DEVELOPER),
                                 reviewer_engine=data.get("reviewer_engine", DEFAULT_REVIEWER),
-                                use_inbox=data.get("use_inbox", False), delegation=data.get("delegation"))
+                                use_inbox=data.get("use_inbox", False), delegation=data.get("delegation"),
+                                role_skills=data.get("role_skills"), subtasks=data.get("subtasks"))
             self._reply(202, {"run": run})
         elif revoke and not data:
             self._reply(200, revoke_policy(self.server.db_path, revoke[1]))

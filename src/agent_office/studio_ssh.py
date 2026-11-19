@@ -11,6 +11,7 @@ from typing import BinaryIO
 from .models import validate_id
 from .engines import SUPPORTED_ENGINES
 from .away_expert import RULES, validate_policy
+from .team_wire import check_run_features, check_skill_reply
 
 
 _TIMEOUT = 12
@@ -42,8 +43,10 @@ class RemoteUnavailable(RuntimeError):
 def is_peer_route(method: str, route: str) -> bool:
     if method not in ("GET", "POST") or not isinstance(route, str):
         return False
-    if route in ("/workspaces", "/runs"):
+    if route in ("/workspaces", "/runs", "/skills"):
         return True
+    if route.startswith("/skills/"):
+        return method == "GET" and re.fullmatch(r"/skills/(?:before/)?[0-9a-f]{32}", route) is not None
     if route in ("/engines", "/inbox", "/return-report"):
         return method == "GET"
     pattern = (r"/runs/[0-9a-f]{32}(?:/inbox)?" if method == "GET"
@@ -111,6 +114,9 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
     if status >= 400:
         return
 
+    if route == "/skills" or route.startswith("/skills/"):
+        check_skill_reply(status, data, method, route, payload)
+        return
     if route == "/return-report":
         if status != 200:
             raise RemoteUnavailable()
@@ -175,6 +181,7 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
             if row["id"] != expected_id:
                 raise RemoteUnavailable()
         if not workspace:
+            check_run_features(row, listing=listing, submitted=payload if method == "POST" and route == "/runs" else None)
             if method == "POST" and route == "/runs":
                 proposed = payload.get("delegation")
                 expected = validate_policy(proposed) if proposed is not None else None

@@ -1,4 +1,5 @@
 """Local OS ownership locks; recovery never executes or kills workers."""
+from contextlib import ExitStack
 import errno
 import os
 from pathlib import Path
@@ -60,10 +61,21 @@ class RunGuard:
                 self.fd = None
 
 
-def recover_run(store, run_id: str, *, host_name: str):
-    if store.get_run(run_id).host_name != host_name:
+def recover_run(store, run_id: str, *, host_name: str, studio_owner=False):
+    run = store.get_run(run_id)
+    if run.host_name != host_name:
         raise OfficeError("HOST_MISMATCH")
-    with RunGuard(store.path, run_id), store._write():
+    if run.state not in ACTIVE:
+        return run
+    with ExitStack() as locks:
+        if not studio_owner:
+            db = store.connection
+            studio = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='studio_runs'").fetchone()
+            if studio and db.execute("SELECT 1 FROM studio_runs WHERE id=?", (run_id,)).fetchone():
+                # A live Studio owns the launch interval before its supervisor takes the run lock.
+                locks.enter_context(RunGuard.studio(store.path))
+        locks.enter_context(RunGuard(store.path, run_id))
+        locks.enter_context(store._write())
         run = store.get_run(run_id)
         if run.host_name != host_name:
             raise OfficeError("HOST_MISMATCH")
