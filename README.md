@@ -118,6 +118,12 @@ Studio 상단의 **오피스 보기**를 열면 캐릭터마다 역할·CLI 엔�
 
 화면이 열려 있는 동안 상태를 주기적으로 조회합니다. 연결이 끊긴 호스트에는 마지막 기록과 확인 시각이 남고, 상단 합계에는 연결된 호스트의 값만 반영됩니다. 두 컴퓨터 모두 오피스 조회를 지원하는 버전의 Studio를 사용하세요. [구현 계획과 검증 기준](docs/superpowers/plans/2026-11-19-office-view.md)
 
+## 작업 이력에서 개선안을 제안하고 안정 소스로 승격하기
+
+`agent-office improve`로 Office 자체의 소스 변경을 검토할 수 있습니다. 작업 에이전트는 사용자가 고른 실행의 이벤트를 인용해 패치를 제안합니다. 운영자는 별도의 릴리스 디렉터리에 후보를 접수하고 회귀 검사를 실행합니다. HTML 보고서에서 근거·전체 diff·검사 출력을 확인한 뒤 운영자 터미널에서 해당 커밋을 승인하면 안정 소스가 바뀝니다.
+
+Windows와 Linux에서 같은 CLI를 사용합니다. 후보 검증에는 로컬 Linux 컨테이너를 실행할 Docker 엔진이 필요합니다. [설정과 사용 예](docs/improvement-promotion.md) · [구현 계획](docs/superpowers/plans/2026-11-19-improvement-promotion.md)
+
 ## Architecture
 
 ```text
