@@ -250,18 +250,25 @@ def _guard(root, id):
         raise ValueError("Another operation is active for this candidate") from exc
 
 
-def verify_candidate(root, id):
+def verify_candidate(root, id, *, first_attempt_only=False, on_started=None):
+    """Record an exact-tree validation. Only the explicit operator command can retry."""
     _, git = _paths(root)
     with _guard(root, id):
         with _db(root, write=True) as db:
             record = _candidate(db, id)
             release = _release(db)
+            if first_attempt_only and (record["state"] != "submitted" or db.execute(
+                    "SELECT 1 FROM history WHERE candidate=? AND event='validation_started' LIMIT 1",
+                    (id,)).fetchone()):
+                return None
             if record["state"] == "passed":
                 return review(root, id)
             if record["state"] not in {"submitted", "failed"} or release["stable"] != record["base"]:
                 raise ValueError("Candidate is terminal or its base is stale")
             sha, image = record["sha"], record["image"]
             _log(db, id, "validation_started", {"sha": sha, "image": image})
+        if on_started is not None:
+            on_started()
         try:
             report = release_validation.validate_candidate(git, sha, image)
             if (not isinstance(report, dict) or report.get("sha") != sha or report.get("image") != image

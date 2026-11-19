@@ -16,7 +16,7 @@ class OperatorTerminal(io.StringIO):
         return True
 
 
-def test_improvement_cli_from_selected_history_through_review_and_checkout(tmp_path, monkeypatch, capsys, request):
+def proposal_fixture(tmp_path, monkeypatch):
     db = tmp_path / "history.db"
     with seeded(db) as store:
         store.record_transition(RUN, operation_key="failed", event_type="RUN_FINISHED",
@@ -55,7 +55,12 @@ def test_improvement_cli_from_selected_history_through_review_and_checkout(tmp_p
         shim.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(worker))}\n")
         shim.chmod(0o755)
     monkeypatch.setenv("PATH", str(tools_dir) + os.pathsep + os.environ["PATH"])
+    return db, repo, base
 
+
+def test_improvement_cli_from_selected_history_through_review_and_checkout(tmp_path, monkeypatch, capsys, request):
+    db, repo, base = proposal_fixture(tmp_path, monkeypatch)
+    docker = os.environ.get("OFFICE_DOCKER_ACCEPTANCE") == "1"
     root = tmp_path / "release"
     image = request.getfixturevalue("trusted_validator_image") if docker else "sha256:" + "b" * 64
     command = ["--db", str(db), "improve"]

@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import time
 
 from .engines import DEFAULT_DEVELOPER, SUPPORTED_ENGINES
 
@@ -41,6 +42,9 @@ def add_commands(sub):
         decision.add_argument("--sha", required=True, help="Full reviewed candidate commit ID")
     export = actions.add_parser("checkout-stable", help="Materialize the approved stable source in a new directory")
     export.add_argument("dest", type=Path)
+    sync = actions.add_parser("studio-sync", help="Import generated Studio jobs, validate and publish a read-only view")
+    sync.add_argument("--view", type=Path, required=True, help="Operator-owned SQLite publication outside Git and the release store")
+    sync.add_argument("--watch", action="store_true", help="Keep the view up to date until Ctrl+C")
 
 
 def _write_new(path, content):
@@ -102,6 +106,11 @@ def run_command(args, db_path):
             result = {"candidates": releases.list_candidates(root)}
         elif action == "status":
             result = releases.release_status(root)
+        elif action == "studio-sync":
+            from .release_view import sync_once
+            if args.watch:
+                return _watch(db_path, root, args.view)
+            result = sync_once(db_path, root, args.view)
         elif action == "verify":
             result = releases.verify_candidate(root, args.id)
         elif action == "review":
@@ -121,3 +130,29 @@ def run_command(args, db_path):
     except (ValueError, OSError, RuntimeError, EOFError, sqlite3.Error, subprocess.SubprocessError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=True), file=sys.stderr)
         return 2
+
+
+def _watch(journal, root, view):
+    from .ownership import RunBusyError
+    from .release_view import PublicationWatch, sync_once
+    previous = None
+    watch = PublicationWatch()
+    try:
+        while True:
+            try:
+                result = sync_once(journal, root, view, watch=watch)
+                key = {k: v for k, v in result.items() if k != "updated_at"}
+                if key != previous:
+                    print(json.dumps(result, ensure_ascii=False), flush=True)
+                previous = key
+            except (RunBusyError, sqlite3.OperationalError, OSError) as exc:
+                watch.close()
+                message = f"Studio publication delayed: {exc}. Retrying in 5 seconds."
+                if previous != message:
+                    print(message, file=sys.stderr, flush=True)
+                previous = message
+            time.sleep(5)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        watch.close()

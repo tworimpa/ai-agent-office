@@ -226,7 +226,9 @@ export function mountOffice(win) {
         }
         nodes.get(info.id).heading.textContent = info.name;
       }
-      get('studio-link').href = selected.length === 1 && visible.length && idPattern.test(selected[0]) ? '/?host=' + selected[0] : '/';
+      const hostFilter = selected.length === 1 && visible.length && idPattern.test(selected[0]) ? '?host=' + selected[0] : '';
+      get('improvements-link').href = '/improvements' + hostFilter;
+      get('studio-link').href = '/' + hostFilter;
       showSummary();
       // Keep a large host directory from launching an SSH process for every host at once.
       const queue = visible.values();
