@@ -7,12 +7,11 @@ import threading
 from hashlib import sha256
 
 from . import role_skills
-from .away_evidence import DelegationDeferred, git as evidence_git
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .models import OfficeError, validate_id
 from .office_state import _latest_stages
 from .store import TaskStore, encode
-from .studio_catalog import _single_line
+from .studio_catalog import _single_line, read_workspace_revision
 from .studio_inbox import ROLE_STATE, holder_alive
 from .studio_runner import SOURCE, SUMMARY
 from .team_runs import validate_task
@@ -261,10 +260,7 @@ class WorkspaceRooms:
             engines = self.engines.snapshot()["engines"]
             roles = _assign_roles(settings, engines, allow_edits)
             delegated = settings["delegation"] if override is None else override
-            try:
-                revision = evidence_git(repo, "rev-parse", "--verify", "HEAD^{commit}").decode("ascii").strip()
-            except (DelegationDeferred, UnicodeError):
-                raise ValueError("작업에 사용할 기준 커밋을 확인할 수 없습니다.") from None
+            revision = read_workspace_revision(repo)
             policy = choices = None
             if delegated:
                 from .coordinator_policy import policy_for_assignment

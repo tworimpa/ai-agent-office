@@ -6,6 +6,7 @@ from contextlib import closing
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import stat
 import subprocess
@@ -43,13 +44,26 @@ def _local_directory(value: str) -> Path:
         raise ValueError(f"로컬 폴더를 열 수 없습니다: {path}") from exc
 
 
-def _git(folder: Path, *args: str, error: str) -> str:
+def _git(folder: Path, *args: str, error: str, env=None) -> str:
     try:
         result = subprocess.run(["git", *args], cwd=folder, stdin=subprocess.DEVNULL, check=True, capture_output=True,
-                                encoding="utf-8", timeout=10)
+                                encoding="utf-8", env=env, timeout=10)
     except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
         raise ValueError(error) from exc
     return result.stdout.removesuffix("\n")
+
+
+def read_workspace_revision(repo: Path) -> str:
+    """Pin HEAD for a checkout already checked by the workspace catalog."""
+    error = "작업에 사용할 기준 커밋을 확인할 수 없습니다."
+    # This fixed Git read uses the same configured ownership trust as select().
+    # An incomplete checkout must not attempt network access to resolve HEAD.
+    env = {**os.environ, "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": "", "GIT_TERMINAL_PROMPT": "0"}
+    revision = _git(repo, "--no-replace-objects", "-c", "core.fsmonitor=false", "rev-parse",
+                    "--verify", "HEAD^{commit}", error=error, env=env)
+    if not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", revision):
+        raise ValueError(error)
+    return revision
 
 
 class StudioCatalog:
