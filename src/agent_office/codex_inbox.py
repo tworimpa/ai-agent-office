@@ -18,7 +18,8 @@ from .models import OfficeError
 
 # These notifications cannot resolve a request, alter a patch or finish a turn.
 INFORMATIONAL = {
-    "account/rateLimits/updated", "configWarning", "warning", "deprecationNotice", "remoteControl/status/changed",
+    "account/updated", "account/rateLimits/updated", "configWarning", "warning", "deprecationNotice",
+    "remoteControl/status/changed",
     "mcpServer/startupStatus/updated", "thread/status/changed", "thread/tokenUsage/updated",
     "thread/readState/changed", "hook/started", "hook/completed",
     "turn/diff/updated", "turn/plan/updated", "item/agentMessage/delta",
@@ -29,7 +30,7 @@ INFORMATIONAL = {
 }
 
 _DIAGNOSTIC_NOTIFICATIONS = {
-    "account/updated", "account/login/completed", "account/gatewayOAuth/changed",
+    "account/login/completed", "account/gatewayOAuth/changed",
     "app/list/updated", "error", "guardianWarning", "skills/changed", "project/changed",
     "thread/started", "thread/name/updated", "thread/settings/updated", "turn/started",
     "thread/environment/connected", "thread/environment/disconnected",
