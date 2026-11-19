@@ -19,6 +19,7 @@ from .models import ACTIVE, OfficeError, OwnerInfo, TaskSpec, validate_id
 from .ownership import RunGuard, RunBusyError, recover_run
 from .store import TaskStore
 from .studio_diff import changes_in
+from .studio_inbox import Inbox, InboxChannel, expire_requests
 from .workspace import map_folders, plan_worktree
 
 
@@ -32,23 +33,28 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS studio_runs(
 SUMMARY = """SELECT s.id,s.workspace_id,t.request_snapshot AS task,
     CASE WHEN s.stop_requested AND r.ended_at IS NULL THEN 'STOP_REQUESTED' ELSE r.state END AS state,
     r.outcome,r.task_id,t.workspace,t.branch,t.developer_engine,t.reviewer_engine,r.attempts,r.started_at AS created_at,
-    t.updated_at,s.allow_edits"""
+    t.updated_at,s.allow_edits,EXISTS(SELECT 1 FROM studio_interactive_runs i WHERE i.id=s.id) AS use_inbox"""
 SOURCE = """ FROM studio_runs s JOIN runs r ON r.run_id=s.id JOIN tasks t ON t.task_id=r.task_id"""
 DETAIL = ",s.folders,s.developer_output,s.test_output,s.review_output,s.changes,s.diff,s.diagnostic"
 
 
-def _request_digest(parts, developer_engine, reviewer_engine):
+def _request_digest(parts, developer_engine, reviewer_engine, use_inbox=False):
     if developer_engine not in SUPPORTED_ENGINES or reviewer_engine not in SUPPORTED_ENGINES:
         raise ValueError("지원하는 개발자·리뷰어 엔진을 선택하세요.")
     # Default-role requests must match the exact digest persisted by Stage 1/2.
     if (developer_engine, reviewer_engine) != (DEFAULT_DEVELOPER, DEFAULT_REVIEWER):
         parts = [*parts, developer_engine, reviewer_engine]
+    if type(use_inbox) is not bool:
+        raise ValueError("요청함 사용 설정을 확인하세요.")
+    if use_inbox:
+        parts = [*parts, {"use_inbox": True}]
     return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()
 
 
 def finish_drained(store, run_id, *, worker_succeeded, preview_finished):
     """Publish the result after all workers exit. Stop and finish race in SQLite."""
     with store._write():
+        expire_requests(store.connection, run_id)
         if store.get_run(run_id).state not in ACTIVE:
             return
         row = store.connection.execute(
@@ -83,6 +89,9 @@ class LocalRunner:
         try:
             with TaskStore(self.path) as store:
                 store.connection.execute(SCHEMA)
+                store.connection.execute("CREATE TABLE IF NOT EXISTS studio_interactive_runs "
+                                         "(id TEXT PRIMARY KEY REFERENCES studio_runs(id))")
+                self.inbox = Inbox(self.path)
                 stale = store.connection.execute(
                     "SELECT r.run_id FROM runs r JOIN studio_runs s ON s.id=r.run_id "
                     "WHERE r.host_name=? AND r.ended_at IS NULL", (platform.node(),)
@@ -100,6 +109,8 @@ class LocalRunner:
             if store.get_run(run_id).state not in ACTIVE:
                 return True
             run = recover_run(store, run_id, host_name=platform.node())
+            with store._write():
+                expire_requests(store.connection, run_id)
             if run.state != "RECOVERY_REQUIRED":
                 return True
             store.connection.execute(
@@ -129,21 +140,21 @@ class LocalRunner:
         return self._detail(store, run_id)
 
     def submit(self, catalog, run_id, workspace_id, indices, task, allow_edits, *,
-               developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER):
+               developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER, use_inbox=False):
         # A registered folder's index is stable even if its checkout was moved
         # after the original request succeeded and its HTTP response was lost.
-        digest = _request_digest([workspace_id, indices, task, allow_edits], developer_engine, reviewer_engine)
+        digest = _request_digest([workspace_id, indices, task, allow_edits], developer_engine, reviewer_engine, use_inbox)
         with self.lock, TaskStore(self.path, existing=True) as store:
             existing = self._previous(store, run_id, digest)
             if existing:
                 return existing
         repo, folders = catalog.select(workspace_id, indices)
         return self.start(run_id, workspace_id, repo, folders, task, allow_edits, request_digest=digest,
-                          developer_engine=developer_engine, reviewer_engine=reviewer_engine)
+                          developer_engine=developer_engine, reviewer_engine=reviewer_engine, use_inbox=use_inbox)
 
     def start(self, run_id: str, workspace_id: str, repo: Path, folders: list[str],
               task: str, allow_edits: bool, *, request_digest=None,
-              developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER):
+              developer_engine=DEFAULT_DEVELOPER, reviewer_engine=DEFAULT_REVIEWER, use_inbox=False):
         validate_id(run_id)
         if not isinstance(task, str) or not task.strip() or len(task.encode("utf-8")) > 8192:
             raise ValueError("Task must be between 1 and 8192 UTF-8 bytes")
@@ -152,7 +163,7 @@ class LocalRunner:
         repo = Path(repo).resolve()
         folder_json = json.dumps(folders, ensure_ascii=False)
         digest = request_digest or _request_digest([workspace_id, str(repo), folders, task, allow_edits],
-                                                   developer_engine, reviewer_engine)
+                                                   developer_engine, reviewer_engine, use_inbox)
         with self.lock, TaskStore(self.path, existing=True) as store:
             if self.closed:
                 raise OfficeError("RUN_BUSY")
@@ -168,6 +179,8 @@ class LocalRunner:
                     "INSERT INTO studio_runs(id,workspace_id,folders,allow_edits,request_hash) VALUES (?,?,?,?,?)",
                     (run_id, workspace_id, folder_json, allow_edits, digest),
                 )
+                if use_inbox:
+                    connection.execute("INSERT INTO studio_interactive_runs VALUES (?)", (run_id,))
 
             store.create_run(spec, run_id, plan_worktree(repo, run_id),
                              OwnerInfo(platform.node(), uuid.uuid4().hex), register=register)
@@ -195,6 +208,7 @@ class LocalRunner:
         result = dict(row)
         result["folders"] = json.loads(result["folders"])
         result["allow_edits"] = bool(result["allow_edits"])
+        result["use_inbox"] = bool(result["use_inbox"])
         return result
 
     def detail(self, run_id):
@@ -207,7 +221,7 @@ class LocalRunner:
         with self.lock, TaskStore(self.path, existing=True) as store:
             self._refresh(store)
             rows = store.connection.execute(SUMMARY + SOURCE + " ORDER BY r.started_at DESC LIMIT 200")
-            return [dict(row, allow_edits=bool(row["allow_edits"])) for row in rows]
+            return [dict(row, allow_edits=bool(row["allow_edits"]), use_inbox=bool(row["use_inbox"])) for row in rows]
 
     def stop(self, run_id):
         validate_id(run_id)
@@ -222,10 +236,12 @@ class LocalRunner:
                 if child is None:
                     self._recover(store, run_id)
                 else:
-                    store.connection.execute(
-                        "UPDATE studio_runs SET stop_requested=1 WHERE id=? AND EXISTS "
-                        "(SELECT 1 FROM runs WHERE run_id=? AND ended_at IS NULL)", (run_id, run_id),
-                    )
+                    with store._write():
+                        store.connection.execute(
+                            "UPDATE studio_runs SET stop_requested=1 WHERE id=? AND EXISTS "
+                            "(SELECT 1 FROM runs WHERE run_id=? AND ended_at IS NULL)", (run_id, run_id),
+                        )
+                        expire_requests(store.connection, run_id)
                     child.stdin.close()
             return self._detail(store, run_id)
 
@@ -248,6 +264,8 @@ class LocalRunner:
                         "(SELECT 1 FROM runs WHERE run_id=? AND ended_at IS NULL)",
                         [(run_id, run_id) for run_id in self.children],
                     )
+                    for run_id in self.children:
+                        expire_requests(store.connection, run_id)
             with TaskStore(self.path, existing=True) as store:
                 self._refresh(store)
 
@@ -262,6 +280,7 @@ def worker(db_path, run_id):
         run = store.get_run(run_id)
         task = store.get_task(run.task_id)
         row = store.connection.execute("SELECT folders,allow_edits FROM studio_runs WHERE id=?", (run_id,)).fetchone()
+        interactive = store.connection.execute("SELECT 1 FROM studio_interactive_runs WHERE id=?", (run_id,)).fetchone()
         args = SimpleNamespace(repo=Path(task.project), task=raw_task, developer=task.developer_engine,
                                reviewer=task.reviewer_engine, max_attempts=task.max_attempts,
                                timeout=900, test_command=[sys.executable, "-m", "pytest", "-q"],
@@ -279,7 +298,8 @@ def worker(db_path, run_id):
 
         try:
             execute_run(args, store, run_id, prepared=True, folders=json.loads(row["folders"]),
-                        save_stage=save_stage, defer_final=defer_final)
+                        save_stage=save_stage, defer_final=defer_final,
+                        inbox_factory=(lambda role, engine: InboxChannel(db_path, run_id, role, engine)) if interactive else None)
         except (ValueError, OSError, subprocess.SubprocessError, RuntimeError):
             message = {
                 "QUEUED": "Git 작업 트리 또는 선택한 폴더를 준비하지 못했습니다.",

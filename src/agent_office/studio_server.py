@@ -184,8 +184,13 @@ class StudioHandler(ObserverHandler):
     def _local_api(self, path, write):
         catalog, runner = self.server.catalog, self.server.runner
         route = re.fullmatch(r"/api/runs/([a-f0-9]{32})(/stop)?", path)
+        inbox_route = re.fullmatch(r"/api/runs/([a-f0-9]{32})/inbox(?:/([a-f0-9]{32})/decision)?", path)
         if not write:
-            if path == "/api/engines":
+            if path == "/api/inbox":
+                self._reply(200, {"requests": runner.inbox.pending()})
+            elif inbox_route and not inbox_route[2]:
+                self._reply(200, {"requests": runner.inbox.history(inbox_route[1])})
+            elif path == "/api/engines":
                 self._reply(200, self.server.engines.snapshot())
             elif path == "/api/workspaces":
                 self._reply(200, {"workspaces": catalog.list()})
@@ -203,7 +208,7 @@ class StudioHandler(ObserverHandler):
             self._reply(201, {"workspace": catalog.create(data["name"], data["paths"])})
         elif path == "/api/runs":
             required_keys = {"id", "workspace_id", "indices", "task", "allow_edits"}
-            if not required_keys <= data.keys() or data.keys() - required_keys - {"developer_engine", "reviewer_engine"}:
+            if not required_keys <= data.keys() or data.keys() - required_keys - {"developer_engine", "reviewer_engine", "use_inbox"}:
                 raise ValueError("작업 요청의 입력 항목을 확인하세요.")
             run_id = validate_id(data["id"])
             workspace_id = validate_id(data["workspace_id"])
@@ -213,8 +218,11 @@ class StudioHandler(ObserverHandler):
                 raise ValueError("작업 내용(UTF-8 최대 8,192바이트)과 수정 모드를 확인하세요.")
             run = runner.submit(catalog, run_id, workspace_id, data["indices"], task, data["allow_edits"],
                                 developer_engine=data.get("developer_engine", DEFAULT_DEVELOPER),
-                                reviewer_engine=data.get("reviewer_engine", DEFAULT_REVIEWER))
+                                reviewer_engine=data.get("reviewer_engine", DEFAULT_REVIEWER),
+                                use_inbox=data.get("use_inbox", False))
             self._reply(202, {"run": run})
+        elif inbox_route and inbox_route[2]:
+            self._reply(200, {"request": runner.inbox.decide(inbox_route[1], inbox_route[2], data)})
         elif route and route[2] and not data:
             self._reply(200, {"run": runner.stop(route[1])})
         else:
@@ -238,7 +246,9 @@ class StudioHandler(ObserverHandler):
             elif exc.code == "RUN_BUSY":
                 self._reply(409, {"error": {"code": exc.code, "message": "실행 상태를 확인하고 다시 시도하세요."}})
             elif exc.code == "REQUEST_CONFLICT":
-                self._reply(409, {"error": {"code": exc.code, "message": "같은 실행 ID에 다른 요청이 등록되어 있습니다."}})
+                self._reply(409, {"error": {"code": exc.code, "message": "같은 ID에 다른 요청 또는 결정이 이미 기록되어 있습니다."}})
+            elif exc.code == "REQUEST_CLOSED":
+                self._reply(409, {"error": {"code": exc.code, "message": "이 요청의 대기가 끝났습니다. 결정 내역을 확인하세요."}})
             else:
                 self._error(503, "STORE_IO")
         except (sqlite3.Error, OSError):

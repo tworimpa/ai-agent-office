@@ -76,7 +76,7 @@ def make_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage=None, defer_final=None):
+def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage=None, defer_final=None, inbox_factory=None):
     repo = args.repo.expanduser().resolve()
     worktree = plan_worktree(repo, run_id)
     recorder = RunRecorder(store, run_id)
@@ -93,7 +93,7 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
             engine: CLIAdapter(engine, timeout=args.timeout)
             for engine in SUPPORTED_ENGINES
         }
-        graph = build_graph(adapters, recorder=recorder, save_stage=save_stage)
+        graph = build_graph(adapters, recorder=recorder, save_stage=save_stage, inbox_factory=inbox_factory)
         initial = {
             "task": args.task,
             "workspace": str(worktree.path),

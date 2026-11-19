@@ -50,7 +50,7 @@ class CLIAdapter:
         ]
 
     def execute(self, prompt: str, *, workspace: Path, allow_edits: bool,
-                strict_completion: bool = False) -> AgentResult:
+                strict_completion: bool = False, inbox=None) -> AgentResult:
         # Pass untrusted task text via stdin: safer for Windows .cmd launchers,
         # long prompts, and special characters than putting it in argv.
         argv = self.command(prompt, allow_edits=allow_edits)
@@ -68,9 +68,15 @@ class CLIAdapter:
         try:
             if self.engine in ("gemini", "cline"):
                 message, session = asyncio.run(run_acp(
-                    self.engine, argv, prompt, workspace, allow_edits, env, self.timeout, strict_completion,
+                    self.engine, argv, prompt, workspace, allow_edits, env, self.timeout, strict_completion, inbox,
                 ))
                 return AgentResult(0, message[:12000], session, len(message) > 12000)
+            if inbox is not None:
+                if self.engine == "codex":
+                    from .codex_inbox import run_codex_inbox
+                    return run_codex_inbox(executable, prompt, workspace, allow_edits, env, self.timeout, inbox)
+                from .batch_dialogue import run_batch_dialogue
+                return run_batch_dialogue(self.engine, argv, prompt, workspace, env, self.timeout, inbox)
             completed = subprocess.run(
                 argv, cwd=workspace, input=task_input, env=env, capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=self.timeout,

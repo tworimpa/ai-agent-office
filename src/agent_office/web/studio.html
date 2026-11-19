@@ -67,6 +67,8 @@
                 <div><label for="developer-engine">개발자 엔진</label><select id="developer-engine" name="developer_engine" aria-describedby="engine-warning" required></select></div>
                 <div><label for="reviewer-engine">리뷰어 엔진</label><select id="reviewer-engine" name="reviewer_engine" aria-describedby="engine-warning" required></select></div>
               </div>
+              <label class="check inbox-option" for="use-inbox"><input id="use-inbox" name="use_inbox" type="checkbox" checked aria-describedby="inbox-help">작업자 요청을 협업 요청함에서 받기</label>
+              <small id="inbox-help">작업자의 기술 질문에 직접 답합니다. Codex의 작업 폴더 내 파일 변경과 Cline의 파일 읽기·편집 권한 요청은 한 건씩 승인하거나 거절합니다.</small>
             </fieldset>
             <p id="engine-warning" class="notice error" role="status"></p>
             <details class="engine-panel">
@@ -80,6 +82,12 @@
         </div>
       </section>
       <div class="right">
+        <section class="card" aria-labelledby="inbox-title">
+          <div class="card-head"><h2 id="inbox-title">협업 요청함 <span id="inbox-count" class="count">0</span></h2></div>
+          <p id="inbox-note" class="empty" role="status">대기 요청을 불러오는 중입니다.</p>
+          <ul id="inbox-list" class="inbox-list"></ul>
+          <p id="decision-note" class="inbox-feedback" role="status"></p>
+        </section>
         <section id="history" class="card" aria-labelledby="history-title">
           <div class="card-head">
             <h2 id="history-title">실행 기록 <span id="count" class="count">0</span></h2>
@@ -89,13 +97,14 @@
           <ul id="run-list" class="runs"></ul>
         </section>
         <section class="card" id="detail" aria-labelledby="detail-title">
-          <div class="card-head"><h2 id="detail-title">실행 상세</h2><span class="state" id="run-state" role="status" hidden></span></div>
+          <div class="card-head"><h2 id="detail-title" tabindex="-1">실행 상세</h2><span class="state" id="run-state" role="status" hidden></span></div>
           <p id="detail-note" class="empty" role="status">실행을 선택하면 요청과 결과를 확인할 수 있습니다.</p>
           <div id="detail-body" hidden>
             <div class="request">
               <p id="detail-workspace" class="workspace-name"></p>
               <h3 id="request"></h3>
               <p id="run-engines" class="assignments"></p>
+              <p id="run-inbox-mode" class="assignments"></p>
               <div class="run-meta"><code id="run-id"></code><button type="button" id="stop" class="stop" hidden>실행 중지</button></div>
               <p id="attempts" class="attempts" hidden></p>
               <p id="outcome" class="outcome" hidden></p>
@@ -104,6 +113,11 @@
               <p id="stop-note" role="status" class="notice"></p>
             </div>
             <div class="outputs">
+              <details open>
+                <summary>이 실행의 협업 요청 내역</summary>
+                <p id="history-inbox-note" class="command" role="status"></p>
+                <ul id="history-inbox-list" class="inbox-list"></ul>
+              </details>
               <details id="run-context" hidden>
                 <summary>실행 환경</summary>
                 <dl class="context">

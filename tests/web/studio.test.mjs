@@ -28,7 +28,7 @@ async function waitFor(predicate) {
   assert.ok(predicate(), '화면 상태 전환 시간 초과');
 }
 
-function mount(t, {workspaces = [workspace], runs = [], suffix = '', pending, pendingHost = 'local', route} = {}) {
+function mount(t, {workspaces = [workspace], runs = [], inbox = [], suffix = '', pending, pendingHost = 'local', route} = {}) {
   const dom = new JSDOM(html, {url: 'http://127.0.0.1:8766/' + suffix, pretendToBeVisual: true});
   const {window} = dom, doc = window.document;
   const key = 'agent-office.studio.pending' + (pendingHost === 'local' ? '' : '.' + pendingHost);
@@ -48,6 +48,14 @@ function mount(t, {workspaces = [workspace], runs = [], suffix = '', pending, pe
     if (path === '/api/hosts') return Response.json({hosts});
     if (path.startsWith(remoteAPI + '/')) path = '/api' + path.slice(remoteAPI.length);
     if (path === '/api/engines') return Response.json(catalog);
+    if (path === '/api/inbox') return Response.json({requests: inbox.filter(row => row.status === 'pending')});
+    if (path.endsWith('/inbox')) return Response.json({requests: inbox.filter(row => row.run_id === path.split('/')[3])});
+    if (path.endsWith('/decision')) {
+      const row = inbox.find(item => item.run_id === path.split('/')[3] && item.id === path.split('/')[5]);
+      if (!row) return Response.json({}, {status: 404});
+      Object.assign(row, {decision: body.action, answer: body.answer ?? null, status: 'decided'});
+      return Response.json({request: row});
+    }
     if (path === '/api/workspaces') {
       if (method === 'GET') return Response.json({workspaces});
       const added = {id: 'f'.repeat(32), name: body.name, folders: body.paths};
@@ -87,6 +95,7 @@ test('register local workspace, choose primary and extra folders, start in plann
   const request = requests.find(r => r.path === '/api/runs' && r.method === 'POST').body;
   assert.match(request.id, /^[0-9a-f]{32}$/);
   assert.equal(request.allow_edits, false);
+  assert.equal(request.use_inbox, true);
   assert.equal(request.developer_engine, 'codex');
   assert.equal(request.reviewer_engine, 'antigravity');
   assert.deepEqual(request.indices, [1, 0]);
@@ -104,10 +113,12 @@ test('an ambiguous POST and page reload retain the same operation and edit choic
   first.get('developer-engine').value = 'claude';
   first.get('reviewer-engine').value = 'cline';
   first.get('edit-mode').click();
+  first.get('use-inbox').click();
   first.get('start').click();
   await waitFor(() => first.get('start-note').textContent.includes('같은 요청'));
   const sent = first.requests.find(r => r.method === 'POST').body;
   assert.equal(sent.allow_edits, true);
+  assert.ok(!Object.hasOwn(sent, 'use_inbox'));
   assert.equal(sent.developer_engine, 'claude');
   assert.equal(sent.reviewer_engine, 'cline');
   assert.ok(first.get('run-fields').disabled);
@@ -116,6 +127,7 @@ test('an ambiguous POST and page reload retain the same operation and edit choic
   await waitFor(() => second.get('task').value === sent.task);
   assert.equal(second.requests.filter(r => r.method === 'POST').length, 0);
   assert.equal(second.get('edit-mode').checked, true);
+  assert.equal(second.get('use-inbox').checked, false);
   assert.equal(second.get('developer-engine').value, 'claude');
   assert.equal(second.get('reviewer-engine').value, 'cline');
   second.get('start').click();
@@ -123,6 +135,25 @@ test('an ambiguous POST and page reload retain the same operation and edit choic
   assert.deepEqual(second.requests.find(r => r.method === 'POST').body, sent);
   assert.equal(second.window.sessionStorage.getItem('agent-office.studio.pending'), null);
   assert.equal(second.get('run-engines').textContent, '개발자 Claude Code · 리뷰어 Cline CLI');
+});
+
+test('a receipt missing the explicitly requested inbox mode does not confirm the request or clear its draft', async t => {
+  const items = [];
+  const {get, window, requests} = mount(t, {runs: items, route(path, method, body) {
+    if (method === 'POST' && path === '/api/runs') {
+      const item = {...body, use_inbox: false, state: 'RUNNING'};
+      items.push(item);
+      return Response.json({run: item}, {status: 202});
+    }
+  }});
+  await waitFor(() => !get('start').disabled);
+  get('task').value = '질문 응답 필요';
+  get('start').click();
+  await waitFor(() => get('start-note').textContent.includes('설정을 확인할 수 없습니다'));
+  assert.equal(get('task').value, '질문 응답 필요');
+  assert.ok(get('use-inbox').checked);
+  assert.equal(window.sessionStorage.getItem('agent-office.studio.pending'), null);
+  assert.equal(requests.filter(req => req.method === 'POST').length, 1);
 });
 
 test('reopening a run exposes literal evidence; stale responses cannot replace a new selection', async t => {
@@ -377,6 +408,7 @@ test('a deliberate retry checks the remote run ID before sending the same reques
   const {get, requests} = mount(t, {suffix: '?host=' + remote, pending, pendingHost: remote});
   await waitFor(() => get('start-note').textContent.includes('아직 접수'));
   assert.equal(get('developer-engine').value, 'codex');
+  assert.equal(get('use-inbox').checked, false);
   assert.equal(get('reviewer-engine').value, 'antigravity');
   const before = requests.length;
   get('start').click();
@@ -470,4 +502,132 @@ test('unknown, empty and ambiguous host links fail closed without local lookups 
     assert.equal(get('connection').textContent, '등록되지 않은 호스트');
     assert.ok(requests.every(r => r.path === '/api/hosts' && r.method === 'GET'));
   }
+});
+
+const question = () => ({id: 'd'.repeat(32), run_id: runA, role: 'developer', engine: 'codex', kind: 'question',
+  prompt: '출력 형식을 지정해 주세요.\n<img src=x>', status: 'pending', decision: null, answer: null, created_at: stamp});
+const permission = () => ({...question(), id: 'e'.repeat(32), run_id: runB, engine: 'cline', kind: 'permission',
+  prompt: 'editor\n{"path":"<main>","text":"  들여쓰기"}'});
+
+test('unavailable peer inbox preserves drafts and run controls and lets the operator explicitly start a legacy run', async t => {
+  let unavailable = false;
+  const q = question();
+  const {get, requests} = mount(t, {
+    suffix: '?host=' + remote, runs: [run(runA, 'RUNNING')], inbox: [q],
+    route(path) {
+      if (unavailable && path.endsWith('/inbox')) return Response.json({}, {status: 503});
+    },
+  });
+  await waitFor(() => get('inbox-list').querySelector('textarea') && !get('stop').hidden);
+  const draft = get('inbox-list').querySelector('textarea');
+  draft.value = '입력 중인 답변';
+  unavailable = true;
+  get('refresh').click();
+  await waitFor(() => draft.matches(':disabled') && get('history-inbox-note').textContent.includes('확인할 수 없습니다'));
+  assert.equal(get('connection').dataset.online, 'true');
+  assert.equal(draft.value, '입력 중인 답변');
+  assert.ok(get('use-inbox').checked && get('start').disabled);
+  assert.match(get('inbox-note').textContent, /요청함을 끄면/);
+  assert.ok(!get('stop').disabled);
+  get('stop').click();
+  await waitFor(() => get('run-state').textContent === '중지 요청 중');
+  get('task').value = '원격 구버전 작업';
+  get('use-inbox').click();
+  assert.ok(!get('start').disabled);
+  get('start').click();
+  await waitFor(() => get('request').textContent === '원격 구버전 작업');
+  const post = requests.find(req => req.method === 'POST' && req.path === remoteAPI + '/runs');
+  assert.ok(!Object.hasOwn(post.body, 'use_inbox'));
+  assert.equal(requests.filter(req => req.method === 'POST' && req.path.endsWith('/decision')).length, 0);
+  unavailable = false;
+  get('refresh').click();
+  await waitFor(() => !draft.matches(':disabled'));
+  assert.equal(get('inbox-list').querySelector('textarea'), draft);
+  assert.equal(draft.value, '입력 중인 답변');
+});
+
+test('remote inbox preserves a draft, focus and exact text while polling, and scopes each explicit decision', async t => {
+  const q = question(), p = permission();
+  const {doc, get, requests, window} = mount(t, {suffix: '?host=' + remote, runs: [run(runA, 'RUNNING'), run(runB, 'RUNNING')], inbox: [q, p]});
+  await waitFor(() => get('inbox-list').children.length === 2);
+  const [qc, pc] = get('inbox-list').children;
+  assert.equal(qc.querySelector('pre').textContent, q.prompt);
+  assert.equal(pc.querySelector('pre').textContent, p.prompt);
+  assert.equal(get('inbox-list').querySelector('pre *'), null);
+  assert.equal(pc.querySelector('textarea'), null);
+  assert.equal(qc.querySelectorAll('button').length, 1);
+  assert.equal(pc.querySelector('a').getAttribute('href'), '/?host=' + remote + '&run=' + runB + '#detail');
+  const draft = qc.querySelector('textarea');
+  draft.value = '  형식은 JSON\n한글 포함  ';
+  get('refresh').click();
+  draft.focus();
+  await waitFor(() => requests.filter(r => r.path === remoteAPI + '/inbox').length === 2);
+  assert.equal(doc.activeElement, draft);
+  assert.equal(draft.labels[0].textContent, '답변 (최대 8,192바이트)');
+  assert.deepEqual(requests.filter(r => r.method === 'POST'), []);
+  pc.querySelector('a').click();
+  await waitFor(() => get('run-id').textContent === runB);
+  assert.equal(new URL(window.location.href).searchParams.get('run'), runB);
+  qc.querySelector('button').click();
+  await waitFor(() => get('inbox-list').children.length === 1);
+  assert.deepEqual(requests.find(r => r.method === 'POST'), {
+    path: remoteAPI + '/runs/' + runA + '/inbox/' + q.id + '/decision', method: 'POST', body: {action: 'answer', answer: draft.value},
+  });
+  pc.querySelector('button').click();
+  await waitFor(() => get('history-inbox-list').textContent.includes('이번 요청 승인'));
+  assert.deepEqual(requests.filter(r => r.method === 'POST')[1].body, {action: 'approve'});
+  assert.equal(get('run-id').textContent, runB);
+});
+
+test('a conflicting or lost decision receipt resolves from that run’s history even when another run is open', async t => {
+  for (const conflict of [true, false]) {
+    const p = permission();
+    let offline = false;
+    const {get, requests} = mount(t, {runs: [run(runA, 'RUNNING'), run(runB, 'RUNNING')], inbox: [p], route(path, method) {
+      if (method === 'POST') {
+        Object.assign(p, {status: 'delivered', decision: conflict ? 'approve' : 'reject'});
+        if (conflict) return Response.json({}, {status: 409});
+        offline = true;
+        throw new Error('lost decision receipt');
+      }
+      if (offline && path !== '/api/hosts') throw new Error('offline');
+    }});
+    await waitFor(() => get('run-id').textContent === runA);
+    const reject = get('inbox-list').querySelectorAll('button')[1];
+    reject.click();
+    if (!conflict) {
+      await waitFor(() => get('connection').dataset.online === 'false');
+      assert.ok(reject.matches(':disabled'));
+      reject.click();
+      offline = false;
+      get('refresh').click();
+    }
+    await waitFor(() => get('decision-note').textContent.includes(conflict ? '이번 요청 승인' : '거절'));
+    assert.match(get('decision-note').textContent, /작업자에게 전달됨/);
+    const post = requests.findIndex(r => r.method === 'POST');
+    assert.equal(requests[post].body.action, 'reject');
+    assert.ok(requests.slice(post + 1).some(r => r.path === '/api/runs/' + runB + '/inbox'));
+    assert.equal(requests.filter(r => r.method === 'POST').length, 1);
+    assert.equal(get('run-id').textContent, runA);
+  }
+});
+
+test('delayed request history cannot replace a new run’s expired decision and answer', async t => {
+  const q = {...question(), status: 'expired', answer: '첫 번째 실행', decision: 'answer'};
+  const p = {...permission(), status: 'expired', decision: 'reject'};
+  let release;
+  const {doc, get, requests} = mount(t, {runs: [run(runA, 'CANCELED'), run(runB, 'CANCELED')], inbox: [q, p],
+    route(path) {
+      if (path === '/api/runs/' + runA + '/inbox') return new Promise(resolve => {
+        release = () => resolve(Response.json({requests: [q]}));
+      });
+    }});
+  await waitFor(() => release);
+  doc.querySelector('[data-run-id="' + runB + '"]').click();
+  await waitFor(() => get('history-inbox-list').textContent.includes('만료됨 · 거절'));
+  release();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(get('history-inbox-list').children.length, 1);
+  assert.ok(!get('history-inbox-list').textContent.includes(q.answer));
+  assert.ok(requests.every(r => r.method === 'GET'));
 });
