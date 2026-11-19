@@ -44,6 +44,7 @@ h1 { font-size: clamp(2rem, 4vw, 3rem); line-height: 1.18; letter-spacing: -.075
 h2 { display: flex; align-items: center; gap: 8px; font-size: 1.16rem; letter-spacing: -.045em; }
 .history-link, .link-button { font-size: .84rem; font-weight: 650; color: var(--muted); }
 .history-link { text-underline-offset: 4px; }
+.view-links { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .link-button { background: transparent; padding: 6px; }
 .link-button:hover, .history-link:hover { color: #173e33; text-decoration: underline; }
 .layout { display: grid; grid-template-columns: minmax(300px, .83fr) minmax(0, 1.17fr); gap: 22px; align-items: start; }

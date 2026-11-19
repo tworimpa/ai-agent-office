@@ -81,6 +81,7 @@ function mount(t, {workspaces = [workspace], runs = [], inbox = [], report, suff
 
 test('register local workspace, choose primary and extra folders, start in planning mode', async t => {
   const {get, doc, window, requests} = mount(t, {workspaces: []});
+  assert.equal(get('office-link').getAttribute('href'), '/office');
   await waitFor(() => get('registration').open);
   assert.ok(get('start').disabled);
   get('name').value = '한글 프로젝트';
@@ -270,6 +271,7 @@ test('host links discard previous run IDs and a remote host owns registration, s
   const {doc, get, window, requests} = mount(t, {suffix: '?host=' + remote, workspaces: []});
   await waitFor(() => get('registration').open && !get('register').disabled);
   const current = doc.querySelector('#hosts [aria-current=page]');
+  assert.equal(get('office-link').getAttribute('href'), '/office?host=' + remote);
   assert.equal(current.textContent, '연구실');
   assert.equal(current.getAttribute('href'), '/?host=' + remote);
   assert.equal(get('hosts').querySelector('a').getAttribute('href'), '/');

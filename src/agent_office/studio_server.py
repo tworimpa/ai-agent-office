@@ -16,6 +16,8 @@ from .models import OfficeError, validate_id
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER
 from .engine_evidence import StudioEngineCatalog
 from .observer import ObserverHandler
+from .office_state import office_snapshot
+from .office_wire import office_offset
 from .store import TaskStore
 from .studio_catalog import StudioCatalog
 from .role_skills import RoleSkillRegistry
@@ -27,6 +29,10 @@ ASSETS = {
     "/": ("studio.html", "text/html"),
     "/studio.js": ("studio.js", "text/javascript"),
     "/studio.css": ("studio.css", "text/css"),
+    "/office": ("office.html", "text/html"),
+    "/office.css": ("office.css", "text/css"),
+    "/office.js": ("office.js", "text/javascript"),
+    "/office-agents.webp": ("office-agents.webp", "image/webp"),
 }
 MAX_BODY = 128 * 1024
 
@@ -99,6 +105,13 @@ class StudioServer(ThreadingHTTPServer):
 class StudioHandler(ObserverHandler):
     allowed_methods = "GET, HEAD, POST"
 
+    def _reply(self, status, body, mime="application/json"):
+        try:
+            super()._reply(status, body, mime)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Navigating away or superseding a poll closes its response socket.
+            self.close_connection = True
+
     def end_headers(self):
         if getattr(self, "_peer_reply", False):
             self.send_header("X-Agent-Office-Journal", self.server.journal_id)
@@ -135,8 +148,11 @@ class StudioHandler(ObserverHandler):
                     or self.headers.get_all("X-Agent-Office") != ["studio"]):
                 self._error(403, "FORBIDDEN")
                 return
-        if parsed.query and not (not write and parsed.path == "/" and _valid_page_query(parsed.query)):
-            raise ValueError("요청 주소를 확인하세요.")
+        if parsed.query:
+            studio_page = parsed.path == "/" and _valid_page_query(parsed.query)
+            office_page = parsed.path == "/office" and re.fullmatch(r"host=(?:local|[a-f0-9]{32})", parsed.query)
+            if write or not (studio_page or office_page):
+                raise ValueError("요청 주소를 확인하세요.")
         if not write and parsed.path in ASSETS:
             name, mime = ASSETS[parsed.path]
             self._reply(200, files("agent_office").joinpath("web", name).read_bytes(), mime)
@@ -186,6 +202,11 @@ class StudioHandler(ObserverHandler):
 
     def _local_api(self, path, write):
         catalog, runner = self.server.catalog, self.server.runner
+        if not write and path.startswith("/api/"):
+            offset = office_offset(path.removeprefix("/api"))
+            if offset is not None:
+                self._reply(200, office_snapshot(self.server.db_path, offset=offset))
+                return
         route = re.fullmatch(r"/api/runs/([a-f0-9]{32})(/stop)?", path)
         inbox_route = re.fullmatch(r"/api/runs/([a-f0-9]{32})/inbox(?:/([a-f0-9]{32})/decision)?", path)
         revoke = re.fullmatch(r"/api/runs/([a-f0-9]{32})/delegation/stop", path)

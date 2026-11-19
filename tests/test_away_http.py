@@ -12,6 +12,7 @@ import uuid
 import pytest
 
 from agent_office.away_expert import RULES
+from agent_office.store import TaskStore
 from agent_office.studio_ssh import RemoteHost, RemoteUnavailable, _read_response
 from agent_office.workspace import create_worktree
 from test_inbox_http import install_inbox_fixture, wait_request
@@ -91,6 +92,12 @@ def test_remote_expert_and_verifier_answer_only_the_question(tmp_path, monkeypat
         with studio(tmp_path / "local.db", remotes=[host]) as local:
             rid = submit(local, api, web, contracts)
             pending = wait_request(local, api, rid, "permission")
+            status, office = request(local, api + "/office")
+            assert status == 200, office
+            assert {(card["role"], card["engine"], card["activity"]) for card in office["agents"]
+                    if card["run_id"] == rid} == {("developer", "cline", "waiting"),
+                                                   ("specialist", "claude", "done"),
+                                                   ("verifier", "antigravity", "done")}
             status, report = request(local, api + "/return-report")
             assert status == 200 and report["counts"]["permissions"] == 1, report
             assert report["counts"]["questions"] == 0 and report["counts"]["delegated"] == 1
@@ -111,20 +118,46 @@ def test_remote_expert_and_verifier_answer_only_the_question(tmp_path, monkeypat
             ("question", "delegate", "answer"), ("permission", "operator", "reject")]
 
 
-def test_returning_operator_stops_active_consultation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("held_role", ["specialist", "verifier"])
+def test_returning_operator_stops_active_consultation(tmp_path, monkeypatch, held_role):
     web, contracts, calls = install(tmp_path, monkeypatch)
     monkeypatch.setenv("OFFICE_FIXTURE_SOURCE", "operator")
-    portfile = tmp_path / "specialist-port"
-    monkeypatch.setenv("OFFICE_DELAY_SPECIALIST", str(portfile))
-    with studio(tmp_path / "studio.db") as local:
+    portfile = tmp_path / "held-role-port"
+    monkeypatch.setenv("OFFICE_DELAY_" + held_role.upper(), str(portfile))
+    db_path = tmp_path / "studio.db"
+
+    def stages(request_id):
+        with TaskStore(db_path, readonly=True) as store:
+            return [tuple(stage) for stage in store.connection.execute(
+                "SELECT role,engine,status FROM studio_away_role_stages WHERE request_id=? ORDER BY role",
+                (request_id,))]
+
+    with studio(db_path) as local:
         rid = submit(local, "/api", web, contracts)
         row = wait_request(local, "/api", rid, "question")
+        previous = [] if held_role == "specialist" else [("specialist", "claude", "COMPLETED")]
+        engine = POLICY[held_role + "_engine"]
+        expected = previous + [(held_role, engine, "RUNNING")]
         deadline = time.monotonic() + 30
-        while not (portfile.exists() and portfile.read_text().strip()) and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            if portfile.exists() and portfile.read_text().strip() and stages(row["id"]) == expected:
+                break
             time.sleep(0.05)
         port = int(portfile.read_text())
+        assert stages(row["id"]) == expected
+
+        def desk_activity():
+            status, office = request(local, "/api/office")
+            assert status == 200, office
+            return {card["role"]: card["activity"] for card in office["agents"] if card["run_id"] == rid}
+
+        activities = {"developer": "checking", held_role: "working"}
+        if held_role == "verifier":
+            activities["specialist"] = "done"
+        assert desk_activity() == activities
         for _ in range(2):
             assert request(local, f"/api/runs/{rid}/delegation/stop", {}) == (200, {"run_id": rid, "active": False})
+        assert desk_activity() == {**activities, "developer": "waiting", held_role: "stopped"}
         assert request(local, f"/api/runs/{rid}/inbox/{row['id']}/decision", {"action": "answer", "answer": ">=3.11"})[0] == 200
         permission = wait_request(local, "/api", rid, "permission")
         with socket.socket() as probe:
@@ -133,4 +166,6 @@ def test_returning_operator_stops_active_consultation(tmp_path, monkeypatch):
         assert request(local, f"/api/runs/{rid}/inbox/{permission['id']}/decision", {"action": "reject"})[0] == 200
         wait_for(local, rid, {"PLAN_ONLY"})
         assert request(local, "/api/return-report")[1]["counts"]["delegated"] == 0
-        assert [json.loads(line)[0] for line in calls.read_text().splitlines()] == ["AWAY_SPECIALIST"]
+        assert stages(row["id"]) == previous + [(held_role, engine, "INTERRUPTED")]
+        assert [json.loads(line)[0] for line in calls.read_text().splitlines()] == [
+            "AWAY_" + role.upper() for role, _, _ in stages(row["id"])]

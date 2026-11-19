@@ -24,7 +24,7 @@ agent-office = "agent_office.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-agent_office = ["web/*.html", "web/*.css", "web/*.js"]
+agent_office = ["web/*.html", "web/*.css", "web/*.js", "web/*.webp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -201,8 +201,15 @@ def test_false_or_unconfirmed_provider_outputs_defer(repo, monkeypatch, mode, re
             result["verdict"] = "uncertain"
         return AgentResult(0, json.dumps(result))
     monkeypatch.setattr(expert, "execute_fixture", reply)
+    stages = []
     with pytest.raises(DelegationDeferred, match=reason):
-        expert.assess(*repo, RULE, "codex", "antigravity")
+        expert.assess(*repo, RULE, "codex", "antigravity", on_stage=lambda *stage: stages.append(stage))
+    expected = [("specialist", "RUNNING")]
+    if reason == "specialist_failed":
+        expected.append(("specialist", "FAILED"))
+    else:
+        expected.extend([("specialist", "COMPLETED"), ("verifier", "RUNNING"), ("verifier", "FAILED")])
+    assert stages == expected
 
 
 def test_symlink_oversize_or_wrong_base_never_start_providers(repo, monkeypatch):
@@ -302,10 +309,14 @@ def test_two_supervised_readonly_cli_processes_use_only_committed_evidence(repo,
     with TaskStore(journal) as store, store._write():
         pin_selection(store.connection, run_id, selection)
         guidance = role_guidance(store.connection, run_id, ("specialist", "verifier"))
-    assert asyncio.run(run_consultation(root, revision, RULE, "codex", "codex", ["."], skill_guidance=guidance)) == {
+    stages = []
+    assert asyncio.run(run_consultation(root, revision, RULE, "codex", "codex", ["."], skill_guidance=guidance,
+                                        on_stage=lambda *stage: stages.append(stage))) == {
         "answer": "python -m pytest -q",
         "evidence": {"path": "README.md", "line": 2, "quote": "python -m pytest -q", "revision": revision},
     }
+    assert stages == [("specialist", "RUNNING"), ("specialist", "COMPLETED"),
+                      ("verifier", "RUNNING"), ("verifier", "COMPLETED")]
     first, second = map(json.loads, calls.read_text(encoding="utf-8").splitlines())
     assert (first[1], second[1]) == ("AWAY_SPECIALIST", "AWAY_VERIFIER")
     assert first[0] != second[0] and not any(Path(c[0]).exists() for c in (first, second))

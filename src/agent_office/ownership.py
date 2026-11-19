@@ -46,6 +46,39 @@ class RunGuard:
             raise
         return self
 
+    def is_held(self):
+        """Probe an existing owner lock. Concurrent readers never block one another."""
+        try:
+            fd = os.open(self.path, os.O_RDONLY)
+        except FileNotFoundError:
+            return False
+        try:
+            if os.name == "nt":
+                import msvcrt
+                import pywintypes
+                import win32con
+                import win32file
+                import winerror
+
+                handle = msvcrt.get_osfhandle(fd)
+                offset = pywintypes.OVERLAPPED()
+                try:
+                    win32file.LockFileEx(handle, win32con.LOCKFILE_FAIL_IMMEDIATELY, 1, 0, offset)
+                except pywintypes.error as exc:
+                    if exc.winerror == winerror.ERROR_LOCK_VIOLATION:
+                        return True
+                    raise
+                win32file.UnlockFileEx(handle, 1, 0, offset)
+            else:
+                import fcntl
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return True
+            return False
+        finally:
+            os.close(fd)
+
     def __exit__(self, *args):
         if self.fd is not None:
             try:
