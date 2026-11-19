@@ -62,21 +62,22 @@ def _supervise():
         return 1
     # This supervisor outlives cancelled role processes. Keep their temporary
     # repositories underneath a directory it can remove once the tree is drained.
+    # Other software on the host must keep using its ordinary temporary paths.
     with tempfile.TemporaryDirectory(prefix="office-away-consult-") as scratch:
-        os.environ.update(TMPDIR=scratch, TMP=scratch, TEMP=scratch)
-        return 0 if run_until_owner_closes(_command("assess"), payload, timeout=150) else 1
+        return 0 if run_until_owner_closes([*_command("assess"), scratch], payload, timeout=150) else 1
 
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["supervise"]:
         sys.exit(_supervise())
-    if sys.argv[1:] != ["assess"]:
+    if len(sys.argv) != 3 or sys.argv[1] != "assess":
         sys.exit(2)
     from agent_office.away_expert import assess
 
     repo, revision, rule, specialist, verifier, folders, guidance = json.load(sys.stdin.buffer)
     try:
-        response = assess(Path(repo), revision, rule, specialist, verifier, folders=folders, skill_guidance=guidance)
+        response = assess(Path(repo), revision, rule, specialist, verifier, folders=folders,
+                          skill_guidance=guidance, scratch_root=Path(sys.argv[2]))
     except DelegationDeferred as exc:
         response = {"reason": exc.reason}
     sys.stdout.buffer.write(json.dumps(response, ensure_ascii=False).encode("utf-8"))

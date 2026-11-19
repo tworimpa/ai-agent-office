@@ -259,6 +259,7 @@ def test_two_supervised_readonly_cli_processes_use_only_committed_evidence(repo,
     script.write_text(
         'import json, os, sys\nfrom pathlib import Path\n'
         'assert "--sandbox" in sys.argv and "read-only" in sys.argv\n'
+        'assert all(os.environ.get(key) == value for key, value in json.loads(os.environ["FIXTURE_TEMP_ENV"]).items())\n'
         'prompt = sys.stdin.read()\nrole = prompt.splitlines()[0]\n'
         'expected = "specialist" if role == "AWAY_SPECIALIST" else "verifier"\n'
         'other = "verifier" if expected == "specialist" else "specialist"\n'
@@ -284,6 +285,7 @@ def test_two_supervised_readonly_cli_processes_use_only_committed_evidence(repo,
         launcher.chmod(0o700)
     calls = tmp_path / "calls"
     monkeypatch.setenv("AWAY_TEST_CALLS", str(calls))
+    monkeypatch.setenv("FIXTURE_TEMP_ENV", json.dumps({key: os.environ.get(key) for key in ("TMP", "TEMP", "TMPDIR")}))
     git_dir = str(Path(shutil.which("git")).parent)
     monkeypatch.setenv("PATH", os.pathsep.join((str(bin_dir), git_dir)))
     journal = tmp_path / "journal"
@@ -307,3 +309,6 @@ def test_two_supervised_readonly_cli_processes_use_only_committed_evidence(repo,
     first, second = map(json.loads, calls.read_text(encoding="utf-8").splitlines())
     assert (first[1], second[1]) == ("AWAY_SPECIALIST", "AWAY_VERIFIER")
     assert first[0] != second[0] and not any(Path(c[0]).exists() for c in (first, second))
+    supervisor_dir = Path(first[0]).parent
+    assert supervisor_dir == Path(second[0]).parent and supervisor_dir.name.startswith("office-away-consult-")
+    assert not supervisor_dir.exists()

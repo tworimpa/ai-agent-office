@@ -61,7 +61,7 @@ def in_scope(path: str, folders: list[str]) -> bool:
             or any(relative.is_relative_to(folder) for folder in folders))
 
 
-def _consult(role, engine, material, answer, guidance):
+def _consult(role, engine, material, answer, guidance, scratch_root):
     failure = role + "_failed"
     role_fields = "answer, line, quote"
     if role == "verifier":
@@ -72,7 +72,7 @@ def _consult(role, engine, material, answer, guidance):
               "The answer is the exact command or version constraint alone. Copy line and quote exactly. "
               "If uncertain return {}. Do not run commands or change files.\n" + payload)
     try:
-        with tempfile.TemporaryDirectory(prefix=f"office-away-{role}-") as directory:
+        with tempfile.TemporaryDirectory(prefix=f"office-away-{role}-", dir=scratch_root) as directory:
             scratch = Path(directory)
             git(scratch, "init", "--quiet", "--template=")
             (scratch / "evidence.json").write_text(payload, encoding="utf-8")
@@ -96,7 +96,7 @@ def _consult(role, engine, material, answer, guidance):
 
 
 def assess(repo: Path, revision: str, rule: dict, specialist_engine: str, verifier_engine: str,
-           *, folders: list[str] | None = None, skill_guidance=None) -> dict:
+           *, folders: list[str] | None = None, skill_guidance=None, scratch_root: Path | None = None) -> dict:
     try:
         rule = validate_policy({"rules": [rule], "specialist_engine": specialist_engine,
                                 "verifier_engine": verifier_engine})["rules"][0]
@@ -120,9 +120,9 @@ def assess(repo: Path, revision: str, rule: dict, specialist_engine: str, verifi
     answer, citations = derive_fact(topic, document, project_names=project_names)
     material = {"topic": topic, "question": RULES[topic], "path": path, "revision": revision, "evidence": citations}
     guidance = skill_guidance or {}
-    proposal = _consult("specialist", specialist_engine, material, answer, guidance.get("specialist", ""))
+    proposal = _consult("specialist", specialist_engine, material, answer, guidance.get("specialist", ""), scratch_root)
     require_base(repo, revision)
-    verified = _consult("verifier", verifier_engine, material, answer, guidance.get("verifier", ""))
+    verified = _consult("verifier", verifier_engine, material, answer, guidance.get("verifier", ""), scratch_root)
     if proposal != verified:
         raise DelegationDeferred("verifier_failed")
     require_base(repo, revision)
