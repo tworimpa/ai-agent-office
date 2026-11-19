@@ -17,7 +17,7 @@ from test_workflow import MockAdapter, base_state
 
 def test_truncated_review_cannot_hide_conflicting_verdict(tmp_path, monkeypatch):
     text = "VERDICT: APPROVED\n" + "x" * 13000 + "\nVERDICT: CHANGES_REQUESTED"
-    monkeypatch.setattr("agent_office.adapters.shutil.which", lambda name: sys.executable)
+    monkeypatch.setattr("agent_office.adapters.resolve_executable", lambda name: sys.executable)
     with monkeypatch.context() as patch:
         patch.setattr("agent_office.adapters.subprocess.run", lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps({"result": text}), ""))
         result = CLIAdapter("claude").execute("review", workspace=tmp_path, allow_edits=False)

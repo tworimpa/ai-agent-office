@@ -1,0 +1,22 @@
+# Gemini CLI와 Cline CLI 실행 규약
+
+작업실은 두 엔진과 ACP v1 표준입출력으로 통신한다. 프로세스 하나가 새 세션에서 요청 하나를 처리하고 종료된다. 요청 본문은 UTF-8 JSON-RPC 레코드에 담는다. 서버가 지정한 세션 ID, 역할 모드 설정 응답, 도구 호출의 완료, 마지막 답변, `end_turn`과 정상 종료를 확인한다. 중간 답변·도구 출력에 나온 리뷰 판정은 버리고, 워커에게 요청한 마지막 줄 `AGENT_OFFICE_FINAL`을 확인한 뒤 제거한다. [ACP 수명 주기](https://agentclientprotocol.com/protocol/initialization) · [프롬프트 차례](https://agentclientprotocol.com/protocol/prompt-turn)
+
+| 엔진 | 실행 명령 | 계획·리뷰 모드 | 수정 모드 |
+| --- | --- | --- | --- |
+| Gemini | `gemini --acp --approval-mode plan` 또는 `gemini --acp --approval-mode auto_edit` | ACP `plan` | ACP `autoEdit` |
+| Cline | `cline --acp --auto-approve false` | ACP `plan` | ACP `act` |
+
+## Gemini CLI
+
+규약을 확인한 릴리스는 v0.69.0이다. Gemini의 헤드리스 Plan 모드는 계획을 마칠 때 자동 실행 모드로 전환할 수 있다. ACP는 제공자의 대화형 권한 경로를 사용한다. 작업실은 서버가 해당 역할의 모드를 제공하는지 확인하고, `session/set_mode` 성공 뒤 요청을 보낸다. 클라이언트의 추가 권한 요청을 취소하고 파일·터미널 서비스를 제공하지 않는다. 스트림이 재시작되면 중단된 답변을 버리고 Gemini가 새 응답의 시작을 표시했는지 확인한다. 파일 읽기·검색과 수정 모드의 파일 편집에는 Gemini 자체 도구와 기존 호스트 정책이 적용된다. Gemini의 검색 알림에는 웹 검색도 포함되며 MCP 도구도 읽기 종류로 보고할 수 있다. 공급자 정책이 허용한 도구는 작업실이 알림을 처리할 때 이미 실행되었을 수 있다. 예를 들어 자동 편집 모드의 기본 정책은 웹 가져오기를 허용한다. 지원하지 않는 종류의 알림이나 도구 실패는 실행 실패로 처리한다. 로컬 접근이나 네트워크 범위를 강제하려면 호스트 자체의 접근 제한이 필요하다. 별도 예제 검증에서는 완료된 파일 읽기가 제공한 작업 폴더 안의 실제 파일 위치와 예측할 수 없는 파일 값을 확인한다. 수정 예제는 편집 도구가 완료된 파일 위치와 실제 변경 내용도 확인한다. [ACP 모드 선택](https://github.com/google-gemini/gemini-cli/blob/58840eb92ebf1474193a05817c34a74820bd444a/packages/cli/src/acp/acpSession.ts) · [모드 식별자](https://github.com/google-gemini/gemini-cli/blob/58840eb92ebf1474193a05817c34a74820bd444a/packages/core/src/policy/types.ts) · [도구 분류](https://github.com/google-gemini/gemini-cli/blob/58840eb92ebf1474193a05817c34a74820bd444a/packages/cli/src/acp/acpUtils.ts) · [자동 편집 기본 정책](https://github.com/google-gemini/gemini-cli/blob/58840eb92ebf1474193a05817c34a74820bd444a/packages/core/src/policy/policies/write.toml) · [계획 완료 동작](https://github.com/google-gemini/gemini-cli/blob/58840eb92ebf1474193a05817c34a74820bd444a/packages/core/src/tools/exit-plan-mode.ts)
+
+기존 Gemini 설정과 로그인 방법을 사용한다. 이 버전의 전체 프로세스 `--sandbox` 래퍼는 실행 전에 표준입력 EOF를 기다리므로 양방향 ACP와 호환되지 않는다. 작업실이 이 플래그를 추가하거나 기존 샌드박스 설정을 해제하는 동작은 없다. 호스트의 래퍼가 양방향 표준입력을 전달할 수 없으면 초기화 또는 실행 제한 시간에 실패한다. [프로세스 시작 코드](https://github.com/google-gemini/gemini-cli/blob/58840eb92ebf1474193a05817c34a74820bd444a/packages/cli/src/gemini.tsx) · [세션 인증](https://github.com/google-gemini/gemini-cli/blob/58840eb92ebf1474193a05817c34a74820bd444a/packages/cli/src/acp/acpSessionManager.ts)
+
+## Cline CLI
+
+도구 허가에 사용하는 매핑을 확인한 배포본은 **Cline CLI 3.0.74**, 소스 저장소 태그는 v4.1.26이다. 세션을 로컬 프로세스에서 실행하도록 `CLINE_SESSION_BACKEND_MODE=local`을 넘기고 세션의 `auto_approve` 값이 불리언 false인지 확인한다. Cline의 일반 비대화형 명령은 도구 자동 승인이 기본이어서 ACP를 사용한다. ACP 초기화 응답의 제품명 `cline`과 버전이 일치해야 요청 본문을 보낸다. 호환성 검토가 끝나지 않은 버전에서는 초기화 단계에서 중지한다. [배포 버전·제품명](https://github.com/cline/cline/blob/a459f1d04dea030833b558be645011ab739c463b/apps/cli/package.json) · [세션과 승인 설정](https://github.com/cline/cline/blob/a459f1d04dea030833b558be645011ab739c463b/apps/cli/src/acp/acpAgent.ts) · [로컬 백엔드](https://github.com/cline/cline/blob/a459f1d04dea030833b558be645011ab739c463b/sdk/packages/core/src/runtime/host/host.ts)
+
+Cline이 도구 이름으로 생성한 제목 접두사와 도구 종류, 원본 입력 스키마를 함께 검사한다. 두 역할 모두 `read_files`로 작업 폴더 안의 일반 파일을 읽을 수 있다. 수정 모드에서는 `editor`의 파일 생성·텍스트 치환·줄 삽입도 허용한다. 입력 경로는 작업 폴더 내부의 절대 경로여야 한다. Git 메타데이터·경로 이동·리디렉션·하드링크·특수 파일을 요청하면 거부한다. 도구 요청과 완료를 ID로 대조하고 파일별 성공 여부도 검사한다. 셸, MCP, 추가 에이전트, 포괄적 편집 도구 등 다른 작업에는 권한을 주지 않는다. 이 검사는 신뢰하는 저장소에서 작업 범위를 좁힌다. 다른 로컬 프로세스의 동시 파일 변경을 차단하는 OS 샌드박스는 별도로 구성해야 한다. [권한 요청 형식](https://github.com/cline/cline/blob/a459f1d04dea030833b558be645011ab739c463b/apps/cli/src/acp/permissions.ts) · [도구 이름과 종류](https://github.com/cline/cline/blob/a459f1d04dea030833b558be645011ab739c463b/apps/cli/src/acp/tool-utils.ts) · [입력 스키마](https://github.com/cline/cline/blob/a459f1d04dea030833b558be645011ab739c463b/sdk/packages/core/src/extensions/tools/schemas.ts)
+
+이 Cline 릴리스는 모델의 실수 한도 도달도 `end_turn`으로 보낸다. 마지막 답변 표시와 도구 결과를 요구하더라도 모델 자체의 완료 사유까지 복원할 수는 없다. 예제 검증은 알려진 파일 내용과 실제 변경을 별도로 확인한다. 실제 실행의 테스트·리뷰·사용자 확인 절차도 그대로 적용한다. 각 호스트에서 설치와 도움말을 조회한 사실만으로 읽기·수정·리뷰의 실제 성공을 인정하지 않는다. [종료 사유 변환](https://github.com/cline/cline/blob/a459f1d04dea030833b558be645011ab739c463b/apps/cli/src/acp/acpAgent.ts) · [도구 결과 알림](https://github.com/cline/cline/blob/a459f1d04dea030833b558be645011ab739c463b/apps/cli/src/acp/session-updates.ts)

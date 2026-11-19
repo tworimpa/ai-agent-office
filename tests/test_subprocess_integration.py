@@ -38,7 +38,7 @@ def test_real_subprocess_stdin_roundtrip(engine, tmp_path):
 
 
 def test_not_found_error(monkeypatch, tmp_path):
-    monkeypatch.setattr("agent_office.adapters.shutil.which", lambda name: None)
+    monkeypatch.setattr("agent_office.adapters.resolve_executable", lambda name: None)
     result = CLIAdapter("claude").execute("test", workspace=tmp_path, allow_edits=False)
     assert result.returncode == 127
     assert "Missing CLI" in result.message

@@ -41,13 +41,29 @@ agent-office --db ../local-office/tasks.sqlite3 studio --remote build-box 8766 0
 
 양쪽 HTTP 서버는 루프백에서 동작합니다. 로컬 작업실은 OpenSSH의 표준입출력 전달을 이용해 지정한 호스트의 작업실에만 요청합니다. 원격 포트에 다른 저널이 열려 있으면 요청이 거부됩니다. 저널 ID는 저장소 식별자이며 접속 인증은 SSH가 담당합니다. [OpenSSH 매뉴얼](https://man.openbsd.org/ssh.1) · [원격 실행 구현 계획](docs/superpowers/plans/2026-11-19-remote-studio.md)
 
+## 역할별 엔진 선택과 호스트별 검증
+
+실행 호스트를 고른 뒤 **개발자 엔진**과 **리뷰어 엔진**을 선택합니다. Codex, Antigravity, Claude Code, Gemini CLI, Cline CLI를 각 역할에 배정할 수 있습니다. 기본값은 개발자 Codex, 리뷰어 Antigravity입니다. 계획 작성은 개발자만 실행하고, 개발·검증에서는 선택한 개발자가 작업한 뒤 저장소 테스트와 선택한 리뷰어의 검토가 이어집니다. 실행 상세에는 접수 당시의 배정이 남습니다.
+
+**호스트별 엔진 진단**에서 설치 여부, 버전, CLI가 안내하는 비대화형 옵션과 인증 상태를 확인합니다. 읽기·수정·리뷰 검증에는 해당 호스트에서 별도 예제로 확인한 결과와 시각을 표시합니다. 새 엔진을 설치했거나 실행 환경이 달라지면 현재 환경의 근거를 확인하세요.
+
+Gemini와 Cline은 ACP로 연결합니다. Cline의 작업공간 파일 읽기·수정 허가는 도구 규약을 확인한 **CLI 3.0.74**에 적용합니다. 설치한 버전이 다르면 해당 호스트의 진단에 표시됩니다. [연결 방식과 지원 범위](docs/engine-protocols.md)
+
+운영자가 실검증을 승인한 경우에만 **실행할 호스트**에서 그 작업실과 같은 DB 경로로 아래처럼 실행합니다. 이 명령은 임시 Git 저장소에서 지정한 CLI를 호출하므로 계정 사용량이 발생할 수 있습니다. `gemini` 자리에 원하는 엔진 ID를, 마지막 인자에 확인할 기능(`read`, `edit`, `review`)을 넣습니다.
+
+```shell
+agent-office --db ../remote-office/tasks.sqlite3 verify-engine gemini read
+```
+
+원격 작업실에서는 두 컴퓨터에 이 버전을 설치합니다. 원격 호스트의 진단과 검증 내역은 해당 호스트의 저널에서 가져옵니다. [엔진 가이드](docs/engines.md) · [역할별 엔진 구현 계획](docs/superpowers/plans/2026-11-19-engine-expansion.md)
+
 ## Architecture
 
 ```text
 User task -> Agent Office CLI
             -> Git worktree (isolated working directory)
             -> LangGraph
-               -> Developer CLI (Codex / Antigravity; optional Claude)
+               -> Developer CLI (Codex / Antigravity / Claude Code / Gemini CLI / Cline CLI)
                -> Local test command (allow-edits mode only)
                -> Reviewer CLI (read-only)
                -> [rework on failure, with a maximum attempt limit]
@@ -105,7 +121,7 @@ agent-office run --repo . --allow-edits \
   --task "Add one focused regression test and explain what changed"
 ```
 
-By default development uses `codex` and review uses `antigravity` (`agy`). Roles remain independent: override with `--developer antigravity --reviewer codex`, or explicitly select legacy `claude`. Product workers do not merge/push/deploy their work. Codex's repository maintenance follows the owner's separate CI-gated workflow in AGENTS.md.
+By default development uses `codex` and review uses `antigravity` (`agy`). Override either role, for example with `--developer gemini --reviewer cline`. The other selectable engine is `claude`. Product workers do not merge/push/deploy their work. Codex's repository maintenance follows the owner's separate CI-gated workflow in AGENTS.md.
 
 Use `agent-office engines` for fixed metadata-only diagnostics. The observer shows a startup snapshot for the two initial engines. Installation, authentication, advertised headless flags and actual task acceptance are distinct; metadata never marks a live task verified. See [engine guide](docs/engines.md).
 

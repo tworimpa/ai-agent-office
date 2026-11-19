@@ -13,6 +13,8 @@ from urllib.parse import parse_qsl, urlsplit
 import uuid
 
 from .models import OfficeError, validate_id
+from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER
+from .engine_evidence import StudioEngineCatalog
 from .observer import ObserverHandler
 from .store import TaskStore
 from .studio_catalog import StudioCatalog
@@ -58,6 +60,7 @@ class StudioServer(ThreadingHTTPServer):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Invalid port")
         self.runner = None
+        self.engines = None
         self.remotes = {host.journal_id: host for host in remotes}
         if len(self.remotes) != len(remotes) or len({h.alias.casefold() for h in remotes}) != len(remotes):
             raise ValueError("각 원격 호스트의 SSH 별칭과 저널 ID는 고유해야 합니다.")
@@ -71,6 +74,7 @@ class StudioServer(ThreadingHTTPServer):
                 raise ValueError("이 컴퓨터의 저널 ID를 원격 호스트로 등록할 수 없습니다.")
             self.identity = self.db_path.stat()
             self.catalog = StudioCatalog(self.db_path)
+            self.engines = StudioEngineCatalog(self.db_path)
             self.runner = LocalRunner(self.db_path)
         except BaseException:
             super().server_close()
@@ -83,6 +87,8 @@ class StudioServer(ThreadingHTTPServer):
 
     def server_close(self):
         super().server_close()
+        if self.engines is not None:
+            self.engines.close()
         if self.runner is not None:
             self.runner.close()
 
@@ -179,7 +185,9 @@ class StudioHandler(ObserverHandler):
         catalog, runner = self.server.catalog, self.server.runner
         route = re.fullmatch(r"/api/runs/([a-f0-9]{32})(/stop)?", path)
         if not write:
-            if path == "/api/workspaces":
+            if path == "/api/engines":
+                self._reply(200, self.server.engines.snapshot())
+            elif path == "/api/workspaces":
                 self._reply(200, {"workspaces": catalog.list()})
             elif path == "/api/runs":
                 self._reply(200, {"runs": runner.runs()})
@@ -194,7 +202,8 @@ class StudioHandler(ObserverHandler):
                 raise ValueError("작업공간 이름과 폴더를 입력하세요.")
             self._reply(201, {"workspace": catalog.create(data["name"], data["paths"])})
         elif path == "/api/runs":
-            if set(data) != {"id", "workspace_id", "indices", "task", "allow_edits"}:
+            required_keys = {"id", "workspace_id", "indices", "task", "allow_edits"}
+            if not required_keys <= data.keys() or data.keys() - required_keys - {"developer_engine", "reviewer_engine"}:
                 raise ValueError("작업 요청의 입력 항목을 확인하세요.")
             run_id = validate_id(data["id"])
             workspace_id = validate_id(data["workspace_id"])
@@ -202,7 +211,9 @@ class StudioHandler(ObserverHandler):
             if (type(data["allow_edits"]) is not bool or not isinstance(task, str)
                     or not task.strip() or len(task.encode("utf-8")) > 8192 or "\x00" in task):
                 raise ValueError("작업 내용(UTF-8 최대 8,192바이트)과 수정 모드를 확인하세요.")
-            run = runner.submit(catalog, run_id, workspace_id, data["indices"], task, data["allow_edits"])
+            run = runner.submit(catalog, run_id, workspace_id, data["indices"], task, data["allow_edits"],
+                                developer_engine=data.get("developer_engine", DEFAULT_DEVELOPER),
+                                reviewer_engine=data.get("reviewer_engine", DEFAULT_REVIEWER))
             self._reply(202, {"run": run})
         elif route and route[2] and not data:
             self._reply(200, {"run": runner.stop(route[1])})

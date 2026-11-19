@@ -60,10 +60,20 @@
               <small id="size-limit">최대 8,192바이트(UTF-8)</small>
               <fieldset class="modes">
                 <legend>실행 방식</legend>
-                <label class="mode"><input type="radio" name="mode" value="plan" checked><span><strong>계획 작성</strong><small>Codex가 읽고 계획을 작성합니다.</small></span></label>
-                <label class="mode"><input id="edit-mode" type="radio" name="mode" value="edit"><span><strong>개발·검증 맡기기</strong><small>별도 worktree에서 수정·테스트 후 Antigravity가 리뷰합니다.</small></span></label>
+                <label class="mode"><input type="radio" name="mode" value="plan" checked><span><strong>계획 작성</strong><small>개발자가 코드를 읽고 계획을 작성합니다.</small></span></label>
+                <label class="mode"><input id="edit-mode" type="radio" name="mode" value="edit"><span><strong>개발·검증 맡기기</strong><small>별도 worktree에서 수정하고 테스트한 뒤 리뷰어가 검토합니다.</small></span></label>
               </fieldset>
+              <div class="role-pickers">
+                <div><label for="developer-engine">개발자 엔진</label><select id="developer-engine" name="developer_engine" aria-describedby="engine-warning" required></select></div>
+                <div><label for="reviewer-engine">리뷰어 엔진</label><select id="reviewer-engine" name="reviewer_engine" aria-describedby="engine-warning" required></select></div>
+              </div>
             </fieldset>
+            <p id="engine-warning" class="notice error" role="status"></p>
+            <details class="engine-panel">
+              <summary>호스트별 엔진 진단</summary>
+              <p id="engine-status" role="status">실행 호스트 확인 중</p>
+              <ul id="engine-list"></ul>
+            </details>
             <button id="start" class="primary" type="submit" disabled>작업 시작 <span aria-hidden="true">↗</span></button>
             <p id="start-note" role="status" class="notice"></p>
           </form>
@@ -85,6 +95,7 @@
             <div class="request">
               <p id="detail-workspace" class="workspace-name"></p>
               <h3 id="request"></h3>
+              <p id="run-engines" class="assignments"></p>
               <div class="run-meta"><code id="run-id"></code><button type="button" id="stop" class="stop" hidden>실행 중지</button></div>
               <p id="attempts" class="attempts" hidden></p>
               <p id="outcome" class="outcome" hidden></p>

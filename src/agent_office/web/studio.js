@@ -26,6 +26,27 @@ const outcomes = {
 const testedOutcomes = new Set(['TEST_FAILED', 'REVIEW_FAILED', 'CHANGES_REQUESTED', 'REVIEW_UNDECIDED', 'APPROVED']);
 const evidence = ['developer_output', 'test_output', 'review_output', 'changes', 'diff'];
 const validId = value => typeof value === 'string' && /^[0-9a-f]{32}$/.test(value);
+const engineNames = new Map([
+  ['codex', 'Codex'], ['antigravity', 'Antigravity'], ['claude', 'Claude Code'],
+  ['gemini', 'Gemini CLI'], ['cline', 'Cline CLI'],
+]);
+const roles = [['developer', '개발자', 'codex'], ['reviewer', '리뷰어', 'antigravity']];
+const capabilityLabels = [['read', '읽기'], ['edit', '수정'], ['review', '리뷰']];
+const checkedTime = new Intl.DateTimeFormat('ko-KR', {dateStyle: 'short', timeStyle: 'medium'});
+function timeLabel(value) {
+  const stamp = typeof value === 'string' ? Date.parse(value) : NaN;
+  return Number.isNaN(stamp) ? '' : checkedTime.format(stamp);
+}
+
+function engineMetadata(row) {
+  const installation = row.installed === true ? '설치 확인' : row.installed === false ? '실행 파일 없음' : '설치 미확인';
+  const auth = {authenticated: '로그인 확인', not_authenticated: '로그인 안 됨'}[row.auth_status] ?? '로그인 미확인';
+  const probe = {pending: '진단 중', timeout: '진단 시간 초과', error: '진단 오류', unsupported: '필수 CLI 옵션 미지원',
+    unknown_version: 'CLI 버전 확인 실패', unsupported_version: '작업실에서 지원하지 않는 버전'};
+  const options = row.headless_support === true ? '비대화형 옵션 확인' : '비대화형 옵션 미확인';
+  const protocol = row.protocol ? '프로토콜 ' + row.protocol : '';
+  return [installation, row.version || '버전 미확인', auth, protocol, probe[row.probe_status] ?? options].filter(Boolean).join(' · ');
+}
 const connectionErrors = {
   JOURNAL_MISMATCH: '등록한 원격 실행 저널과 다릅니다.',
   PEER_DISABLED: '원격 작업실의 연결 접수가 꺼져 있습니다.',
@@ -58,6 +79,7 @@ export function mountStudio(win) {
   let runs = [];
   let listSequence = 0, detailSequence = 0, catalogSequence = 0;
   let timer, closed = false, starting = false, restoring = true;
+  let engineSnapshot = null, engineRequest = null, enginesStale = true;
   const stopping = new Set();
   let pending = null;
   try {
@@ -122,6 +144,77 @@ export function mountStudio(win) {
   const workspaceName = id => workspaces.find(item => item.id === id)?.name ?? '작업공간';
   const option = (value, text) => new win.Option(text, value);
   const checkedExtras = () => [...get('extras').querySelectorAll(':checked')].map(box => Number(box.value));
+
+  function updateEngineWarning() {
+    const warnings = [];
+    for (const [role, title] of roles) {
+      const id = get(role + '-engine').value;
+      const row = engineSnapshot?.engines.find(item => item.engine === id);
+      const roleName = title + ' ' + engineNames.get(id);
+      if (row?.installed === false) warnings.push(roleName + ' 실행 파일을 찾지 못했습니다.');
+      else if (row?.probe_status === 'unsupported_version') {
+        warnings.push(roleName + '의 설치 버전을 작업실에서 지원하지 않습니다.');
+      }
+    }
+    say('engine-warning', enginesStale ? '이 호스트의 최신 엔진 진단을 확인할 수 없습니다.' :
+      warnings.join(' '));
+  }
+
+  for (const [role, , defaultId] of roles) {
+    const picker = get(role + '-engine');
+    picker.replaceChildren(...Array.from(engineNames, ([id, name]) => option(id, name)));
+    picker.value = pending?.[role + '_engine'] ?? defaultId;
+    picker.addEventListener('change', updateEngineWarning);
+  }
+
+  function renderEngineRows(snapshot) {
+    get('engine-list').replaceChildren(...Array.from(engineNames, ([id, name]) => {
+      const row = snapshot.engines.find(item => item.engine === id) ?? {};
+      const li = make('li'), title = make('strong'), metadata = make('p'), checks = make('p');
+      title.textContent = name;
+      metadata.textContent = 'CLI 진단 · ' + engineMetadata(row);
+      const results = capabilityLabels.map(([key, label]) => {
+        const result = row.capabilities?.[key];
+        const time = timeLabel(result?.checked_at);
+        const status = {passed: '통과', failed: '실패'}[result?.status];
+        return label + ' ' + (status && time ? status + ' (' + time + ')' : '미검증');
+      });
+      checks.textContent = '예제 검증 · ' + results.join(' / ');
+      li.append(title, metadata, checks);
+      return li;
+    }));
+  }
+
+  function engineUnavailable() {
+    enginesStale = true;
+    const time = timeLabel(engineSnapshot?.checked_at);
+    say('engine-status', time ? (host?.name ?? '선택한 호스트') + ' · 마지막으로 받은 진단 (' + time + '). 최신 진단을 확인할 수 없습니다.' :
+      '선택한 호스트의 엔진 진단을 불러오지 못했습니다.');
+    updateEngineWarning();
+  }
+
+  async function loadEngines() {
+    if (engineRequest) return;
+    if (!engineSnapshot) say('engine-status', host.name + '의 엔진 진단을 불러오는 중입니다.');
+    const request = engineRequest = api('/engines');
+    try {
+      const snapshot = await request;
+      if (closed || request !== engineRequest) return;
+      if (!Array.isArray(snapshot?.engines)) throw new Error('엔진 진단 형식 오류');
+      if (JSON.stringify(snapshot) !== JSON.stringify(engineSnapshot)) renderEngineRows(snapshot);
+      engineSnapshot = snapshot;
+      enginesStale = false;
+      const checking = snapshot.engines.some(item => item.probe_status === 'pending');
+      const time = timeLabel(snapshot.checked_at);
+      say('engine-status', [host.name, snapshot.platform, time ? '진단 시각 ' + time : '진단 시각 미확인',
+        checking && 'CLI 진단 중'].filter(Boolean).join(' · '));
+      updateEngineWarning();
+    } catch {
+      if (!closed && request === engineRequest) engineUnavailable();
+    } finally {
+      if (request === engineRequest) engineRequest = null;
+    }
+  }
 
   function controls() {
     const unavailable = !host || !online;
@@ -258,6 +351,11 @@ export function mountStudio(win) {
     get('run-state').hidden = false;
     badge(get('run-state'), run.state);
     say('request', run.task);
+    const assignments = roles.map(([role, title, defaultId]) => {
+      const id = run[role + '_engine'] ?? defaultId;
+      return title + ' ' + (engineNames.get(id) ?? '미확인');
+    });
+    say('run-engines', assignments.join(' · '));
     say('detail-workspace', workspaceName(run.workspace_id));
     say('run-id', run.id);
     get('attempts').hidden = !Number.isInteger(run.attempts);
@@ -302,6 +400,8 @@ export function mountStudio(win) {
 
   function disconnected(message = '호스트 연결을 확인하세요.') {
     ++detailSequence;
+    engineRequest = null;
+    engineUnavailable();
     online = false;
     controls();
     say('connection', message);
@@ -330,6 +430,7 @@ export function mountStudio(win) {
         return;
       }
       catalog = loadCatalog();
+      loadEngines();
       const {runs: list} = await api('/runs');
       if (closed || sequence !== listSequence) return;
       runs = list;
@@ -427,6 +528,8 @@ export function mountStudio(win) {
         workspace_id: workspace().id,
         indices: [Number(get('primary').value), ...checkedExtras()],
         task, allow_edits: get('edit-mode').checked,
+        developer_engine: get('developer-engine').value,
+        reviewer_engine: get('reviewer-engine').value,
       };
       keepPending(request);
     }

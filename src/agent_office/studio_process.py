@@ -18,8 +18,9 @@ class LinuxChildren:
         if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
             raise OSError(ctypes.get_errno(), "Unable to own run descendants")
 
-    def spawn(self, argv):
-        return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    def spawn(self, argv, output=None):
+        return subprocess.Popen(argv, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                stdout=output if output is not None else subprocess.DEVNULL)
 
     def drain(self, process):
         if process.poll() is None:
@@ -56,7 +57,7 @@ class WindowsJob:
         info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         win32job.SetInformationJobObject(self.handle, win32job.JobObjectExtendedLimitInformation, info)
 
-    def spawn(self, argv):
+    def spawn(self, argv, output=None):
         # A Windows venv launcher can create the real interpreter before Python
         # code reads stdin. Suspend its primary thread until the job owns it.
         import msvcrt
@@ -68,13 +69,18 @@ class WindowsJob:
             stack.callback(os.close, reader)
             stdin = os.fdopen(writer, "wb")
             try:
-                output = stack.enter_context(open(os.devnull, "wb"))
+                devnull = stack.enter_context(open(os.devnull, "wb"))
+                stdout = devnull
+                if output is not None:
+                    stdout = stack.enter_context(os.fdopen(os.dup(output.fileno()), "wb"))
                 os.set_inheritable(reader, True)
-                os.set_inheritable(output.fileno(), True)
+                os.set_inheritable(stdout.fileno(), True)
+                os.set_inheritable(devnull.fileno(), True)
                 startup = win32process.STARTUPINFO()
                 startup.dwFlags = subprocess.STARTF_USESTDHANDLES
                 startup.hStdInput = msvcrt.get_osfhandle(reader)
-                startup.hStdOutput = startup.hStdError = msvcrt.get_osfhandle(output.fileno())
+                startup.hStdOutput = msvcrt.get_osfhandle(stdout.fileno())
+                startup.hStdError = msvcrt.get_osfhandle(devnull.fileno())
                 handle, thread, _, _ = win32process.CreateProcess(
                     argv[0], subprocess.list2cmdline(argv), None, None, True,
                     win32con.CREATE_SUSPENDED | subprocess.CREATE_NO_WINDOW, None, None, startup,
@@ -129,9 +135,15 @@ class WindowsChild:
 
 
 def run_child(mode, db_path, run_id, payload, stop, *, timeout=None):
+    argv = [sys.executable, "-m", "agent_office.studio_runner", mode, str(db_path), run_id]
+    return run_owned_command(argv, payload, stop, timeout=timeout)
+
+
+def run_owned_command(argv, payload, stop, *, timeout=None, output=None):
+    """Called in a dedicated supervisor so draining never claims unrelated children."""
     tree = WindowsJob() if os.name == "nt" else LinuxChildren()
     try:
-        process = tree.spawn([sys.executable, "-m", "agent_office.studio_runner", mode, str(db_path), run_id])
+        process = tree.spawn(argv, output)
         try:
             # The child reads stdin before starting any Git or vendor command.
             if not stop.is_set():

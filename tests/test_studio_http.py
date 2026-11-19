@@ -133,7 +133,11 @@ def test_studio_edit_review_reopen_and_stop(tmp_path, monkeypatch):
         status, data = request(server, "/api/runs", job)
         assert status == 202, data
         assert request(server, "/api/runs", job)[0] == 202
+        assert request(server, "/api/runs", {**job, "developer_engine": "codex",
+                                             "reviewer_engine": "antigravity"})[0] == 202
+        assert request(server, "/api/runs", {**job, "reviewer_engine": "claude"})[0] == 409
         run = wait_for(server, run_id, {"READY_FOR_HUMAN_REVIEW"})
+        assert (run["developer_engine"], run["reviewer_engine"]) == ("codex", "antigravity")
         assert "fixture edit" in run["developer_output"] and "2 passed" in run["test_output"]
         assert "APPROVED" in run["review_output"] and "value.txt" in run["changes"]
         assert "+new" in run["diff"] and (web / "value.txt").read_text() == "old"

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from .acp import run_acp
 from .engines import SUPPORTED_ENGINES, resolve_executable
 
 
@@ -27,6 +28,10 @@ class CLIAdapter:
         self.timeout = timeout
 
     def command(self, prompt: str, *, allow_edits: bool) -> list[str]:
+        if self.engine == "gemini":
+            return ["gemini", "--acp", "--approval-mode", "auto_edit" if allow_edits else "plan"]
+        if self.engine == "cline":
+            return ["cline", "--acp", "--auto-approve", "false"]
         if self.engine == "antigravity":
             return ["agy", "--input-format", "stream-json", "--output-format", "stream-json",
                     "--mode", "accept-edits" if allow_edits else "plan", "--sandbox",
@@ -37,12 +42,15 @@ class CLIAdapter:
                 "--permission-mode", "acceptEdits" if allow_edits else "plan",
                 "--max-turns", "16",
             ]
+        if self.engine != "codex":
+            raise ValueError(f"No command configured for {self.engine}")
         return [
             "codex", "exec", "--json", "--sandbox",
             "workspace-write" if allow_edits else "read-only", "-",
         ]
 
-    def execute(self, prompt: str, *, workspace: Path, allow_edits: bool) -> AgentResult:
+    def execute(self, prompt: str, *, workspace: Path, allow_edits: bool,
+                strict_completion: bool = False) -> AgentResult:
         # Pass untrusted task text via stdin: safer for Windows .cmd launchers,
         # long prompts, and special characters than putting it in argv.
         argv = self.command(prompt, allow_edits=allow_edits)
@@ -58,16 +66,26 @@ class CLIAdapter:
         env.setdefault("PYTHONIOENCODING", "utf-8")
         task_input = json.dumps({"event": "user", "message": {"content": prompt}}, ensure_ascii=False) + "\n" if self.engine == "antigravity" else prompt
         try:
+            if self.engine in ("gemini", "cline"):
+                message, session = asyncio.run(run_acp(
+                    self.engine, argv, prompt, workspace, allow_edits, env, self.timeout, strict_completion,
+                ))
+                return AgentResult(0, message[:12000], session, len(message) > 12000)
             completed = subprocess.run(
                 argv, cwd=workspace, input=task_input, env=env, capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=self.timeout,
                 check=False,
             )
-        except subprocess.TimeoutExpired:
+        except (ValueError, RecursionError) as exc:
+            return AgentResult(1, f"{self.engine} protocol failure: {exc}")
+        except (subprocess.TimeoutExpired, TimeoutError):
             return AgentResult(124, f"{self.engine} timed out after {self.timeout} seconds")
         except OSError as exc:
             return AgentResult(126, f"Unable to start {self.engine}: {exc}")
 
+        if strict_completion and self.engine in ("codex", "claude") and completed.returncode == 0:
+            from .fixture_completion import parse_fixture_completion
+            return parse_fixture_completion(self.engine, completed.stdout)
         if self.engine == "antigravity":
             parsed = parse_antigravity(completed.stdout)
             if completed.returncode == 0:
@@ -95,6 +113,9 @@ def parse_output(engine: str, output: str) -> tuple[str, str | None]:
         except (ValueError, TypeError):
             pass
         return output.strip(), None
+
+    if engine != "codex":
+        raise ValueError(f"{engine} requires its own transport decoder")
 
     last_message = ""
     session_id = None
