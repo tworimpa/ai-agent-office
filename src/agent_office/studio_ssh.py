@@ -11,6 +11,7 @@ from typing import BinaryIO
 from .models import validate_id
 from .office_wire import check_office_reply, office_offset
 from .improvement_wire import check_improvement_reply, improvement_route
+from .version_wire import check_version_reply, version_route
 from .engines import SUPPORTED_ENGINES
 from .away_expert import RULES, validate_policy
 from .team_wire import check_run_features, check_skill_reply
@@ -47,6 +48,8 @@ def is_peer_route(method: str, route: str) -> bool:
         return False
     if route.startswith("/improvements"):
         return improvement_route(method, route) is not None
+    if route.startswith("/versions"):
+        return version_route(method, route) is not None
     if office_offset(route) is not None:
         return method == "GET"
     if route in ("/workspaces", "/runs", "/skills"):
@@ -86,6 +89,8 @@ def _request_bytes(host: RemoteHost, method: str, route: str, payload: dict | No
     address = f"127.0.0.1:{host.port}"
     headers = [f"{method} /api/peer/{host.journal_id}{route} HTTP/1.0",
                f"Host: {address}", "Connection: close"]
+    if method == "GET" and route.startswith("/improvements/candidates/"):
+        headers.append("X-Agent-Office-Candidate-Basis: 1")
     body = b""
     if method == "POST":
         if not isinstance(payload, dict):
@@ -121,6 +126,10 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
         return
 
     improvement = improvement_route(method, route)
+    version = version_route(method, route)
+    if version is not None:
+        check_version_reply(status, data, version)
+        return
     if improvement is not None:
         check_improvement_reply(status, data, improvement, payload)
         return

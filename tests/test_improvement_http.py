@@ -75,6 +75,10 @@ def test_remote_generation_publication_and_terminal_decision(tmp_path, monkeypat
             assert detail["state"] == "passed" and detail["validation"] == "passed"
             assert detail["job_id"] == job_id and detail["exit_code"] == 0 and "+after" in detail["diff"]
             assert detail["decision"] is None and get("")["view"]["stable"] == base
+            candidate_route = f"/api/peer/{host.journal_id}/improvements/candidates/{candidate_id}"
+            assert "stale_base" not in http(peer, candidate_route)[1]["candidate"]
+            with_basis = http(peer, candidate_route, **{"X-Agent-Office-Candidate-Basis": "1"})
+            assert with_basis[1]["candidate"]["stale_base"] is False
             moved = view.rename(view.with_suffix(".offline"))
             try:
                 assert not get("")["view"]["available"]

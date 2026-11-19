@@ -1,0 +1,27 @@
+.version-toolbar, .current-version, .pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.version-toolbar { margin-bottom: 18px; }
+.host-picker { margin: 0; }
+.host-picker a, .link-button, .rollback-help summary { min-height: 44px; align-content: center; }
+.version-toolbar > button { flex: none; }
+#page-note:not(:empty) { margin-bottom: 14px; color: #795311; }
+.current-version { justify-content: start; gap: 16px 48px; flex-wrap: wrap; margin-bottom: 22px; padding: 18px 22px; background: #e9eee2; border-inline-start: 4px solid #476547; }
+.current-version code, .current-version strong, #history small { display: block; overflow-wrap: anywhere; }
+.current-version code, #published, .pager, #compare-note { font-size: .83rem; color: var(--muted); }
+#history { margin: 0; padding: 0; list-style: none; max-height: min(58vh, 32rem); overflow-y: auto; }
+#history li { padding: 11px 22px; }
+#history li + li, .pager { border-top: 1px solid var(--border); }
+#history time { display: block; color: var(--muted); font-size: .8rem; }
+.pager { padding: 4px 16px; }
+.compare-body { padding: 18px 22px; }
+.compare-body label { display: block; margin-bottom: 5px; font-size: .87rem; font-weight: 650; }
+#compare-note { margin-block: 12px; }
+#comparison h3 { font-size: .94rem; margin-block: 14px 5px; }
+#files { padding-inline-start: 20px; font-size: .85rem; overflow-wrap: anywhere; }
+#diff { padding: 12px; background: #f4f6f1; max-height: 28rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: .8rem/1.6 "IBM Plex Mono", Consolas, monospace; }
+.rollback-help { margin-top: 16px; border-top: 1px solid var(--border); font-size: .85rem; }
+.rollback-help code { display: block; margin-top: 8px; overflow-wrap: anywhere; }
+@media (max-width: 680px) {
+  .page-head { align-items: flex-start; flex-direction: column; }
+  .compare-body, .current-version, #history li { padding-inline: 16px; }
+  .role-pickers { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+}

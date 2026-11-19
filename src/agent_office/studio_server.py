@@ -20,6 +20,7 @@ from .office_state import office_snapshot
 from .office_wire import office_offset
 from . import improvement_api
 from .improvement_wire import improvement_route
+from .version_wire import version_route
 from .studio_improvements import StudioImprovements
 from .store import TaskStore
 from .studio_catalog import StudioCatalog
@@ -39,6 +40,9 @@ ASSETS = {
     "/improvements": ("improvements.html", "text/html"),
     "/improvements.js": ("improvements.js", "text/javascript"),
     "/improvements.css": ("improvements.css", "text/css"),
+    "/versions": ("versions.html", "text/html"),
+    "/versions.js": ("versions.js", "text/javascript"),
+    "/versions.css": ("versions.css", "text/css"),
 }
 MAX_BODY = 128 * 1024
 
@@ -172,7 +176,7 @@ class StudioHandler(ObserverHandler):
                 return
         if parsed.query:
             studio_page = parsed.path == "/" and _valid_page_query(parsed.query)
-            office_page = parsed.path == "/office" and re.fullmatch(r"host=(?:local|[a-f0-9]{32})", parsed.query)
+            office_page = parsed.path in ("/office", "/versions") and re.fullmatch(r"host=(?:local|[a-f0-9]{32})", parsed.query)
             improvements_page = parsed.path == "/improvements" and _improvements_query(parsed.query)
             if write or not (studio_page or office_page or improvements_page):
                 raise ValueError("요청 주소를 확인하세요.")
@@ -225,12 +229,27 @@ class StudioHandler(ObserverHandler):
 
     def _local_api(self, path, write):
         catalog, runner = self.server.catalog, self.server.runner
+        if path.startswith("/api/versions"):
+            from . import stable_view
+            target = version_route("POST" if write else "GET", path.removeprefix("/api"))
+            if target is None:
+                self._error(404, "NOT_FOUND")
+            else:
+                lookup = stable_view.versions if target[0] == "page" else stable_view.compare
+                self._reply(200, lookup(self.server.release_view, self.server.journal_id, *target[1:]))
+            return
         if path.startswith("/api/improvements"):
             target = improvement_route("POST" if write else "GET", path.removeprefix("/api"))
             if target is None:
                 self._error(404, "NOT_FOUND")
             else:
                 status, data = improvement_api.dispatch(self.server, target, self._json_body() if write else None)
+                # Earlier SSH clients validate the exact candidate schema.
+                if (target[0] in ("candidate", "candidates") and getattr(self, "_peer_reply", False)
+                        and self.headers.get("X-Agent-Office-Candidate-Basis") != "1"):
+                    rows = [data["candidate"]] if target[0] == "candidate" else data["items"]
+                    for row in rows:
+                        row.pop("stale_base", None)
                 self._reply(status, data)
             return
         if not write and path.startswith("/api/"):

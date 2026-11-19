@@ -156,8 +156,8 @@ def test_concurrent_publishers_and_crash_after_submission(setup, monkeypatch):
     db, root, view, artifact = setup
     ready(db, artifact)
     real_submit = release_store.submit
-    def crash_after_submit(*args):
-        real_submit(*args)
+    def crash_after_submit(*args, **kwargs):
+        real_submit(*args, **kwargs)
         raise KeyboardInterrupt
     with monkeypatch.context() as sub:
         sub.setattr(release_store, "submit", crash_after_submit)
@@ -193,11 +193,11 @@ def test_transient_import_can_resume_without_busy_retry(setup, monkeypatch):
     monkeypatch.setattr(publication.time, "time", lambda: clock[0])
     original = release_store.submit
     calls = []
-    def flaky(root, proposal):
+    def flaky(root, proposal, **kwargs):
         calls.append(1)
         if len(calls) == 1:
             raise OSError("temporary failure with private operator path")
-        return original(root, proposal)
+        return original(root, proposal, **kwargs)
     monkeypatch.setattr(release_store, "submit", flaky)
     monkeypatch.setattr(release_validation, "validate_candidate", lambda repo, sha, image: result(sha, image))
     for i in range(2):

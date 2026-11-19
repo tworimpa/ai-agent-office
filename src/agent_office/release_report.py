@@ -47,8 +47,9 @@ def render_review(record):
                  f'<pre>{_html(validation["output"])}</pre>')
     history = json.dumps(record["history"], ensure_ascii=False, indent=2)
     stale = ""
-    if record["base"] != record["stable"] and record["state"] not in ("approved", "rejected"):
-        stale = "<p>안정 소스의 기준이 바뀌었습니다. 현재 안정 커밋에서 새 후보를 제안해야 합니다.</p>"
+    if record.get("stale_base", record["base"] != record["stable"]) and record["state"] not in ("approved", "rejected"):
+        state = "기준 버전 변경 · 재접수 필요"
+        stale = "<p>후보를 접수한 뒤 안정 버전이 바뀌었습니다. 현재 순번에서 다시 접수하고 검증하세요.</p>"
     return f"""<!doctype html>
 <html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">

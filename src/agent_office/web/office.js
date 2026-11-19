@@ -17,6 +17,7 @@ export function mountOffice(win) {
   const doc = win.document;
   const get = id => doc.getElementById(id);
   const selected = new URL(win.location.href).searchParams.getAll('host');
+  if (selected.length === 1 && idPattern.test(selected[0])) get('versions-link').href = '/versions?host=' + selected[0];
   const hostURL = id => id ? '/office?host=' + id : '/office';
   const nodes = new Map();
   let cycle = 0, timer, disposed = false;
