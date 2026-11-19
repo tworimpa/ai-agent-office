@@ -10,8 +10,8 @@ import re
 import sqlite3
 import subprocess
 import tempfile
-from uuid import uuid4
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from . import release_validation, stable_history
 from .engines import resolve_executable
@@ -281,7 +281,7 @@ def _check_review_reference(reference):
         raise ValueError("Specify a HTTPS review URL without credentials, query or fragment")
 
 
-def revision_source(proposal, sha):
+def _revision_source(proposal, sha):
     source = proposal.get("source")
     if source is None:
         return None
@@ -369,7 +369,7 @@ def review_with_version(root, id):
         result["stale_base"] = (result["state"] not in ("approved", "rejected")
                                 and (base_seq, result["base"]) != (current["seq"], current["sha"]))
     proposal = json.loads(proposal)
-    source = revision_source(proposal, result["sha"])
+    source = _revision_source(proposal, result["sha"])
     result.update(proposal=proposal, diff=_diff(git, result["base"], result["sha"], allow_binary=source is not None),
                   history=history, validation=next((row["details"] for row in reversed(history)
                                                      if row["event"] == "validation_finished"), None))

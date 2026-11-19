@@ -77,7 +77,7 @@ agent-office improve --release ../office-releases review CANDIDATE_ID --html rev
 agent-office improve --release ../office-releases approve CANDIDATE_ID --sha REVIEWED_COMMIT
 ```
 
-후보에는 지정한 Git 커밋의 SHA와 파일을 그대로 보관합니다. 텍스트 변경은 diff로 검토하고, Git이 바이너리로 구분한 파일은 경로와 Git 객체 ID로 검토합니다. 격리 검증 뒤 운영자 터미널에서 확인 문구를 입력하면 승격됩니다. 서비스 재시작에는 별도 [배포 확인](studio-deployment.md#검토배포복구)이 필요합니다.
+후보에는 지정한 Git 커밋의 SHA와 파일을 그대로 보관합니다. 운영자 보고서에서 텍스트 diff와 바이너리 파일의 경로·Git 객체 ID를 검토합니다. 격리 검증과 운영자 터미널 확인을 거쳐 승격하면 Studio의 안정 버전 이력에 게시할 수 있습니다. 서비스 재시작에는 별도 [배포 확인](studio-deployment.md#검토배포복구)이 필요합니다.
 
 ## 작업실 화면 연결
 

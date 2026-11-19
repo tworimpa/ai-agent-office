@@ -270,8 +270,7 @@ def _projection(db, record, proposal, job_id, cached, root):
         diff, diff_truncated = detail["diff"], detail["diff_truncated"]
     else:
         diff, diff_truncated = _bounded(
-            release_store._diff(root / "objects.git", record["base"], record["sha"],
-                                allow_binary=release_store.revision_source(proposal, record["sha"]) is not None), 48 * 1024)
+            release_store._diff(root / "objects.git", record["base"], record["sha"]), 48 * 1024)
     summary = {"id": cid, "job_id": job_id, "sha": record["sha"], "base": record["base"],
                "stale_base": _stale_base(record),
                "state": record["state"], "title": proposal["title"], "validation": validation,
@@ -300,8 +299,7 @@ def _publish_one(root, journal, view, cid, *, journal_changed=True):
                               (cid,)).fetchone()
         proposal = json.loads(record["proposal"])
         try:
-            source = release_store.revision_source(proposal, record["sha"])
-            if source is None and (journal_changed or not cached or cached["fingerprint"] != record["fingerprint"]):
+            if journal_changed or not cached or cached["fingerprint"] != record["fingerprint"]:
                 verify_history(journal, proposal)
         except (ValueError, OfficeError) as exc:
             # A release store may also contain valid imports from other journals.

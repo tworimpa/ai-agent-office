@@ -17,9 +17,10 @@ class OperatorTerminal(io.StringIO):
 
 
 def test_import_revision_keeps_git_identity_and_normal_approval(tmp_path, monkeypatch, capsys, request):
-    from agent_office import release_store, stable_history
+    from agent_office import release_store, release_view, stable_history, stable_view
+    from test_studio_http import studio
 
-    _, repo, base = proposal_fixture(tmp_path, monkeypatch)
+    journal, repo, base = proposal_fixture(tmp_path, monkeypatch)
     root = tmp_path / "release"
     docker = os.environ.get("OFFICE_DOCKER_ACCEPTANCE") == "1"
     image = request.getfixturevalue("trusted_validator_image") if docker else "sha256:" + "b" * 64
@@ -77,6 +78,11 @@ def test_import_revision_keeps_git_identity_and_normal_approval(tmp_path, monkey
     assert json.loads(capsys.readouterr().out)["state"] == "approved"
     assert release_store.release_status(root)["stable"] == sha
     assert "Binary files" in stable_history.review_rollback(root, 1)["diff"]
+    publication = tmp_path / "published.sqlite3"
+    with studio(journal) as server:
+        published = release_view.sync_once(journal, root, publication, stable_history=True)
+        assert published["stable"] == sha and published["candidates"] == 0
+        assert stable_view.versions(publication, server.journal_id)["current"]["sha"] == sha
 
 
 def proposal_fixture(tmp_path, monkeypatch):
