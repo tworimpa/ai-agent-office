@@ -80,7 +80,7 @@ def test_no_approval_for_unsupported_scope(tmp_path, monkeypatch, scenario):
 
 
 @pytest.mark.parametrize("scenario", ["bad-mode", "withdrawn", "changed-diff",
-                                      "wrong-thread", "wrong-turn", "unexpected-receipt", "failed-turn", "no-final", "ignored-command-denial", "false-marker", "trailing-turn"])
+                                      "wrong-thread", "wrong-turn", "unexpected-receipt", "failed-turn", "no-final", "ignored-command-denial", "false-marker", "trailing-turn", "buffered-trailing"])
 def test_stale_or_ambiguous_provider_cannot_complete(tmp_path, monkeypatch, scenario):
     operator, result = fixture(tmp_path, monkeypatch, scenario, operator=Operator(delay=scenario == "withdrawn"))
     assert result.returncode and not operator.confirmed
@@ -133,6 +133,12 @@ def server():
         user = {"type": "userMessage", "id": "user" + turn}
         for method in ("item/started", "item/completed"):
             emit(method=method, params={"threadId": "thread", "turnId": turn, "item": user})
+        if scenario == "buffered-trailing":
+            final = {"id": "final", "type": "agentMessage", "phase": "final_answer", "text": "done"}
+            for method in ("item/started", "item/completed"):
+                emit(method=method, params={"threadId": "thread", "turnId": turn, "item": final})
+            for _ in range(2):
+                emit(method="turn/completed", params={"threadId": "thread", "turn": {"id": turn, "status": "completed"}})
         emit(id=start["id"], result={"turn": {"id": turn, "items": [], "status": "inProgress"}})
         return turn
 
@@ -152,6 +158,9 @@ def server():
     emit(id=start["id"], result={"sandbox": policy, "cwd": str(Path.cwd()), "approvalsReviewer": "user",
                                  "approvalPolicy": "on-request", "thread": {"id": "thread"}})
     turn = start_turn(True)
+    if scenario == "buffered-trailing":
+        assert not sys.stdin.buffer.readline()
+        return
     if scenario in ("approve", "reject"):
         agent("AGENT_OFFICE_QUESTION\n어느 방식?")
         end()

@@ -113,7 +113,7 @@ class CodexSession:
 
     async def event(self):
         while True:
-            msg = self.early.popleft() if self.early else await self.read()
+            msg = self.early.popleft()[0] if self.early else await self.read()
             if "method" not in msg:
                 return msg
             self.check_binding(msg)
@@ -132,7 +132,7 @@ class CodexSession:
                 size += self.last_size
                 if len(self.early) >= 128 or size > 1024 * 1024:
                     raise ProtocolError("too many unbound Codex events")
-                self.early.append(msg)
+                self.early.append((msg, self.last_size))
                 msg = await self.read()
         else:
             msg = await self.event()
@@ -175,12 +175,16 @@ class CodexSession:
         self.process.stdin.close()
         total = 0
         for _ in range(128):
-            msg = await self.read(allow_eof=True)
+            if self.early:
+                msg, size = self.early.popleft()
+            else:
+                msg = await self.read(allow_eof=True)
+                size = self.last_size
             if msg is None:
                 if await self.process.wait() != 0:
                     raise ProtocolError("Codex exited unsuccessfully")
                 return
-            total += self.last_size
+            total += size
             if ("id" in msg or "method" not in msg or total > 1024 * 1024
                     or msg["method"] not in INFORMATIONAL | {"thread/closed"}):
                 raise ProtocolError("unexpected Codex shutdown record")
@@ -349,7 +353,7 @@ class CodexSession:
             if self.turn in self.turn_ids or turn.get("status") != "inProgress":
                 raise ProtocolError("Codex did not start a distinct active turn")
             self.turn_ids.add(self.turn)
-            for early in self.early:
+            for early, _ in self.early:
                 self.check_binding(early)
             if decision:
                 self.inbox.delivered(decision)
