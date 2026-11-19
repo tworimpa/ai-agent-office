@@ -55,13 +55,15 @@ def test_snapshot_preserves_raw_bytes_and_mode_despite_attributes_and_dirty_work
 
 
 @pytest.mark.parametrize(("mode", "path"), [
-    ("120000", "link"), ("100644", "aux.txt"), ("100644", "dir/long~1"),
+    ("120000", "link"), ("100644", "aux.txt"), ("100644", "long~1"),
     ("100644", "HiDdEn"),
 ])
 def test_unrepresentable_tree_fails_closed(repo, mode, path):
     blob = git(repo, "hash-object", "-w", "--stdin", input=b"data")
-    git(repo, "update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
-    tree = git(repo, "write-tree")
+    # A candidate received from another filesystem can contain names that
+    # Windows Git refuses to place in a working index. Construct its tree directly.
+    entries = git(repo, "ls-tree", "HEAD") + f"\n{mode} blob {blob}\t{path}\n"
+    tree = git(repo, "mktree", input=entries.encode())
     sha = git(repo, "commit-tree", tree, "-m", "candidate")
     with pytest.raises(ValueError):
         validation.committed_files(repo / ".git", sha)
