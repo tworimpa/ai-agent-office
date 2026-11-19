@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#171c18">
+  <title>AI Agent Office · 작업실</title>
+  <link rel="stylesheet" href="/workspace-office.css">
+  <script type="module" src="/workspace-office.js"></script>
+</head>
+<body>
+  <a class="skip" href="#office-main">작업실로 건너뛰기</a>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="AI Agent Office 홈">
+      <span class="seal" aria-hidden="true">房</span>
+      <span>AI Agent Office</span>
+    </a>
+    <div class="top-actions">
+      <p id="connection" class="connection" role="status">연결 중</p>
+      <nav class="operations-nav" aria-label="운영 메뉴">
+        <a id="versions-link" class="quiet" href="/versions">안정 버전</a>
+        <a id="classic" class="quiet" href="/studio">운영 화면 <span aria-hidden="true">↗</span></a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="office-main" class="shell">
+    <aside class="sidebar" aria-label="작업공간과 기록">
+      <div class="sidebar-head">
+        <label for="host">실행 호스트</label>
+        <select id="host" disabled><option>불러오는 중</option></select>
+      </div>
+      <section class="sidebar-section" aria-labelledby="workspace-heading">
+        <div class="section-title">
+          <h2 id="workspace-heading">작업공간</h2>
+          <button type="button" id="register" class="icon-button" aria-label="작업공간 등록" title="작업공간 등록" disabled>+</button>
+        </div>
+        <nav id="workspaces" aria-label="작업공간 선택"></nav>
+      </section>
+      <section id="history" class="sidebar-section" aria-labelledby="history-heading" hidden>
+        <div class="section-title">
+          <h2 id="history-heading">작업 기록</h2>
+          <button type="button" id="refresh" class="icon-button refresh" aria-label="지금 새로고침" title="지금 새로고침">↻</button>
+        </div>
+        <nav id="run-list" aria-label="실행 선택"></nav>
+        <button type="button" id="history-older" class="secondary" hidden>이전 작업 더 보기</button>
+        <p id="history-note" class="form-note" role="status"></p>
+      </section>
+    </aside>
+
+    <div class="workspace-main">
+      <section id="empty-room" class="empty-room">
+        <h1 id="empty-title">작업실</h1>
+        <p id="empty-note">작업공간을 불러오는 중입니다.</p>
+        <button type="button" id="empty-register" class="primary" hidden>작업공간 등록</button>
+      </section>
+      <section id="room" aria-labelledby="room-title" hidden>
+        <div class="room-heading">
+          <div class="room-identity">
+            <div class="section-kicker"><span aria-hidden="true"></span> 프로젝트 작업실</div>
+            <h1 id="room-title"></h1>
+          </div>
+          <div class="room-actions">
+            <button type="button" id="inbox" class="secondary" aria-haspopup="dialog" disabled>요청함 <span id="inbox-count" class="request-count" hidden></span></button>
+            <button type="button" id="settings" class="secondary" aria-haspopup="dialog" disabled>작업실 설정</button>
+          </div>
+        </div>
+
+        <div class="room-scene" aria-label="작업실에 있는 에이전트">
+          <div class="scene-seats">
+            <button type="button" class="seat" data-person="coordinator" aria-haspopup="dialog">
+              <span class="portrait" aria-hidden="true"></span>
+              <span class="seat-copy">
+                <span class="seat-name">조정자</span>
+                <span class="seat-role">작업 배정 · 기술 위임</span>
+                <span class="seat-line">새 작업을 말씀해 주세요.</span>
+              </span>
+              <span class="seat-arrow" aria-hidden="true">›</span>
+            </button>
+            <button type="button" class="seat" data-person="developer" aria-haspopup="dialog">
+              <span class="portrait" aria-hidden="true"></span>
+              <span class="seat-copy">
+                <span class="seat-name"></span>
+                <span class="seat-role"></span>
+                <span class="seat-task" hidden></span>
+                <span class="seat-line"></span>
+              </span>
+              <span class="seat-arrow" aria-hidden="true">›</span>
+            </button>
+            <button type="button" class="seat" data-person="reviewer" aria-haspopup="dialog">
+              <span class="portrait" aria-hidden="true"></span>
+              <span class="seat-copy">
+                <span class="seat-name"></span>
+                <span class="seat-role"></span>
+                <span class="seat-task" hidden></span>
+                <span class="seat-line"></span>
+              </span>
+              <span class="seat-arrow" aria-hidden="true">›</span>
+            </button>
+          </div>
+        </div>
+
+        <section class="ledger" aria-labelledby="ledger-heading">
+          <div class="ledger-heading">
+            <div>
+              <p id="ledger-label" class="section-kicker">작업 기록</p>
+              <h2 id="ledger-heading">선택한 작업이 없습니다</h2>
+            </div>
+            <div class="ledger-actions">
+              <button type="button" id="stop-run" class="ledger-stop" hidden>실행 중지</button>
+              <a id="detail-link" class="quiet dark" href="/studio" hidden>실행 상세 <span aria-hidden="true">↗</span></a>
+            </div>
+          </div>
+          <p id="ledger-note">조정자에게 요청을 보내 작업을 시작할 수 있습니다.</p>
+          <div id="ledger-result" hidden></div>
+          <p id="detail-status" role="status"></p>
+          <p id="stop-note" role="status"></p>
+        </section>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="conversation" class="dialog chat-dialog" aria-labelledby="chat-title" aria-describedby="chat-context">
+    <header class="dialog-header">
+      <span class="dialog-portrait portrait" id="chat-portrait" aria-hidden="true"></span>
+      <div>
+        <h2 id="chat-title"></h2>
+        <p id="chat-context"></p>
+      </div>
+      <form method="dialog"><button type="submit" class="close-button" aria-label="대화 닫기">×</button></form>
+    </header>
+    <div id="chat-log" class="chat-log" aria-label="대화 기록" tabindex="0"></div>
+    <p id="chat-request-note" class="form-note" role="status"></p>
+    <form id="chat-form" class="chat-form">
+      <label for="message" id="chat-label">요청할 작업</label>
+      <textarea id="message" rows="3" required></textarea>
+      <details id="assignment-options">
+        <summary>작업별 옵션</summary>
+        <label for="run-delegation">기술 질문 위임</label>
+        <select id="run-delegation">
+          <option value="">작업실 기본값</option>
+          <option value="true">조정자가 결정</option>
+          <option value="false">나에게 질문</option>
+        </select>
+        <fieldset id="assignment-folders" hidden></fieldset>
+      </details>
+      <label class="checkbox" id="edit-option"><input type="checkbox" id="allow-edits"> 파일 수정 허용</label>
+      <p id="chat-note" class="form-note" role="status"></p>
+      <button type="submit" id="send" class="primary">보내기</button>
+    </form>
+  </dialog>
+
+  <dialog id="requests" class="dialog" aria-labelledby="requests-title">
+    <header class="dialog-header">
+      <h2 id="requests-title">요청함</h2>
+      <form method="dialog"><button type="submit" class="close-button" aria-label="요청함 닫기">×</button></form>
+    </header>
+    <div id="request-log" class="request-log" tabindex="-1"></div>
+    <p id="request-note" class="form-note" role="status"></p>
+  </dialog>
+
+  <dialog id="room-settings" class="dialog" aria-labelledby="settings-title">
+    <header class="dialog-header">
+      <h2 id="settings-title">작업실 설정</h2>
+      <form method="dialog"><button type="submit" class="close-button" aria-label="설정 닫기">×</button></form>
+    </header>
+    <form id="settings-form" class="settings-form">
+      <label class="checkbox"><input id="room-delegation" type="checkbox"> 기술 질문을 조정자에게 위임</label>
+      <p class="field-help">제품 동작을 바꾸는 결정과 권한 요청은 사용자가 확인합니다.</p>
+      <div class="settings-people">
+        <fieldset>
+          <legend>담당자</legend>
+          <label for="developer-name">이름</label>
+          <input id="developer-name" required maxlength="40">
+          <label for="developer-engine">엔진</label>
+          <select id="developer-engine"></select>
+          <div id="developer-skills"></div>
+        </fieldset>
+        <fieldset>
+          <legend>검토자</legend>
+          <label for="reviewer-name">이름</label>
+          <input id="reviewer-name" required maxlength="40">
+          <label for="reviewer-engine">엔진</label>
+          <select id="reviewer-engine"></select>
+          <div id="reviewer-skills"></div>
+        </fieldset>
+      </div>
+      <p id="settings-note" class="form-note" role="status"></p>
+      <button type="submit" id="save-settings" class="primary">설정 저장</button>
+    </form>
+  </dialog>
+
+  <dialog id="register-dialog" class="dialog" aria-labelledby="register-title">
+    <header class="dialog-header">
+      <h2 id="register-title">작업공간 등록</h2>
+      <form method="dialog"><button type="submit" class="close-button" aria-label="등록 닫기">×</button></form>
+    </header>
+    <form id="register-form" class="settings-form">
+      <label for="workspace-name">작업공간 이름</label>
+      <input id="workspace-name" required>
+      <label for="workspace-paths">호스트의 폴더 경로</label>
+      <textarea id="workspace-paths" rows="4" required aria-describedby="paths-help"></textarea>
+      <p id="paths-help" class="field-help">경로를 한 줄에 하나씩 입력하세요.</p>
+      <p id="register-note" class="form-note" role="status"></p>
+      <button type="submit" id="save-workspace" class="primary">작업공간 등록</button>
+    </form>
+  </dialog>
+</body>
+</html>

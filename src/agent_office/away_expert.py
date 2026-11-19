@@ -15,14 +15,14 @@ RULES = {
     "python_version": "이 프로젝트가 요구하는 Python 버전은 무엇인가요?",
     "node_version": "이 프로젝트가 요구하는 Node.js 버전은 무엇인가요?",
 }
-_FILES = {
-    "test_command": {"README.md", "AGENTS.md"},
-    "python_version": {"pyproject.toml"},
-    "node_version": {"package.json"},
+EVIDENCE_FILES = {
+    "test_command": ("README.md", "AGENTS.md"),
+    "python_version": ("pyproject.toml",),
+    "node_version": ("package.json",),
 }
 
 
-def _rule(value) -> dict:
+def validate_rule(value) -> dict:
     if not isinstance(value, dict) or set(value) != {"topic", "path"}:
         raise ValueError("위임 규칙에는 질문 종류와 근거 파일을 지정하세요.")
     topic, path = value["topic"], value["path"]
@@ -31,7 +31,7 @@ def _rule(value) -> dict:
     if not isinstance(path, str) or len(path) > 240:
         raise ValueError("근거 파일은 저장소 안의 문서여야 합니다.")
     parts = path.split("/")
-    if (parts[-1] not in _FILES[topic]
+    if (parts[-1] not in EVIDENCE_FILES[topic]
             or any(not re.fullmatch(r"[^\W_][\w. -]{0,62}", part) or part.endswith((".", " "))
                    or re.fullmatch(r"(?i:con|prn|aux|nul|(?:com|lpt)[1-9])(?:\..*)?", part)
                    for part in parts[:-1])
@@ -48,7 +48,7 @@ def validate_policy(value) -> dict:
         raise ValueError("지원되는 전문가·검증자 엔진을 선택하세요.")
     if not isinstance(value["rules"], list) or not 1 <= len(value["rules"]) <= len(RULES):
         raise ValueError("위임할 기술 질문을 선택하세요.")
-    rules = [_rule(rule) for rule in value["rules"]]
+    rules = [validate_rule(rule) for rule in value["rules"]]
     if len({rule["topic"] for rule in rules}) != len(rules):
         raise ValueError("한 질문에는 한 개의 근거 파일만 지정하세요.")
     return {"rules": sorted(rules, key=lambda rule: rule["topic"]),
@@ -57,20 +57,15 @@ def validate_policy(value) -> dict:
 
 def in_scope(path: str, folders: list[str]) -> bool:
     relative = PurePosixPath(path)
-    return (any(path in names for names in _FILES.values())
+    return (any(path in names for names in EVIDENCE_FILES.values())
             or any(relative.is_relative_to(folder) for folder in folders))
 
 
-def _consult(role, engine, material, answer, guidance, scratch_root, on_stage):
+def consult_role(role, engine, material, instructions, validate, guidance, scratch_root, on_stage):
     failure = role + "_failed"
-    role_fields = "answer, line, quote"
-    if role == "verifier":
-        role_fields += ', and verdict (the literal "verified" only when the evidence supports your answer)'
     payload = json.dumps(material, ensure_ascii=False)
-    prompt = (f"AWAY_{role.upper()}\n{guidance}Read evidence.json in this directory. Independently answer the technical "
-              f"question using only its numbered evidence. Return just one JSON object with {role_fields}. "
-              "The answer is the exact command or version constraint alone. Copy line and quote exactly. "
-              "If uncertain return {}. Do not run commands or change files.\n" + payload)
+    prompt = (f"AWAY_{role.upper()}\n{guidance}Read evidence.json in this directory. "
+              f"{instructions} If uncertain return {{}}. Do not run commands or change files.\n" + payload)
     entered = False
     try:
         with tempfile.TemporaryDirectory(prefix=f"office-away-{role}-", dir=scratch_root) as directory:
@@ -83,17 +78,7 @@ def _consult(role, engine, material, answer, guidance, scratch_root, on_stage):
             result = execute_fixture(engine, prompt, workspace=scratch, allow_edits=False, timeout=45)
         if result.returncode or result.truncated or len(result.message) > 2048:
             raise ValueError
-        response = json.loads(result.message, object_pairs_hook=unique_object)
-        keys = {"answer", "line", "quote"}
-        if role == "verifier":
-            keys.add("verdict")
-        if (not isinstance(response, dict) or set(response) != keys
-                or response["answer"] != answer or type(response["line"]) is not int
-                or (role == "verifier" and response["verdict"] != "verified")):
-            raise ValueError
-        citation = {"line": response["line"], "quote": response["quote"]}
-        if citation not in material["evidence"]:
-            raise ValueError
+        citation = validate(json.loads(result.message, object_pairs_hook=unique_object))
     except (OSError, ValueError, TypeError, RecursionError):
         if entered:
             on_stage(role, "FAILED")
@@ -101,6 +86,43 @@ def _consult(role, engine, material, answer, guidance, scratch_root, on_stage):
     if entered:
         on_stage(role, "COMPLETED")
     return citation
+
+
+def _consult(role, engine, material, answer, guidance, scratch_root, on_stage):
+    verifying = role == "verifier"
+    instructions = ("Independently answer the technical question using only its numbered evidence. "
+                    "Return just one JSON object with answer, line and quote"
+                    + (', and verdict ("verified" only when the evidence supports your answer)' if verifying else "")
+                    + ". The answer is the exact command or version constraint alone. Copy line and quote exactly.")
+
+    def validate(response):
+        keys = {"answer", "line", "quote", "verdict"} if verifying else {"answer", "line", "quote"}
+        if (not isinstance(response, dict) or set(response) != keys
+                or response["answer"] != answer or type(response["line"]) is not int
+                or (verifying and response["verdict"] != "verified")):
+            raise ValueError
+        citation = {"line": response["line"], "quote": response["quote"]}
+        if citation not in material["evidence"]:
+            raise ValueError
+        return citation
+
+    return consult_role(role, engine, material, instructions, validate, guidance, scratch_root, on_stage)
+
+
+def document_fact(repo: Path, topic: str, path: str, document: str,
+                  folders: list[str] | None) -> tuple[str, list[dict]]:
+    project_names = []
+    if topic == "test_command":
+        # A run's linked worktree has a generated name. The ordinary checkout
+        # containing the common .git directory supplies the project title.
+        common_dir = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        common = Path(os.fsdecode(common_dir.rstrip(b"\r\n")))
+        if common.name == ".git":
+            project_names.append(common.parent.name)
+        directory = PurePosixPath(path).parent
+        if folders and directory.name and str(directory) in folders:
+            project_names.append(directory.name)
+    return derive_fact(topic, document, project_names=project_names)
 
 
 def assess(repo: Path, revision: str, rule: dict, specialist_engine: str, verifier_engine: str,
@@ -115,18 +137,7 @@ def assess(repo: Path, revision: str, rule: dict, specialist_engine: str, verifi
     if folders is not None and not in_scope(path, folders):
         raise DelegationDeferred("out_of_scope")
     document = read_document(repo, revision, path)
-    project_names = []
-    if topic == "test_command":
-        # A run's linked worktree has a generated name. The ordinary checkout
-        # containing the common .git directory supplies the project title.
-        common_dir = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
-        common = Path(os.fsdecode(common_dir.rstrip(b"\r\n")))
-        if common.name == ".git":
-            project_names.append(common.parent.name)
-        directory = PurePosixPath(path).parent
-        if folders and directory.name and str(directory) in folders:
-            project_names.append(directory.name)
-    answer, citations = derive_fact(topic, document, project_names=project_names)
+    answer, citations = document_fact(repo, topic, path, document, folders)
     material = {"topic": topic, "question": RULES[topic], "path": path, "revision": revision, "evidence": citations}
     guidance = skill_guidance or {}
     proposal = _consult("specialist", specialist_engine, material, answer, guidance.get("specialist", ""),

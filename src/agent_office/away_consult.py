@@ -27,10 +27,16 @@ def _command(mode):
 
 async def run_consultation(repo, revision, rule, specialist_engine, verifier_engine, folders, *,
                            skill_guidance=None, on_stage=None):
-    # Only the closest selected ancestor is needed to check this evidence file.
-    scope = next((str(parent) for parent in PurePosixPath(rule["path"]).parents if str(parent) in folders), None)
+    from agent_office.technical_choices import CHOICE_TOPIC
+
+    # Only the closest selected ancestor is needed for each evidence file.
+    paths = ([option["path"] for option in rule["choice"]["options"]]
+             if rule["topic"] == CHOICE_TOPIC else [rule["path"]])
+    scope = list(dict.fromkeys(next((str(parent) for parent in PurePosixPath(path).parents
+                                     if str(parent) in folders), None) for path in paths))
     payload = json.dumps([str(repo), revision, rule, specialist_engine, verifier_engine,
-                          [scope] if scope else [], skill_guidance or {}], ensure_ascii=False).encode("utf-8") + b"\n"
+                          [folder for folder in scope if folder is not None], skill_guidance or {}],
+                         ensure_ascii=False).encode("utf-8") + b"\n"
     if len(payload) > MAX_CONSULT_INPUT:
         raise DelegationDeferred("specialist_failed")
     child = await asyncio.create_subprocess_exec(
@@ -85,15 +91,20 @@ if __name__ == "__main__":
     if len(sys.argv) != 3 or sys.argv[1] != "assess":
         sys.exit(2)
     from agent_office.away_expert import assess
+    from agent_office.technical_choices import CHOICE_TOPIC, assess_choice
 
     def emit_stage(role, status):
         sys.stdout.buffer.write(f"{role} {status}\n".encode("ascii"))
         sys.stdout.buffer.flush()
 
     repo, revision, rule, specialist, verifier, folders, guidance = json.load(sys.stdin.buffer)
+    opts = dict(folders=folders, skill_guidance=guidance, scratch_root=Path(sys.argv[2]), on_stage=emit_stage)
     try:
-        response = assess(Path(repo), revision, rule, specialist, verifier, folders=folders,
-                          skill_guidance=guidance, scratch_root=Path(sys.argv[2]), on_stage=emit_stage)
+        if rule["topic"] == CHOICE_TOPIC:
+            response = assess_choice(Path(repo), revision, rule["choice"], specialist, verifier,
+                                     goal=rule["goal"], **opts)
+        else:
+            response = assess(Path(repo), revision, rule, specialist, verifier, **opts)
     except DelegationDeferred as exc:
         response = {"reason": exc.reason}
     sys.stdout.buffer.write(json.dumps(response, ensure_ascii=False).encode("utf-8"))

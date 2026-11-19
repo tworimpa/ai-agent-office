@@ -43,7 +43,7 @@ def parse_review_verdict(output: str) -> str:
 
 
 def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=None, save_stage=None, inbox_factory=None,
-                delegated_questions=(), skill_guidance=None):
+                delegated_questions=(), skill_guidance=None, technical_choice_guidance=""):
     guidance = skill_guidance or {}
 
     def run_role(state, role, prompt):
@@ -58,6 +58,8 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
                            "technical-question protocol. Ask other questions in your own words. "
                            "Never reframe permission requests or scope changes as these questions.\n"
                            + "\n".join(delegated_questions))
+            if technical_choice_guidance:
+                prompt += "\n\n" + technical_choice_guidance
             return adapters[engine].execute(prompt, inbox=channel, **options)
         finally:
             channel.expire()

@@ -41,6 +41,8 @@ const topics = [
 ];
 const capabilityLabels = [['read', '읽기'], ['edit', '수정'], ['review', '리뷰']];
 const inboxStates = {pending: '응답 대기', decided: '결정 접수', delivered: '작업자에게 전달됨', expired: '만료됨'};
+const requestLabels = {question: '기술 질문', product_decision: '제품 동작 결정', permission: '도구 권한 요청'};
+const choicePurposes = {implementation: '기존 구현', diagnosis: '진단', validation: '검증'};
 const decisionLabels = {answer: '답변', approve: '이번 요청 승인', reject: '거절'};
 const inboxMode = run => run.use_inbox === true ? '협업 요청함 사용' : '협업 요청함 꺼짐';
 const inboxPath = id => '/runs/' + id + '/inbox';
@@ -668,7 +670,9 @@ export function mountStudio(win) {
     meta.className = citation.className = 'inbox-meta';
     meta.textContent = delegationRoles.map(([role, name]) => name + ' ' + (engineNames.get(row[role + '_engine']) ?? '미확인')).join(' · ');
     const source = row.evidence;
-    citation.textContent = source ? '근거 · ' + source.path + ' ' + source.line + '행 · 기준 커밋 ' + source.revision : '근거 미확인';
+    const choice = row.topic === 'technical_choice' && Object.hasOwn(choicePurposes, source?.purpose) &&
+      Number.isSafeInteger(source.option) ? choicePurposes[source.purpose] + ' 선택지 ' + source.option + '번 · ' : '';
+    citation.textContent = source ? choice + '근거 · ' + source.path + ' ' + source.line + '행 · 기준 커밋 ' + source.revision : '근거 미확인';
     quote.textContent = source?.quote ?? '';
     return [meta, citation, quote];
   }
@@ -763,6 +767,7 @@ export function mountStudio(win) {
     const shown = counts.delegated > delegated.length ? ' (최근 ' + delegated.length + '건 표시)' : '';
     say('report-note', host.name + ' · 대리 답변 ' + counts.delegated + '건' + shown + ' · 답변 대기 ' + counts.questions +
       '건 · 권한 승인 대기 ' + counts.permissions + '건' +
+      (counts.product_decisions ? ' · 제품 결정 대기 ' + counts.product_decisions + '건' : '') +
       (counts.active > active.length ? ' · 위임 중인 실행 ' + counts.active + '개 중 최근 ' + active.length + '개 표시' : ''));
   }
 
@@ -779,6 +784,8 @@ export function mountStudio(win) {
       const report = await request;
       if (closed || request !== reportRequest) return;
       if (!['delegated', 'questions', 'permissions'].every(key => Number.isSafeInteger(report.counts?.[key]) && report.counts[key] >= 0) ||
+          (Object.hasOwn(report.counts, 'product_decisions') &&
+            !(Number.isSafeInteger(report.counts.product_decisions) && report.counts.product_decisions >= 0)) ||
           !Array.isArray(report.delegated) || report.delegated.some(row => !validId(row?.run_id) || !validId(row.id)) ||
           !Array.isArray(report.active) || report.active.some(row => !validId(row?.run_id))) throw new Error();
       renderReport(report);
@@ -792,10 +799,10 @@ export function mountStudio(win) {
 
   function requestCard(row, actionable) {
     const card = make('li'), title = make('h3'), meta = make('p'), prompt = make('pre');
-    const question = row.kind === 'question';
+    const acceptsAnswer = row.kind === 'question' || row.kind === 'product_decision';
     card.dataset.key = requestKey(row);
     card.dataset.kind = row.kind;
-    title.textContent = question ? '기술 질문' : row.kind === 'permission' ? '도구 권한 요청' : '요청 종류 미확인';
+    title.textContent = Object.hasOwn(requestLabels, row.kind) ? requestLabels[row.kind] : '요청 종류 미확인';
     meta.className = 'inbox-meta';
     const role = roles.find(([id]) => id === row.role)?.[1] ?? '역할 미확인';
     meta.textContent = [role, engineNames.get(row.engine) ?? '엔진 미확인',
@@ -829,7 +836,7 @@ export function mountStudio(win) {
     legend.textContent = title.textContent + ' 응답';
     fields.append(legend);
     let answer;
-    if (question) {
+    if (acceptsAnswer) {
       const label = make('label');
       answer = make('textarea');
       answer.id = 'answer-' + row.run_id + '-' + row.id;
@@ -839,7 +846,7 @@ export function mountStudio(win) {
       fields.append(label, answer);
     }
     actions.className = 'inbox-actions';
-    for (const action of question ? ['answer'] : ['approve', 'reject']) {
+    for (const action of acceptsAnswer ? ['answer'] : ['approve', 'reject']) {
       const button = make('button');
       button.type = 'button';
       button.className = action === 'reject' ? 'stop' : 'secondary';
@@ -854,7 +861,7 @@ export function mountStudio(win) {
 
   function renderInbox(rows) {
     pendingRows = rows.filter(row => validId(row.id) && validId(row.run_id) && row.status === 'pending' &&
-      ['question', 'permission'].includes(row.kind));
+      Object.hasOwn(requestLabels, row.kind));
     const list = get('inbox-list');
     const previous = new Map([...list.children].map(card => [card.dataset.key, card]));
     for (const [index, row] of pendingRows.entries()) {
@@ -1006,12 +1013,18 @@ export function mountStudio(win) {
 
   function renderRunPolicy(run) {
     const policy = run.delegation;
-    get('run-delegation').hidden = !policy;
-    detailDelegationActive = Boolean(policy && run.kind !== 'parallel' && run.delegation_active === true);
+    const assignmentDelegation = run.assignment?.delegation === true;
+    const visible = Boolean(policy || assignmentDelegation || run.delegation_active === true);
+    get('run-delegation').hidden = !visible;
+    detailDelegationActive = visible && run.kind !== 'parallel' && run.delegation_active === true;
     get('run-delegation-stop').hidden = !detailDelegationActive;
     get('run-delegation-stop').disabled = !online || endingDelegation.has(run.id);
-    if (!policy) { detailPolicy = null; return; }
-    if (!Array.isArray(policy.rules) || policy.rules.some(rule => !rule || typeof rule.path !== 'string' || typeof rule.topic !== 'string')) {
+    if (!visible) { detailPolicy = null; return; }
+    if (!policy) {
+      say('run-delegation-roles', '기준 커밋에서 확인 가능한 기술 선택지를 검토합니다.');
+      get('run-delegation-rules').replaceChildren();
+      detailPolicy = null;
+    } else if (!Array.isArray(policy.rules) || policy.rules.some(rule => !rule || typeof rule.path !== 'string' || typeof rule.topic !== 'string')) {
       say('run-delegation-roles', '접수 당시의 위임 범위를 확인할 수 없습니다.');
       get('run-delegation-rules').replaceChildren();
       detailPolicy = null;

@@ -14,11 +14,10 @@ def main():
     prompt = json.loads(raw)["message"]["content"] if engine == "agy" else raw
     role = prompt.splitlines()[0]
     assert role in {"AWAY_SPECIALIST", "AWAY_VERIFIER"}
-    mode_flag = "--sandbox" if engine == "agy" else "--permission-mode"
-    assert mode_flag in sys.argv and "plan" in sys.argv
+    mode_flag = "--permission-mode" if engine == "claude" else "--sandbox"
+    assert mode_flag in sys.argv and ("read-only" if engine == "codex" else "plan") in sys.argv
     assert not Path("web").exists()
     evidence = json.loads(Path("evidence.json").read_text(encoding="utf-8"))
-    assert evidence["topic"] == "python_version"
     with Path(os.environ["OFFICE_AWAY_CALLS"]).open("a", encoding="utf-8") as file:
         file.write(json.dumps([role, str(Path.cwd())]) + "\n")
     portfile = os.environ.get("OFFICE_DELAY_" + role.removeprefix("AWAY_"))
@@ -30,13 +29,22 @@ def main():
             sock.listen()
             Path(portfile).write_text(str(sock.getsockname()[1]))
             time.sleep(60)
-    citation = evidence["evidence"][0]
-    value = {"answer": ">=3.11", **citation}
+    if "options" in evidence:
+        option = evidence["options"][0]
+        value = {key: option[key] for key in ("option", "line", "quote")}
+    else:
+        assert evidence["topic"] == "python_version"
+        citation = evidence["evidence"][0]
+        value = {"answer": ">=3.11", **citation}
     if role == "AWAY_VERIFIER":
         value["verdict"] = "verified"
     message = json.dumps(value)
     if engine == "agy":
         print(json.dumps({"status": "SUCCESS", "response": message}))
+    elif engine == "codex":
+        print(json.dumps({"type": "turn.started"}))
+        print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": message}}))
+        print(json.dumps({"type": "turn.completed"}))
     else:
         print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": message}))
 

@@ -252,6 +252,14 @@ def serve_inbox(engine, scenario, req, receive, send, update):
                 update("tool_call_update", toolCallId="op", status="completed", rawOutput={"success": True})
     update("agent_message_chunk", content={"type": "text", "text": "finished\nAGENT_OFFICE_FINAL"})
     send(id=req["id"], result={"stopReason": "end_turn"})
+    if scenario in ("inbox_direction", "inbox_direction_lost"):
+        req = receive("session/prompt")
+        assert req["id"] == 6 and req["params"]["sessionId"] == "fixture"
+        assert '중간 지시 & "원문"' in req["params"]["prompt"][0]["text"]
+        if scenario == "inbox_direction_lost":
+            return
+        update("agent_message_chunk", content={"type": "text", "text": "지시 반영\nAGENT_OFFICE_FINAL"})
+        send(id=req["id"], result={"stopReason": "end_turn"})
 
 
 def serve():

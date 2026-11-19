@@ -39,6 +39,44 @@ def policy(*rules):
 RULE = {"topic": "test_command", "path": "README.md"}
 
 
+def test_coordinator_policy_uses_only_eligible_facts_at_pinned_revision(repo, monkeypatch):
+    from agent_office.coordinator_policy import policy_for_assignment
+
+    root, old = repo
+    (root / "package.json").write_text('{"engines":{"node":">=18"}}', encoding="utf-8")
+    for name, constraint in (("web", ">=22"), ("unselected", ">=25")):
+        package = root / name
+        package.mkdir()
+        (package / "package.json").write_text(
+            json.dumps({"engines": {"node": constraint}}), encoding="utf-8")
+    run_git(root, "add", ".")
+    run_git(root, "commit", "-qm", "conflicting package constraints")
+    revision = run_git(root, "rev-parse", "HEAD")
+    (root / "pyproject.toml").write_text('[project]\nrequires-python = ">=3.13"\n', encoding="utf-8")
+    monkeypatch.setattr(expert, "execute_fixture", lambda *a, **k: pytest.fail("unexpected provider"))
+
+    engines = {"specialist_engine": "codex", "verifier_engine": "antigravity"}
+    match = {"topic": "node_version", "path": "package.json"}
+    assert policy_for_assignment(root, revision, ["."], **engines) == policy(match, RULE)
+    assert policy_for_assignment(root, revision, ["web"], **engines) == policy(RULE)
+    assert policy_for_assignment(root, old, ["."], **engines) is None
+
+
+def test_coordinator_policy_accepts_project_heading_and_empty_evidence_defers(repo, tmp_path):
+    from agent_office.coordinator_policy import policy_for_assignment
+
+    root, _ = repo
+    root = root.rename(tmp_path / "a-project")
+    engines = {"specialist_engine": "codex", "verifier_engine": "antigravity"}
+    (root / "README.md").write_text("# A Project\n## Tests\npytest -q\n", encoding="utf-8")
+    run_git(root, "commit", "-qam", "named project")
+    revision = run_git(root, "rev-parse", "HEAD")
+    assert policy_for_assignment(root, revision, ["."], **engines) == policy(RULE)
+    (root / "README.md").write_text("# Old release\n## Tests\npytest -q\n", encoding="utf-8")
+    run_git(root, "commit", "-qam", "ambiguous test command")
+    assert policy_for_assignment(root, run_git(root, "rev-parse", "HEAD"), ["."], **engines) is None
+
+
 @pytest.mark.parametrize("rule", [
     {"topic": "deploy", "path": "README.md"},
     {"topic": "python_version", "path": "package.json"},

@@ -1,6 +1,7 @@
 const idPattern = /^[0-9a-f]{32}$/;
 const roles = {developer: '개발자', reviewer: '리뷰어', specialist: '전문가', verifier: '독립 검증자'};
 const engines = {codex: 'Codex', antigravity: 'Antigravity', claude: 'Claude Code', gemini: 'Gemini CLI', cline: 'Cline CLI'};
+const requestLabels = {question: '기술 질문', product_decision: '제품 동작 결정', permission: '권한 요청'};
 const activities = {
   queued: '차례 대기', working: '작업 중', testing: '저장소 테스트 중', waiting: '응답 대기',
   done: '담당 단계 완료', failed: '실패', stopped: '중단됨', stopping: '중지 중', skipped: '미실행',
@@ -36,8 +37,9 @@ export function mountOffice(win) {
   function showSummary() {
     const hosts = [...nodes.values()];
     const connected = hosts.filter(host => host.page && !host.stale);
-    for (const [id, key] of [['active-count', 'active_runs'], ['question-count', 'questions'], ['permission-count', 'permissions']]) {
-      get(id).textContent = connected.length ? connected.reduce((sum, host) => sum + host.page.counts[key], 0) : '—';
+    for (const [id, key] of [['active-count', 'active_runs'], ['question-count', 'questions'],
+      ['product-decision-count', 'product_decisions'], ['permission-count', 'permissions']]) {
+      get(id).textContent = connected.length ? connected.reduce((sum, host) => sum + (host.page.counts[key] ?? 0), 0) : '—';
     }
     if (hosts.some(host => host.stale)) notice('상단 집계에는 연결을 확인한 호스트만 포함됩니다.');
     else if (hosts.some(host => !host.page)) notice('호스트에서 업무 현황을 불러오는 중입니다.');
@@ -65,7 +67,7 @@ export function mountOffice(win) {
     for (const request of agent.requests) {
       const bubble = element('p', 'speech');
       bubble.dataset.kind = request.kind;
-      bubble.append(element('strong', '', request.kind === 'permission' ? '권한 요청' : '기술 질문'),
+      bubble.append(element('strong', '', Object.hasOwn(requestLabels, request.kind) ? requestLabels[request.kind] : '요청 종류 미확인'),
         doc.createTextNode(request.prompt));
       link.append(bubble);
     }
@@ -165,6 +167,7 @@ export function mountOffice(win) {
       if (page.offset !== offset || !validCount(page.total_runs) || (page.next_offset !== null &&
           !(validCount(page.next_offset) && page.next_offset > offset)) || !Array.isArray(page.agents) ||
           !['active_runs', 'questions', 'permissions'].every(key => validCount(page.counts?.[key])) ||
+          (Object.hasOwn(page.counts, 'product_decisions') && !validCount(page.counts.product_decisions)) ||
           !page.agents.every(agent => idPattern.test(agent.run_id) && Object.hasOwn(roles, agent.role) &&
             Array.isArray(agent.requests) && validCount(agent.request_count)) ||
           !Number.isFinite(Date.parse(page.generated_at))) throw new Error('invalid office data');

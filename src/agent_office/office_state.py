@@ -6,6 +6,7 @@ from functools import cache
 from .models import MAX_SQLITE_INT
 from .store import TaskStore, now
 from .studio_inbox import ROLE_STATE, holder_alive
+from .technical_choices import CHOICE_MARKER, public_prompt
 
 
 PAGE_SIZE = 24
@@ -20,8 +21,9 @@ ACTIVITIES = frozenset({"queued", "working", "testing", "waiting", "done", "fail
 # Only UUIDs are concatenated; arbitrary prompts stay in parameterized queries.
 _PAGE = """
 WITH live AS (
-    SELECT q.run_id, q.id, q.kind, q.created_at,
-           (q.kind='question' AND p.run_id IS NOT NULL AND p.revoked_at IS NULL
+    SELECT q.run_id, q.id, coalesce(q.decision_type,q.kind) AS kind, q.created_at,
+           (q.kind='question' AND q.decision_type IS NULL
+            AND ((p.run_id IS NOT NULL AND p.revoked_at IS NULL) OR (cp.run_id IS NOT NULL AND cp.revoked_at IS NULL))
             AND c.request_id IS NOT NULL AND c.reason IS NULL AND c.evidence IS NULL) AS delegated
     FROM studio_requests q
     JOIN studio_interactive_runs i ON i.id=q.run_id
@@ -30,6 +32,7 @@ WITH live AS (
     JOIN tasks t ON t.task_id=r.task_id
     LEFT JOIN studio_away_checks c ON c.request_id=q.id
     LEFT JOIN studio_away_policies p ON p.run_id=q.run_id
+    LEFT JOIN studio_away_choice_policies cp ON cp.run_id=q.run_id
     WHERE q.status='pending' AND CASE WHEN r.host_name=:host AND t.current_run_id=q.run_id
       AND r.ended_at IS NULL AND NOT s.stop_requested AND s.proposed_state IS NULL
       AND q.attempt=r.attempts
@@ -38,7 +41,7 @@ WITH live AS (
       THEN holder_alive(q.holder) ELSE 0 END
 ), demand AS (
     SELECT run_id, sum(kind='question' AND NOT delegated) AS questions,
-           sum(kind='permission') AS permissions
+           sum(kind='permission') AS permissions, sum(kind='product_decision') AS product_decisions
     FROM live GROUP BY run_id
 ), recent AS (
     SELECT r.run_id, r.ended_at AS updated_at
@@ -47,17 +50,20 @@ WITH live AS (
     ORDER BY r.ended_at DESC, r.run_id LIMIT :recent
 ), eligible AS (
     SELECT r.run_id, t.updated_at, 1 AS active,
-           coalesce(d.questions,0) AS questions, coalesce(d.permissions,0) AS permissions
+           coalesce(d.questions,0) AS questions, coalesce(d.permissions,0) AS permissions,
+           coalesce(d.product_decisions,0) AS product_decisions
     FROM runs r JOIN studio_runs s ON s.id=r.run_id JOIN tasks t ON t.task_id=r.task_id
     LEFT JOIN demand d ON d.run_id=r.run_id
     WHERE r.host_name=:host AND r.ended_at IS NULL
-    UNION ALL SELECT run_id, updated_at, 0, 0, 0 FROM recent
+    UNION ALL SELECT run_id, updated_at, 0, 0, 0, 0 FROM recent
 ), totals AS (
     SELECT count(*) AS total_runs, coalesce(sum(active),0) AS active_runs,
-           coalesce(sum(questions),0) AS total_questions, coalesce(sum(permissions),0) AS total_permissions
+           coalesce(sum(questions),0) AS total_questions, coalesce(sum(permissions),0) AS total_permissions,
+           coalesce(sum(product_decisions),0) AS total_product_decisions
     FROM eligible
 ), page AS (
-    SELECT *, (questions+permissions>0) AS needs_human FROM eligible
+    SELECT *, (questions+permissions+product_decisions) AS requests,
+           (questions+permissions+product_decisions>0) AS needs_human FROM eligible
     ORDER BY needs_human DESC, active DESC, updated_at DESC, run_id LIMIT :size OFFSET :offset
 )
 SELECT totals.*, page.*, r.state, r.attempts, s.stop_requested, s.proposed_state,
@@ -91,9 +97,13 @@ def _request_previews(db, rows):
     if not ids:
         return {}
     marks = ",".join("?" for _ in ids)
-    result = db.execute(f"""SELECT id,kind,substr(prompt,1,?) AS prompt FROM studio_requests
-                            WHERE id IN ({marks})""", (PREVIEW_LIMIT + 1, *ids))
-    return {row["id"]: dict(row, prompt=_snippet(row["prompt"], PREVIEW_LIMIT)) for row in result}
+    result = db.execute(f"""SELECT id,coalesce(decision_type,kind) AS kind,
+                            CASE WHEN kind='question' AND decision_type IS NULL AND instr(prompt,?)=1 THEN prompt
+                                 ELSE substr(prompt,1,?) END AS prompt
+                            FROM studio_requests WHERE id IN ({marks})""",
+                        (CHOICE_MARKER + "\n", PREVIEW_LIMIT + 1, *ids))
+    return {row["id"]: dict(row, prompt=_snippet(public_prompt(row["prompt"]) if row["kind"] == "question"
+                                                else row["prompt"], PREVIEW_LIMIT)) for row in result}
 
 
 def _latest_stages(db, run_ids):
@@ -116,7 +126,7 @@ def _activity(run, role, stages):
     stage = stages.get(role)
     if run["active"] and not run["stop_requested"] and not run["proposed_state"]:
         if run["state"] == ROLE_STATE[role]:
-            if run["questions"] + run["permissions"]:
+            if run["requests"]:
                 return "waiting"
             if run["delegated_ids"]:
                 return "checking"
@@ -152,7 +162,7 @@ def _away_roles(db, run_ids, delegated):
     marks = ",".join("?" for _ in run_ids)
     rows = db.execute(f"""WITH questions AS (
         SELECT q.id,q.run_id,q.decided_at FROM studio_requests q JOIN runs r ON r.run_id=q.run_id
-        WHERE q.run_id IN ({marks}) AND q.attempt=r.attempts AND q.kind='question')
+        WHERE q.run_id IN ({marks}) AND q.attempt=r.attempts AND q.kind='question' AND q.decision_type IS NULL)
         SELECT q.run_id,a.role,a.engine,a.status,a.updated_at,q.id
         FROM questions q JOIN studio_away_role_stages a ON a.request_id=q.id
         JOIN studio_away_checks c ON c.request_id=q.id WHERE c.evidence IS NULL
@@ -183,7 +193,7 @@ def _cards(run, stages, away_roles, previews):
         activity = _activity(run, role, stages)
         requests = [previews[key] for key in _ids(run["preview_ids"])] if activity == "waiting" else []
         yield dict(common, role=role, engine=run[role+"_engine"], activity=activity,
-                   requests=requests, request_count=run["questions"]+run["permissions"] if requests else 0,
+                   requests=requests, request_count=run["requests"] if requests else 0,
                    updated_at=run["updated_at"])
     for role, (engine, activity, stamp) in away_roles.items():
         yield dict(common, role=role, engine=engine, activity=activity,
@@ -206,6 +216,8 @@ def office_snapshot(db_path, offset=0):
         total = rows[0]["total_runs"]
         counts = dict(active_runs=rows[0]["active_runs"], questions=rows[0]["total_questions"],
                       permissions=rows[0]["total_permissions"])
+        if rows[0]["total_product_decisions"]:
+            counts["product_decisions"] = rows[0]["total_product_decisions"]
         run_ids = [run["run_id"] for run in rows if run["run_id"]]
         agents = []
         if run_ids:

@@ -12,7 +12,7 @@ import subprocess
 import unicodedata
 from uuid import uuid4
 
-from .models import validate_db_file, validate_id
+from .models import OfficeError, validate_db_file, validate_id
 
 
 def _redirected(info: os.stat_result) -> bool:
@@ -93,6 +93,14 @@ class StudioCatalog:
             rows = db.execute("SELECT id, name, folders FROM workspaces ORDER BY rowid")
             return [{"id": key, "name": name, "folders": json.loads(folders)}
                     for key, name, folders in rows]
+
+    def get(self, workspace_id: str) -> dict:
+        validate_id(workspace_id)
+        with closing(self._connect()) as db:
+            row = db.execute("SELECT name, folders FROM workspaces WHERE id=?", (workspace_id,)).fetchone()
+        if row is None:
+            raise OfficeError("NOT_FOUND")
+        return {"id": workspace_id, "name": row[0], "folders": json.loads(row[1])}
 
     def select(self, workspace_id: str, indices: list[int]) -> tuple[Path, list[str]]:
         validate_id(workspace_id)
