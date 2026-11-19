@@ -2,7 +2,7 @@
 
 Local-first orchestration of coding agent CLIs with a browser-based local studio, persistent task history and a separate read-only observer.
 
-The studio supports local execution and SSH-connected remote studios. The selected host owns its folders, processes and journal. Automatic human-in-the-loop Q&A, unattended delegation and self-updating are planned features.
+The selected local or SSH-connected host owns its folders, processes, requests and decision journal. The collaboration inbox supports operator answers and one-time decisions. Unattended delegation and self-updating are planned features.
 
 ## 로컬 작업실 시작
 
@@ -57,6 +57,28 @@ agent-office --db ../remote-office/tasks.sqlite3 verify-engine gemini read
 
 원격 작업실에서는 두 컴퓨터에 이 버전을 설치합니다. 원격 호스트의 진단과 검증 내역은 해당 호스트의 저널에서 가져옵니다. [엔진 가이드](docs/engines.md) · [역할별 엔진 구현 계획](docs/superpowers/plans/2026-11-19-engine-expansion.md)
 
+## 협업 요청함
+
+새 작업에서 **협업 요청함**을 켜고 시작합니다. 작업자가 판단을 기다리면 실행 중인 호스트의 요청함에 작업·역할·엔진과 질문 또는 권한 요청의 원문이 표시됩니다. 원격 호스트는 브라우저 상단에서 해당 SSH 별칭을 선택합니다.
+
+| 요청 | 사용자 동작 | 작업자가 받는 내용 |
+| --- | --- | --- |
+| 기술 질문 | 예를 들어 “기존 주문에도 적용할까요?”에 답변을 입력하고 전송 | 원래 대화에 이어지는 기술적 답변 |
+| 권한 요청 | 제안한 파일 작업의 경로와 내용을 확인한 뒤 이번 한 건을 승인하거나 거절 | 제공자 프로토콜의 일회성 결정 |
+
+실행 상세의 요청 이력에서 **결정 접수**와 **작업자에게 전달됨**을 확인할 수 있습니다. 연결이 끊기면 원래 호스트·실행 주소로 돌아옵니다. 이미 저장된 결정은 유지되고 같은 요청에 다른 결정을 보내면 충돌로 표시됩니다. 중지·시간 초과·작업자 종료 후에는 남은 요청이 만료됩니다. 결정 시각이 있고 전달 시각이 없는 만료 기록은 작업자가 결정을 받았는지 확인할 수 없는 경우입니다.
+
+질문을 받은 동안에도 실행 제한 시간은 흐릅니다. 기본 작업자 호출은 900초이며 기술 질문은 호출당 최대 8회입니다. 요청·답변은 각각 UTF-8 8,192바이트까지 원문으로 기록합니다. 사전 위임과 부재중 자동 응답은 후속 범위입니다.
+
+| 엔진 | 기술 질문 처리 | 사용자에게 전달할 수 있는 권한 요청 |
+| --- | --- | --- |
+| Codex | 작업실 요청함 모드에서 app-server의 같은 스레드로 후속 턴 전달 | 제공자가 요청한 작업 폴더 안의 파일 변경 한 건 |
+| Cline CLI 3.0.74 | 실행 중인 같은 ACP 세션에서 후속 턴 진행 | 역할이 허용하는 `read_files` 및 `editor` 호출 한 건 |
+| Gemini CLI | 실행 중인 같은 ACP 세션에서 후속 턴 진행 | 기존 호스트 정책 적용. 추가 대화형 권한 요청은 거절 |
+| Claude Code · Antigravity | 완료된 질문 턴의 대화 UUID를 지정해 같은 작업 폴더에서 재개 | 현재 배치 연결은 기술 답변을 전달 |
+
+요청함에는 제공자가 실제로 승인을 요구한 작업이 나타납니다. 예를 들어 Codex가 호스트 정책에 따라 작업 폴더 안의 편집을 이미 허용하면 그 편집은 바로 진행됩니다. 요청함은 신뢰하는 개인용 호스트와 기존 SSH 연결을 사용합니다. 운영체제·제공자의 접근 제한과 작업자의 배포·푸시·머지 제한은 계속 적용됩니다. [구현 계획](docs/superpowers/plans/2026-11-19-studio-inbox.md)
+
 ## Architecture
 
 ```text
@@ -100,7 +122,7 @@ The CI workflow runs **Ubuntu + Windows**, Python **3.11 + 3.13**, without provi
 - To include authenticated headless CLI checks: add `-Live` (Windows) or `--live` (Linux).
 - Inspect available CLIs: `agent-office doctor`
 
-Task and event queries, explicit interruption marking and candidate DB paths are described in [storage guide](docs/storage.md). Use `--db` before the subcommand to keep development state separate from stable state. The studio controls its own runs. Provider conversation resume is future work.
+Task and event queries, explicit interruption marking and candidate DB paths are described in the [storage guide](docs/storage.md). Use `--db` before the subcommand to keep development state separate from stable state. Inbox continuations belong to the original Studio run. A run marked for recovery requires inspection.
 
 For read-only access to the journal, use `agent-office --db PATH serve --port 8765`. See the [observer guide](docs/observer.md) for selection, timeline updates and actual CLI acceptance limits.
 

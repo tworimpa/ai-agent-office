@@ -73,6 +73,20 @@ input[type=radio], input[type=checkbox] { flex: none; margin: 5px 2px 0; accent-
 .check { font-size: .84rem; overflow-wrap: anywhere; }
 .role-pickers { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(9rem, 100%), 1fr)); gap: 0 12px; }
 .role-pickers select { min-height: 48px; }
+.inbox-option { margin-top: 16px; font-weight: 650; }
+.inbox-option + small { margin: 4px 0 0 25px; }
+.inbox-list { list-style: none; padding: 0; }
+.inbox-list li { padding: 14px 22px; overflow-wrap: anywhere; }
+.inbox-list li + li { border-top: 1px solid var(--border); }
+.inbox-list h3 { font-size: .94rem; }
+.inbox-meta, .inbox-link { font-size: .8rem; color: var(--muted); }
+.inbox-status { white-space: pre-wrap; }
+.inbox-list pre { margin: 8px 0; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; background: #f4f6f1; font: .85rem/1.55 "IBM Plex Mono", Consolas, monospace; }
+.inbox-list [data-kind=permission] pre { background: #fff5e2; }
+.inbox-list label { font-size: .86rem; font-weight: 650; }
+.inbox-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.inbox-actions button { min-height: 44px; }
+.inbox-feedback:not(:empty) { padding: 12px 22px; border-top: 1px solid var(--border); font-size: .86rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .engine-panel { margin-top: 12px; font-size: .82rem; }
 .engine-panel summary { padding-block: 6px; }
 .engine-panel p, .assignments { color: var(--muted); }

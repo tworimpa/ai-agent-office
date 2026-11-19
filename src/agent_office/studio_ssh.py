@@ -43,9 +43,10 @@ def is_peer_route(method: str, route: str) -> bool:
         return False
     if route in ("/workspaces", "/runs"):
         return True
-    if route == "/engines":
+    if route in ("/engines", "/inbox"):
         return method == "GET"
-    pattern = r"/runs/[0-9a-f]{32}" if method == "GET" else r"/runs/[0-9a-f]{32}/stop"
+    pattern = (r"/runs/[0-9a-f]{32}(?:/inbox)?" if method == "GET"
+               else r"/runs/[0-9a-f]{32}/(?:stop|inbox/[0-9a-f]{32}/decision)")
     return re.fullmatch(pattern, route) is not None
 
 
@@ -109,6 +110,9 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
     if status >= 400:
         return
 
+    if "/inbox" in route:
+        _check_inbox_reply(status, data, method, route, payload)
+        return
     if route == "/engines":
         rows = data.get("engines")
         if not (status == 200 and isinstance(data.get("platform"), str) and isinstance(rows, list)):
@@ -161,11 +165,45 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
             if row["id"] != expected_id:
                 raise RemoteUnavailable()
         if not workspace:
+            if (method == "POST" and route == "/runs" and "use_inbox" in payload
+                    and row.get("use_inbox") is not payload["use_inbox"]):
+                raise RemoteUnavailable()
             for role in ("developer_engine", "reviewer_engine"):
                 if role in row and row[role] not in SUPPORTED_ENGINES:
                     raise RemoteUnavailable()
                 if method == "POST" and route == "/runs" and role in payload and row.get(role) != payload[role]:
                     raise RemoteUnavailable()
+
+
+def _check_inbox_reply(status, data, method, route, payload):
+    listing = method == "GET"
+    rows = data.get("requests") if listing else [data.get("request")]
+    parts = route.strip("/").split("/")
+    run_id = parts[1] if parts[0] == "runs" else None
+    if status != 200 or not isinstance(rows, list) or len(rows) > 100:
+        raise RemoteUnavailable()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise RemoteUnavailable()
+        validate_id(row.get("id"))
+        validate_id(row.get("run_id"))
+        if ((run_id and row["run_id"] != run_id)
+                or row.get("kind") not in ("question", "permission")
+                or row.get("status") not in ("pending", "decided", "delivered", "expired")
+                or row.get("role") not in ("developer", "reviewer") or row.get("engine") not in SUPPORTED_ENGINES
+                or not isinstance(row.get("prompt"), str)):
+            raise RemoteUnavailable()
+        action = row.get("decision")
+        if (row["kind"] == "question" and action not in (None, "answer")
+                or row["kind"] == "permission" and action not in (None, "approve", "reject")
+                or row["status"] == "pending" and action is not None
+                or row["status"] in ("decided", "delivered") and action is None
+                or action == "answer" and not isinstance(row.get("answer"), str)
+                or route == "/inbox" and row["status"] != "pending"):
+            raise RemoteUnavailable()
+        if not listing and (row["id"] != parts[3] or action != payload.get("action")
+                            or (action == "answer" and row["answer"] != payload.get("answer"))):
+            raise RemoteUnavailable()
 
 
 def _read_response(stream: BinaryIO, journal_id: str, method: str, route: str, payload: dict | None) -> tuple[int, dict]:

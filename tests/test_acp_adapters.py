@@ -1,27 +1,29 @@
 """Contract tests against a stdio subprocess, without invoking a vendor CLI."""
 
+import asyncio
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import sys
 import time
 
 import pytest
 
-from agent_office.acp import _permitted
+from agent_office.acp import _permitted, write_record
 from agent_office.adapters import CLIAdapter
 
 PROMPT = "한글\n & |$(hello) inspect the workspace"
 ANSWER = "VERDICT: APPROVED"
 
 
-def run_fixture(tmp_path, monkeypatch, engine="cline", scenario="success", edit=False, strict=False):
+def run_fixture(tmp_path, monkeypatch, engine="cline", scenario="success", edit=False, strict=False, inbox=None):
     adapter = CLIAdapter(engine, timeout=0.5 if scenario == "timeout" else 10)
     command = adapter.command(PROMPT, allow_edits=edit)
     monkeypatch.setattr(adapter, "command", lambda *args, **kwargs: [
         sys.executable, __file__, engine, scenario, str(int(edit)), *command[1:],
     ])
-    return adapter.execute(PROMPT, workspace=tmp_path, allow_edits=edit, strict_completion=strict)
+    return adapter.execute(PROMPT, workspace=tmp_path, allow_edits=edit, strict_completion=strict, inbox=inbox)
 
 
 @pytest.mark.parametrize("engine", ["gemini", "cline"])
@@ -111,6 +113,147 @@ def editor_call(path):
             "rawInput": {"path": str(path), "new_text": "edited"}}
 
 
+class Answers:
+    def __init__(self, permission="approve"):
+        self.permission = permission
+        self.requests = []
+        self.sent = []
+        self.receipts = []
+
+    async def ask(self, kind, prompt, session):
+        assert session == "fixture"
+        self.requests.append((kind, prompt))
+        return {"id": len(self.requests), "decision": self.permission if kind == "permission" else "answer",
+                "answer": None if kind == "permission" else "사용자 답변\n& |"}
+
+    @contextmanager
+    def sending(self, request):
+        assert request not in self.sent
+        self.sent.append(request)
+        yield
+
+    def delivered(self, request):
+        assert request in self.sent and request not in self.receipts
+        self.receipts.append(request)
+
+
+def test_inbox_guard_expiring_before_write_delivers_no_bytes():
+    class BusyInbox:
+        @contextmanager
+        def sending(self, request):
+            assert request == 42
+            time.sleep(0.06)
+            yield
+
+    async def send():
+        deadline = asyncio.get_running_loop().time() + 0.03
+        # No process is needed: touching stdin would itself fail the test.
+        await write_record(None, b"answer\n", inbox=BusyInbox(), decision_id=42, deadline=deadline)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(send())
+
+
+@pytest.mark.parametrize("engine,decision", [("cline", "approve"), ("cline", "reject"), ("gemini", None)])
+def test_same_session_question_and_native_permission(tmp_path, monkeypatch, engine, decision):
+    inbox = Answers(decision)
+    result = run_fixture(tmp_path, monkeypatch, engine, "inbox_flow", edit=True, inbox=inbox)
+    assert (result.returncode, result.session_id, result.message) == (0, "fixture", "finished")
+    assert inbox.requests[0] == ("question", "어느 값인가요?")
+    if engine == "cline":
+        kind, description = inbox.requests[1]
+        name, data = description.split("\n", 1)
+        assert (kind, name, json.loads(data)) == ("permission", "editor", editor_call(tmp_path / "target")["rawInput"])
+        assert (tmp_path / "target").exists() == (decision == "approve")
+    else:
+        assert len(inbox.requests) == 1
+    assert sorted(inbox.receipts) == inbox.sent == list(range(1, len(inbox.requests) + 1))
+
+
+@pytest.mark.parametrize("engine,scenario", [
+    ("cline", "wrong_kind"), ("cline", "outside"), ("cline", "review_write"), ("gemini", "denied")
+])
+def test_inbox_cannot_elevate_role(tmp_path, monkeypatch, engine, scenario):
+    inbox = Answers()
+    assert run_fixture(tmp_path, monkeypatch, engine, scenario, inbox=inbox).returncode
+    assert not inbox.requests
+
+
+def test_permission_does_not_persist_secret_hidden_by_json_quoting(tmp_path, monkeypatch):
+    inbox = Answers()
+    result = run_fixture(tmp_path, monkeypatch, scenario="secret_edit", edit=True, inbox=inbox)
+    assert result.returncode == 1 and "cannot be recorded in full" in result.message
+    assert not inbox.requests
+
+
+@pytest.mark.parametrize("scenario", ["inbox_wrong_id", "inbox_no_ack", "inbox_mixed", "inbox_rejected_success",
+                                      "inbox_repeat"])
+def test_interactive_failures(tmp_path, monkeypatch, scenario):
+    inbox = Answers("reject")
+    result = run_fixture(tmp_path, monkeypatch, scenario=scenario, edit=True, inbox=inbox)
+    assert result.returncode and ANSWER not in result.message
+    if scenario in ("inbox_wrong_id", "inbox_no_ack"):
+        assert inbox.sent == [1] and not inbox.receipts
+    if scenario == "inbox_mixed":
+        assert not inbox.requests
+    if scenario == "inbox_repeat":
+        assert len(inbox.requests) == 8 and inbox.receipts == inbox.sent
+
+
+def test_dead_session_cancels_waiting_question(tmp_path, monkeypatch):
+    class Waiting(Answers):
+        async def ask(self, kind, prompt, session):
+            await asyncio.Future()
+
+    inbox = Waiting()
+    result = run_fixture(tmp_path, monkeypatch, scenario="inbox_dead", inbox=inbox)
+    assert result.returncode == 1 and "session ended" in result.message
+    assert not inbox.sent
+
+
+def serve_inbox(engine, scenario, req, receive, send, update):
+    text = req["params"]["prompt"][0]["text"]
+    assert "AGENT_OFFICE_QUESTION" in text and "AGENT_OFFICE_FINAL" in text
+    question = "AGENT_OFFICE_QUESTION\n어느 값인가요?"
+    if scenario == "inbox_mixed":
+        question += "\nAGENT_OFFICE_FINAL"
+    for turn in range(9 if scenario == "inbox_repeat" else 1):
+        update("agent_message_chunk", content={"type": "text", "text": question})
+        send(id=req["id"], result={"stopReason": "end_turn"})
+        if scenario in ("inbox_mixed", "inbox_dead") or turn == 8:
+            return
+        req = receive("session/prompt")
+        assert req["id"] == 5 + turn and req["params"]["sessionId"] == "fixture"
+        text = req["params"]["prompt"][0]["text"]
+        assert text.endswith("사용자 답변\n& |") and PROMPT not in text
+    if scenario == "inbox_no_ack":
+        return
+    if scenario == "inbox_wrong_id":
+        send(id=4, result={"stopReason": "end_turn"})
+        return
+    if engine == "cline":
+        target = Path.cwd() / "target"
+        call = editor_call(target)
+        update("tool_call_update", status="pending", **call)
+        send(method="session/request_permission", id="permission-6", params={"sessionId": "fixture",
+             "toolCall": call, "options": [{"kind": k, "optionId": k} for k in ("allow_once", "reject_once")]})
+        response = json.loads(sys.stdin.readline())
+        assert response["id"] == "permission-6"
+        if response["result"]["outcome"] == {"outcome": "selected", "optionId": "allow_once"}:
+            update("tool_call_update", toolCallId="op", status="in_progress")
+            target.write_text("edited")
+            update("tool_call_update", toolCallId="op", status="completed", rawOutput={"success": True})
+        else:
+            assert response["result"]["outcome"] == {"outcome": "selected", "optionId": "reject_once"}
+            update("tool_call_update", toolCallId="op", status="failed")
+            update("tool_call", status="pending", **call)
+            update("tool_call_update", toolCallId="op", status="failed", rawOutput="User rejected the tool call")
+            if scenario == "inbox_rejected_success":
+                update("tool_call_update", toolCallId="op", status="completed", rawOutput={"success": True})
+    update("agent_message_chunk", content={"type": "text", "text": "finished\nAGENT_OFFICE_FINAL"})
+    send(id=req["id"], result={"stopReason": "end_turn"})
+
+
 def serve():
     engine, scenario, edit_flag, *args = sys.argv[1:]
     edit = edit_flag == "1"
@@ -151,6 +294,8 @@ def serve():
     send(id=change["id"], result={})
     req = receive("session/prompt")
     assert req["params"]["prompt"][0]["text"].startswith(PROMPT + "\n")
+    if scenario.startswith("inbox_"):
+        return serve_inbox(engine, scenario, req, receive, send, update)
     if scenario == "bad_json":
         print(ANSWER, flush=True)
         return
@@ -173,6 +318,8 @@ def serve():
             call["rawInput"]["files"][0]["path"] = str(path.parent.parent / "outside")
         if scenario == "wrong_kind":
             call["kind"] = "execute"
+        if scenario == "secret_edit":
+            call["rawInput"]["new_text"] = '"password":"example_synthetic"'
         opts = [{"kind": k, "optionId": k} for k in ("allow_once", "reject_once")]
         send(method="session/request_permission", id=100, params={"sessionId": "fixture",
              "toolCall": call, "options": [] if scenario == "no_one_shot_permission" else opts})

@@ -1,4 +1,4 @@
-"""Gemini and Cline ACP v1, one isolated local session and one prompt per process."""
+"""Gemini and Cline ACP v1 with one isolated local session per process."""
 
 from __future__ import annotations
 
@@ -7,11 +7,12 @@ import json
 import os
 import signal
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 
+from .dialogue import FINAL_MARKER, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_question
 from .engines import CLINE_ACP_VERSION
-
-FINAL_MARKER = "AGENT_OFFICE_FINAL"
+from .events import snapshot_request
 
 
 class ProtocolError(ValueError):
@@ -79,12 +80,36 @@ def _permitted(call: dict, workspace: Path, allow_edits: bool) -> bool:
     return False
 
 
+def _describe_call(call: dict) -> str:
+    name = call["title"].partition(": ")[0]
+    data = call["rawInput"]
+    # Check original strings first: JSON quoting can conceal an assignment
+    # such as an embedded JSON password field from the journal's redactor.
+    values = (f["path"] for f in data["files"]) if name == "read_files" else data.values()
+    if any(isinstance(value, str) and snapshot_request(value) != value for value in values):
+        raise ProtocolError("Cline permission input cannot be recorded in full")
+    return name + "\n" + json.dumps(data, ensure_ascii=False, indent=2)
+
+
+async def write_record(process, record, *, inbox, decision_id, deadline):
+    guard = inbox.sending(decision_id) if decision_id is not None else nullcontext()
+    with guard:
+        # Acquiring the journal writer lock can outlast the asyncio timer.
+        # A synchronous write must independently honor the original deadline.
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError
+        process.stdin.write(record)
+    await process.stdin.drain()
+
+
 class _Session:
-    def __init__(self, engine, process, workspace, allow_edits, strict_completion):
+    def __init__(self, engine, process, workspace, allow_edits, strict_completion, inbox, deadline):
         self.engine = engine
         self.process = process
         self.workspace = workspace
         self.strict_completion = strict_completion
+        self.inbox = inbox
+        self.deadline = deadline
         self.gemini_calls = {}
         self.file_operations = set()
         self.allow_edits = allow_edits
@@ -93,17 +118,21 @@ class _Session:
         self.fragments = []
         self.pending = set()
         self.granted = set()
+        self.rejected = set()
+        self.requested_calls = {}
+        self.permission_receipts = {}
+        self.permission_request_ids = set()
         self.output_chars = 0
         self.records = 0
         self.retry_waiting = False
 
-    async def send(self, **message):
+    async def send(self, *, decision_id=None, **message):
         encoded = json.dumps({"jsonrpc": "2.0", **message}, ensure_ascii=False)
-        self.process.stdin.write((encoded + "\n").encode("utf-8"))
-        await self.process.stdin.drain()
+        record = (encoded + "\n").encode("utf-8")
+        await write_record(self.process, record, inbox=self.inbox, decision_id=decision_id, deadline=self.deadline)
 
-    async def request(self, request_id, method, **params):
-        await self.send(id=request_id, method=method, params=params)
+    async def request(self, request_id, method, *, decision_id=None, **params):
+        await self.send(id=request_id, method=method, params=params, decision_id=decision_id)
         while True:
             self.records += 1
             if self.records > 50_000:
@@ -124,21 +153,39 @@ class _Session:
                     raise ProtocolError(f"{self.engine} rejected {method}{detail}")
                 if not isinstance(msg.get("result"), dict):
                     raise ProtocolError("invalid ACP result")
+                if decision_id is not None:
+                    self.inbox.delivered(decision_id)
                 return msg["result"]
             data = msg.get("params")
             if (not self.session_id or not isinstance(data, dict)
                     or data.get("sessionId") != self.session_id):
                 raise ProtocolError("unexpected ACP session")
-            if msg["method"] == "session/request_permission" and "id" in msg and request_id == 4:
+            if msg["method"] == "session/request_permission" and "id" in msg and method == "session/prompt":
                 await self.permission(msg["id"], data)
             elif msg["method"] == "session/update" and "id" not in msg:
                 self.update(data.get("update"), request_id=request_id)
             else:
                 raise ProtocolError("unsupported ACP client operation")
 
+    async def ask(self, kind, prompt):
+        # A dead provider cannot consume a later decision. Race its exit even
+        # while the normal stdout reader is waiting for the operator.
+        response = asyncio.create_task(self.inbox.ask(kind, prompt, self.session_id))
+        exited = asyncio.create_task(self.process.wait())
+        try:
+            await asyncio.wait((response, exited), return_when=asyncio.FIRST_COMPLETED)
+            if exited.done() or self.process.returncode is not None:
+                raise ProtocolError("ACP session ended while waiting for the operator")
+            return response.result()
+        finally:
+            for task in (response, exited):
+                task.cancel()
+            await asyncio.gather(response, exited, return_exceptions=True)
+
     async def permission(self, request_id, data):
-        if type(request_id) not in (int, str):
+        if type(request_id) not in (int, str) or request_id in self.permission_request_ids:
             raise ProtocolError("invalid permission request ID")
+        self.permission_request_ids.add(request_id)
         if self.engine == "gemini":
             await self.send(id=request_id, result={"outcome": {"outcome": "cancelled"}})
             raise ProtocolError("Gemini requested interactive permission")
@@ -146,18 +193,37 @@ class _Session:
         if not isinstance(call, dict) or not isinstance(data.get("options"), list):
             raise ProtocolError("invalid ACP permission request")
         tool_id = call.get("toolCallId")
-        if not isinstance(tool_id, str) or not tool_id or tool_id in self.granted:
+        if not isinstance(tool_id, str) or not tool_id or tool_id in self.granted or tool_id in self.rejected:
             raise ProtocolError("invalid or reused tool ID")
         allow = _permitted(call, self.workspace, self.allow_edits)
-        kind = "allow_once" if allow else "reject_once"
-        offered = [o for o in data["options"] if isinstance(o, dict)
-                   and o.get("kind") == kind and o.get("optionId") == kind]
-        outcome = {"outcome": "selected", "optionId": kind} if len(offered) == 1 else {"outcome": "cancelled"}
-        await self.send(id=request_id, result={"outcome": outcome})
-        if not allow or len(offered) != 1:
+
+        def offered(kind):
+            matches = [o for o in data["options"] if isinstance(o, dict) and o.get("optionId") == kind]
+            return len(matches) == 1 and matches[0].get("kind") == kind
+
+        if not allow or not offered("allow_once") or (self.inbox is not None and not offered("reject_once")):
+            outcome = {"outcome": "selected", "optionId": "reject_once"} if offered("reject_once") else {"outcome": "cancelled"}
+            await self.send(id=request_id, result={"outcome": outcome})
             raise ProtocolError("Cline requested a tool outside this role's workspace file permissions")
+        kind = "allow_once"
+        decision_id = None
+        if self.inbox is not None:
+            row = await self.ask("permission", _describe_call(call))
+            if row["decision"] not in ("approve", "reject"):
+                raise ProtocolError("invalid tool permission decision")
+            if row["decision"] == "approve" and not _permitted(call, self.workspace, self.allow_edits):
+                raise ProtocolError("permission target changed while waiting for the operator")
+            kind = "allow_once" if row["decision"] == "approve" else "reject_once"
+            decision_id = row["id"]
+            self.permission_receipts[tool_id] = decision_id
+            self.requested_calls[tool_id] = (call["title"], call["kind"], call["rawInput"])
+        await self.send(id=request_id, result={"outcome": {"outcome": "selected", "optionId": kind}},
+                        decision_id=decision_id)
         self.pending.add(tool_id)
-        self.granted.add(tool_id)
+        if kind == "allow_once":
+            self.granted.add(tool_id)
+        else:
+            self.rejected.add(tool_id)
         self.fragments.clear()
 
     def update(self, update, *, request_id):
@@ -175,7 +241,7 @@ class _Session:
             if request_id == 3 and content["text"] == f"[MODE_UPDATE] {self.mode}":
                 return
             raise ProtocolError("unexpected Gemini mode change")
-        if request_id != 4:
+        if request_id < 4:
             raise ProtocolError("unexpected ACP setup notification")
         meta = update.get("_meta", {})
         if not isinstance(meta, dict):
@@ -212,8 +278,22 @@ class _Session:
                 self.gemini_tool(update, kind, tool_id, status)
                 return
             if status == "pending":
+                # Cline emits tool-started for its result wrapper even when the
+                # handler was skipped after rejection. Require the same input
+                # and a subsequent failed update; never grant another call.
+                if tool_id in self.requested_calls:
+                    identity = (update.get("title"), update.get("kind"), update.get("rawInput"))
+                    if identity != self.requested_calls[tool_id]:
+                        raise ProtocolError("Cline changed the requested operation")
+                    if tool_id in self.granted and tool_id not in self.pending:
+                        raise ProtocolError("Cline reused a completed tool ID")
                 self.pending.add(tool_id)
-            elif status == "in_progress" and tool_id in self.granted:
+            elif tool_id in self.rejected:
+                if status != "failed" or kind != "tool_call_update":
+                    raise ProtocolError("Cline did not honor the rejected tool operation")
+                self.pending.discard(tool_id)
+                self.fragments.clear()
+            elif status == "in_progress" and tool_id in self.granted and tool_id in self.pending:
                 pass
             elif status == "completed" and tool_id in self.granted and tool_id in self.pending:
                 output = update.get("rawOutput")
@@ -225,6 +305,8 @@ class _Session:
                 self.fragments.clear()
             else:
                 raise ProtocolError("failed or unapproved Cline tool operation")
+            if status != "pending" and tool_id in self.permission_receipts:
+                self.inbox.delivered(self.permission_receipts.pop(tool_id))
             return
         raise ProtocolError("unsupported ACP session update")
 
@@ -288,11 +370,29 @@ class _Session:
             if self.allow_edits:
                 instructions += " Use file edit tools for changes."
         instructions += " After completing the task, append a final line containing exactly " + FINAL_MARKER + "."
-        end = await self.request(4, "session/prompt", sessionId=self.session_id,
-                                 prompt=[{"type": "text", "text": prompt + "\n\n" + instructions}])
-        answer, sep, marker = "".join(self.fragments).rstrip().rpartition("\n")
-        if (end.get("stopReason") != "end_turn" or self.pending or self.retry_waiting or not sep or marker.strip() != FINAL_MARKER
-                or not answer.strip() or FINAL_MARKER in answer.splitlines()):
+        if self.inbox is not None:
+            instructions += " " + QUESTION_INSTRUCTIONS
+        turn_text = prompt + "\n\n" + instructions
+        decision_id = None
+        for turn in range(MAX_QUESTIONS + 1):
+            self.fragments.clear()
+            end = await self.request(4 + turn, "session/prompt", sessionId=self.session_id,
+                                     prompt=[{"type": "text", "text": turn_text}], decision_id=decision_id)
+            if end.get("stopReason") != "end_turn" or self.pending or self.retry_waiting:
+                raise ProtocolError("ACP did not complete its turn")
+            text = "".join(self.fragments)
+            question = extract_question(text) if self.inbox is not None else None
+            if question is None:
+                break
+            if turn == MAX_QUESTIONS:
+                raise ProtocolError("ACP question limit reached")
+            row = await self.ask("question", question)
+            if row["decision"] != "answer" or not isinstance(row["answer"], str) or not row["answer"].strip():
+                raise ProtocolError("invalid technical answer")
+            decision_id = row["id"]
+            turn_text = continuation_prompt(row["answer"])
+        answer, sep, marker = text.rstrip().rpartition("\n")
+        if not sep or marker.strip() != FINAL_MARKER or not answer.strip() or FINAL_MARKER in answer.splitlines():
             raise ProtocolError("ACP did not return a complete final answer")
         if self.engine == "gemini" and self.strict_completion:
             required = {"read", "edit"} if self.allow_edits else {"read"}
@@ -301,7 +401,7 @@ class _Session:
         return answer, self.session_id
 
 
-async def run_acp(engine, argv, prompt, workspace, allow_edits, env, timeout, strict_completion):
+async def run_acp(engine, argv, prompt, workspace, allow_edits, env, timeout, strict_completion, inbox=None):
     if engine == "cline":
         env = {**env, "CLINE_SESSION_BACKEND_MODE": "local"}
     process = await asyncio.create_subprocess_exec(
@@ -310,8 +410,8 @@ async def run_acp(engine, argv, prompt, workspace, allow_edits, env, timeout, st
         stderr=asyncio.subprocess.DEVNULL, limit=4 * 1024 * 1024,
     )
     try:
-        async with asyncio.timeout(timeout):
-            session = _Session(engine, process, workspace.resolve(), allow_edits, strict_completion)
+        async with asyncio.timeout(timeout) as timer:
+            session = _Session(engine, process, workspace.resolve(), allow_edits, strict_completion, inbox, timer.when())
             result = await session.run(prompt)
             process.stdin.close()
             # Reject any second terminal result or trailing protocol output.
@@ -319,25 +419,29 @@ async def run_acp(engine, argv, prompt, workspace, allow_edits, env, timeout, st
                 raise ProtocolError("ACP server exited unsuccessfully or sent trailing data")
             return result
     finally:
-        process.stdin.close()
+        await close_stdio_process(process)
+
+
+async def close_stdio_process(process):
+    process.stdin.close()
+    if process.returncode is None:
+        # Windows npm .cmd launchers can leave a child holding the stdout
+        # pipe. End the launcher and descendants still holding the session.
+        if os.name == "nt":
+            killer = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
+            try:
+                await asyncio.to_thread(subprocess.run, [str(killer), "/PID", str(process.pid), "/T", "/F"],
+                                        capture_output=True, timeout=3, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         if process.returncode is None:
-            # Windows npm .cmd launchers can leave a child holding the stdout
-            # pipe. End the launcher and descendants still holding the session.
-            if os.name == "nt":
-                killer = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
-                try:
-                    await asyncio.to_thread(subprocess.run, [str(killer), "/PID", str(process.pid), "/T", "/F"],
-                                            capture_output=True, timeout=3, check=False)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-            else:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            if process.returncode is None:
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-            await asyncio.wait_for(process.wait(), timeout=3)
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        await asyncio.wait_for(process.wait(), timeout=3)

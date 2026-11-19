@@ -32,6 +32,16 @@ const engineNames = new Map([
 ]);
 const roles = [['developer', '개발자', 'codex'], ['reviewer', '리뷰어', 'antigravity']];
 const capabilityLabels = [['read', '읽기'], ['edit', '수정'], ['review', '리뷰']];
+const inboxStates = {pending: '응답 대기', decided: '결정 접수', delivered: '작업자에게 전달됨', expired: '만료됨'};
+const decisionLabels = {answer: '답변', approve: '이번 요청 승인', reject: '거절'};
+const inboxMode = run => run.use_inbox === true ? '협업 요청함 사용' : '협업 요청함 꺼짐';
+const inboxPath = id => '/runs/' + id + '/inbox';
+const requestKey = row => row.run_id + '/' + row.id;
+
+function decisionLabel(row) {
+  const action = decisionLabels[row.decision];
+  return [inboxStates[row.status] ?? '상태 미확인', action, row.decision === 'answer' && row.answer].filter(Boolean).join(' · ');
+}
 const checkedTime = new Intl.DateTimeFormat('ko-KR', {dateStyle: 'short', timeStyle: 'medium'});
 function timeLabel(value) {
   const stamp = typeof value === 'string' ? Date.parse(value) : NaN;
@@ -81,6 +91,8 @@ export function mountStudio(win) {
   let timer, closed = false, starting = false, restoring = true;
   let engineSnapshot = null, engineRequest = null, enginesStale = true;
   const stopping = new Set();
+  const deciding = new Set(), unconfirmed = new Map();
+  let pendingRows = [], historySnapshot = null, inboxAvailable = false;
   let pending = null;
   try {
     const saved = JSON.parse(win.sessionStorage.getItem(pendingKey));
@@ -220,8 +232,12 @@ export function mountStudio(win) {
     const unavailable = !host || !online;
     get('register').disabled = unavailable || registering;
     get('run-fields').disabled = unavailable || !workspace() || starting || Boolean(pending);
-    get('start').disabled = unavailable || starting || (!pending && !workspace());
+    const needsInbox = pending ? pending.use_inbox === true : get('use-inbox').checked;
+    get('start').disabled = unavailable || starting || (!pending && !workspace()) || (needsInbox && !inboxAvailable);
     get('stop').disabled = unavailable || stopping.has(selected);
+    for (const card of get('inbox-list').children) {
+      card.querySelector('fieldset').disabled = unavailable || !inboxAvailable || deciding.has(card.dataset.key);
+    }
     say('start', starting ? '접수 확인 중…' : pending ? '접수 확인 후 같은 요청 재시도 ↗' : '작업 시작 ↗');
   }
 
@@ -276,6 +292,7 @@ export function mountStudio(win) {
         if (restoring && pending) {
           get('task').value = pending.task;
           get('edit-mode').checked = pending.allow_edits;
+          get('use-inbox').checked = pending.use_inbox === true;
           renderFolders(pending.indices);
         }
         renderRuns();
@@ -284,6 +301,169 @@ export function mountStudio(win) {
       say('catalog-error', '');
     } catch {
       if (!closed && sequence === catalogSequence) say('catalog-error', '작업공간 목록을 불러오지 못했습니다.');
+    }
+  }
+
+  async function requestHistory(id) {
+    const {requests} = await api(inboxPath(id));
+    if (!Array.isArray(requests) || requests.some(row => row.run_id !== id || !validId(row.id))) {
+      throw new Error('요청 내역 형식 오류');
+    }
+    return requests;
+  }
+
+  function requestCard(row, actionable) {
+    const card = make('li'), title = make('h3'), meta = make('p'), prompt = make('pre');
+    const question = row.kind === 'question';
+    card.dataset.key = requestKey(row);
+    card.dataset.kind = row.kind;
+    title.textContent = question ? '기술 질문' : row.kind === 'permission' ? '도구 권한 요청' : '요청 종류 미확인';
+    meta.className = 'inbox-meta';
+    const role = roles.find(([id]) => id === row.role)?.[1] ?? '역할 미확인';
+    meta.textContent = [role, engineNames.get(row.engine) ?? '엔진 미확인',
+      Number.isInteger(row.attempt) && row.attempt > 0 && row.attempt + '번째 시도', actionable && '응답 대기',
+      timeLabel(row.created_at)].filter(Boolean).join(' · ');
+    prompt.textContent = row.prompt;
+    card.append(title, meta, prompt);
+    if (!actionable) {
+      const status = make('p');
+      status.className = 'inbox-meta inbox-status';
+      status.textContent = decisionLabel(row);
+      card.append(status);
+      const dates = [['decided_at', '결정'], ['delivered_at', '전달'], ['expired_at', '만료']]
+        .filter(([field]) => timeLabel(row[field])).map(([field, label]) => label + ' ' + timeLabel(row[field]));
+      if (dates.length) {
+        const times = make('small');
+        times.textContent = dates.join(' · ');
+        card.append(times);
+      }
+      return card;
+    }
+    const link = make('a'), fields = make('fieldset'), legend = make('legend'), actions = make('div');
+    const url = new URL('/', win.location.href);
+    if (hostId !== 'local') url.searchParams.set('host', hostId);
+    url.searchParams.set('run', row.run_id);
+    url.hash = 'detail';
+    link.href = url.pathname + url.search + url.hash;
+    link.className = 'inbox-link';
+    const task = runs.find(run => run.id === row.run_id)?.task;
+    link.textContent = (task ? task.slice(0, 100) + ' · ' : '') + '실행 상세 ' + row.run_id.slice(0, 8);
+    link.addEventListener('click', event => {
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
+      event.preventDefault();
+      selectRun(row.run_id);
+      get('detail-title').focus();
+    });
+    legend.className = 'sr-only';
+    legend.textContent = title.textContent + ' 응답';
+    fields.append(legend);
+    let answer;
+    if (question) {
+      const label = make('label');
+      answer = make('textarea');
+      answer.id = 'answer-' + row.run_id + '-' + row.id;
+      answer.rows = 2;
+      label.htmlFor = answer.id;
+      label.textContent = '답변 (최대 8,192바이트)';
+      fields.append(label, answer);
+    }
+    actions.className = 'inbox-actions';
+    for (const action of question ? ['answer'] : ['approve', 'reject']) {
+      const button = make('button');
+      button.type = 'button';
+      button.className = action === 'reject' ? 'stop' : 'secondary';
+      button.textContent = action === 'answer' ? '답변 보내기' : action === 'approve' ? '이번 요청만 승인' : '거절';
+      button.addEventListener('click', () => submitDecision(row, action, answer));
+      actions.append(button);
+    }
+    fields.append(actions);
+    card.append(link, fields);
+    return card;
+  }
+
+  function renderInbox(rows) {
+    pendingRows = rows.filter(row => validId(row.id) && validId(row.run_id) && row.status === 'pending' &&
+      ['question', 'permission'].includes(row.kind));
+    const list = get('inbox-list');
+    const previous = new Map([...list.children].map(card => [card.dataset.key, card]));
+    for (const [index, row] of pendingRows.entries()) {
+      const key = requestKey(row);
+      const card = previous.get(key) ?? requestCard(row, true);
+      previous.delete(key);
+      if (list.children[index] !== card) list.insertBefore(card, list.children[index] ?? null);
+    }
+    for (const card of previous.values()) card.remove();
+    say('inbox-count', String(pendingRows.length));
+    say('inbox-note', '이 호스트에 대기 중인 요청이 없습니다.');
+    get('inbox-note').hidden = pendingRows.length > 0;
+    controls();
+  }
+
+  function receipt(row) {
+    say('decision-note', '실행 ' + row.run_id.slice(0, 8) + ' · 요청 ' + row.id.slice(0, 8) + ' · ' + decisionLabel(row));
+  }
+
+  async function readDecision(row) {
+    const match = (await requestHistory(row.run_id)).find(item => item.id === row.id);
+    if (!match) throw new Error('요청을 확인할 수 없습니다.');
+    return match;
+  }
+
+  async function reconcileUnconfirmed(sequence) {
+    for (const [key, row] of unconfirmed) {
+      if (deciding.has(key)) continue;
+      let match;
+      try {
+        match = await readDecision(row);
+      } catch {
+        if (!closed && sequence === listSequence) say('decision-note', '결정 내역을 다시 확인하고 있습니다.');
+        continue;
+      }
+      if (closed || sequence !== listSequence || !unconfirmed.delete(key)) continue;
+      if (match.status === 'pending') say('decision-note', '아직 결정 기록이 없습니다. 요청을 확인한 뒤 다시 응답할 수 있습니다.');
+      else receipt(match);
+    }
+  }
+
+  async function submitDecision(row, action, answer) {
+    const key = requestKey(row);
+    if (!host || !online || !inboxAvailable || closed || deciding.has(key) || !pendingRows.some(item => requestKey(item) === key)) return;
+    const body = {action};
+    if (action === 'answer') {
+      body.answer = answer.value;
+      if (!body.answer.trim() || new TextEncoder().encode(body.answer).length > 8192) {
+        say('decision-note', '답변을 UTF-8 기준 1~8,192바이트로 입력하세요.');
+        answer.focus();
+        return;
+      }
+    }
+    deciding.add(key);
+    controls();
+    say('decision-note', '요청 상태를 확인하고 있습니다.');
+    try {
+      // Re-read the owning run before each explicit submission, including after a lost receipt or reload.
+      const current = await readDecision(row);
+      if (closed || !online || !inboxAvailable) return;
+      if (current.status !== 'pending') { receipt(current); return; }
+      if (current.kind !== row.kind || current.prompt !== row.prompt || current.engine !== row.engine || current.role !== row.role) {
+        say('decision-note', '요청 내용이 달라졌습니다. 화면을 다시 열어 확인하세요.');
+        return;
+      }
+      unconfirmed.set(key, row);
+      const {request} = await api(inboxPath(row.run_id) + '/' + row.id + '/decision', body);
+      if (closed) return;
+      if (request?.id !== row.id || request.run_id !== row.run_id || request.status === 'pending') throw new Error('접수 결과 미확인');
+      unconfirmed.delete(key);
+      receipt(request);
+    } catch (error) {
+      if (closed) return;
+      if (error.status === 400) {
+        unconfirmed.delete(key);
+        say('decision-note', error.message);
+      } else say('decision-note', '결정 결과를 확인하지 못했습니다. 연결 후 요청 내역을 다시 확인합니다.');
+    } finally {
+      deciding.delete(key);
+      if (!closed) { controls(); refresh(); }
     }
   }
 
@@ -312,7 +492,7 @@ export function mountStudio(win) {
       button.setAttribute('aria-current', String(run.id === selected));
       const title = button.querySelector('.row-title'), meta = button.querySelector('.row-meta');
       if (title.textContent !== run.task) title.textContent = run.task;
-      const info = workspaceName(run.workspace_id) + ' · ' + run.id.slice(0, 8);
+      const info = [workspaceName(run.workspace_id), run.id.slice(0, 8), inboxMode(run)].join(' · ');
       if (meta.textContent !== info) meta.textContent = info;
       badge(button.querySelector('.state'), run.state);
       if (list.children[index] !== li) list.insertBefore(li, list.children[index] ?? null);
@@ -331,6 +511,9 @@ export function mountStudio(win) {
     if (selected !== id) {
       ++detailSequence;
       selected = id;
+      historySnapshot = null;
+      get('history-inbox-list').replaceChildren();
+      say('history-inbox-note', '요청 내역을 불러오는 중입니다.');
       get('detail-body').hidden = true;
       get('run-state').hidden = true;
       say('stop-note', '');
@@ -356,6 +539,7 @@ export function mountStudio(win) {
       return title + ' ' + (engineNames.get(id) ?? '미확인');
     });
     say('run-engines', assignments.join(' · '));
+    say('run-inbox-mode', inboxMode(run));
     say('detail-workspace', workspaceName(run.workspace_id));
     say('run-id', run.id);
     get('attempts').hidden = !Number.isInteger(run.attempts);
@@ -386,7 +570,20 @@ export function mountStudio(win) {
     try {
       const {run} = await api('/runs/' + id);
       if (run?.id !== id) throw new Error('잘못된 실행 응답');
-      if (!closed && sequence === detailSequence) renderDetail(run);
+      if (closed || sequence !== detailSequence) return;
+      renderDetail(run);
+      try {
+        const history = await requestHistory(id);
+        if (closed || sequence !== detailSequence) return;
+        const snapshot = JSON.stringify(history);
+        if (snapshot !== historySnapshot) {
+          get('history-inbox-list').replaceChildren(...history.map(row => requestCard(row, false)));
+          historySnapshot = snapshot;
+        }
+        say('history-inbox-note', history.length ? '' : '이 실행에 기록된 협업 요청이 없습니다.');
+      } catch {
+        if (!closed && sequence === detailSequence) say('history-inbox-note', '최신 요청 내역을 확인할 수 없습니다.');
+      }
     } catch (error) {
       if (closed || sequence !== detailSequence) return;
       if (error.status === 404 && error.code === 'NOT_FOUND') {
@@ -403,8 +600,11 @@ export function mountStudio(win) {
     engineRequest = null;
     engineUnavailable();
     online = false;
+    inboxAvailable = false;
     controls();
     say('connection', message);
+    say('inbox-note', '호스트에 연결하면 대기 요청을 확인하고 응답할 수 있습니다.');
+    get('inbox-note').hidden = false;
     get('connection').dataset.online = 'false';
     get('list-note').hidden = false;
     say('list-note', '실행 기록을 갱신하지 못했습니다. 새로고침하면 다시 연결합니다.');
@@ -415,11 +615,29 @@ export function mountStudio(win) {
     }
   }
 
+  async function loadInbox(sequence) {
+    try {
+      const {requests} = await api('/inbox');
+      if (closed || !online || sequence !== listSequence) return;
+      if (!Array.isArray(requests)) throw new Error('요청 목록 형식 오류');
+      inboxAvailable = true;
+      renderInbox(requests);
+    } catch {
+      if (closed || !online || sequence !== listSequence) return;
+      inboxAvailable = false;
+      controls();
+      say('inbox-note', '이 호스트의 협업 요청함을 확인할 수 없습니다. 요청함을 끄면 새 작업을 시작할 수 있습니다.');
+      get('inbox-note').hidden = false;
+      return;
+    }
+    await reconcileUnconfirmed(sequence);
+  }
+
   async function refresh() {
     if (doc.hidden || closed) return;
     win.clearTimeout(timer);
     const sequence = ++listSequence;
-    let catalog;
+    let catalog, inbox;
     try {
       const directory = await fetchJSON('/api/hosts');
       if (closed || sequence !== listSequence) return;
@@ -436,6 +654,7 @@ export function mountStudio(win) {
       runs = list;
       renderRuns();
       online = true;
+      inbox = loadInbox(sequence);
       controls();
       say('connection', host.name + ' 연결됨');
       get('connection').dataset.online = 'true';
@@ -450,7 +669,7 @@ export function mountStudio(win) {
       if (closed || sequence !== listSequence) return;
       disconnected(connectionErrors[error.code]);
     } finally {
-      await catalog;
+      await Promise.all([catalog, inbox]);
       if (!closed && sequence === listSequence && !doc.hidden) timer = win.setTimeout(refresh, 3000);
     }
   }
@@ -491,6 +710,12 @@ export function mountStudio(win) {
   }
 
   function accepted(run) {
+    if (pending?.use_inbox === true && run.use_inbox !== true) {
+      keepPending(null);
+      say('start-note', '접수한 실행에서 선택한 협업 요청함 설정을 확인할 수 없습니다. 실행 상세를 확인하세요.');
+      return;
+    }
+    if (pending && !Object.hasOwn(pending, 'use_inbox')) get('use-inbox').checked = true;
     keepPending(null);
     get('task').value = '';
     say('start-note', '접수했습니다. 실행 상세에서 진행 상황을 확인하세요.');
@@ -528,6 +753,7 @@ export function mountStudio(win) {
         workspace_id: workspace().id,
         indices: [Number(get('primary').value), ...checkedExtras()],
         task, allow_edits: get('edit-mode').checked,
+        use_inbox: get('use-inbox').checked,
         developer_engine: get('developer-engine').value,
         reviewer_engine: get('reviewer-engine').value,
       };
@@ -543,7 +769,8 @@ export function mountStudio(win) {
       let run = retrying ? await lookupRequest(request.id) : null;
       if (!run) {
         submitting = true;
-        ({run} = await api('/runs', request));
+        // Stage 2 peers accept the original payload when the inbox is off.
+        ({run} = await api('/runs', {...request, use_inbox: request.use_inbox || undefined}));
       }
       if (closed) return;
       if (run?.id !== request.id) throw new Error('잘못된 접수 응답');
@@ -579,6 +806,7 @@ export function mountStudio(win) {
   });
 
   get('workspace').addEventListener('change', () => renderFolders());
+  get('use-inbox').addEventListener('change', controls);
   get('primary').addEventListener('change', () => {
     renderExtras(checkedExtras());
   });

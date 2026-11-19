@@ -42,7 +42,18 @@ def parse_review_verdict(output: str) -> str:
     return "UNKNOWN"
 
 
-def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=None, save_stage=None):
+def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=None, save_stage=None, inbox_factory=None):
+    def run_role(state, role, prompt):
+        engine = state[role]
+        options = {"workspace": Path(state["workspace"]), "allow_edits": role == "developer" and state["allow_edits"]}
+        if not inbox_factory:
+            return adapters[engine].execute(prompt, **options)
+        channel = inbox_factory(role, engine)
+        try:
+            return adapters[engine].execute(prompt, inbox=channel, **options)
+        finally:
+            channel.expire()
+
     def emit(event, phase, count, *, state=None, engine=None, returncode=None):
         if recorder is not None:
             payload = {"phase": phase, "role": {"developer": "developer", "test": "tester", "review": "reviewer"}[phase], "engine": engine}
@@ -83,10 +94,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             f"Task:\n{state['task']}\n\n"
             f"Feedback from last attempt:\n{state.get('feedback', '(none)')}"
         )
-        result = adapters[state["developer"]].execute(
-            prompt, workspace=Path(state["workspace"]),
-            allow_edits=state["allow_edits"],
-        )
+        result = run_role(state, "developer", prompt)
         if save_stage:
             save_stage("developer_output", result.message)
         emit("STAGE_COMPLETED" if result.returncode == 0 else "STAGE_FAILED", "developer", count,
@@ -158,9 +166,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             f"Working-tree status:\n{git_summary(Path(state['workspace']))}\n\n"
             f"Test results:\n{state.get('test_output', '')}"
         )
-        result = adapters[state["reviewer"]].execute(
-            prompt, workspace=Path(state["workspace"]), allow_edits=False,
-        )
+        result = run_role(state, "reviewer", prompt)
         output = result.message
         if save_stage:
             save_stage("review_output", output)

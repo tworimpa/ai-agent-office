@@ -1,11 +1,19 @@
 # Gemini CLI와 Cline CLI 실행 규약
 
-작업실은 두 엔진과 ACP v1 표준입출력으로 통신한다. 프로세스 하나가 새 세션에서 요청 하나를 처리하고 종료된다. 요청 본문은 UTF-8 JSON-RPC 레코드에 담는다. 서버가 지정한 세션 ID, 역할 모드 설정 응답, 도구 호출의 완료, 마지막 답변, `end_turn`과 정상 종료를 확인한다. 중간 답변·도구 출력에 나온 리뷰 판정은 버리고, 워커에게 요청한 마지막 줄 `AGENT_OFFICE_FINAL`을 확인한 뒤 제거한다. [ACP 수명 주기](https://agentclientprotocol.com/protocol/initialization) · [프롬프트 차례](https://agentclientprotocol.com/protocol/prompt-turn)
+작업실은 두 엔진과 ACP v1 표준입출력으로 통신한다. 한 역할을 실행할 때 프로세스와 세션을 하나씩 연다. 요청 본문은 UTF-8 JSON-RPC 레코드에 담는다. 서버가 지정한 세션 ID, 역할 모드 설정 응답, 도구 호출의 완료, 마지막 답변, `end_turn`과 정상 종료를 확인한다. 중간 답변·도구 출력에 나온 리뷰 판정은 버리고, 워커에게 요청한 마지막 줄 `AGENT_OFFICE_FINAL`을 확인한 뒤 제거한다. [ACP 수명 주기](https://agentclientprotocol.com/protocol/initialization) · [프롬프트 차례](https://agentclientprotocol.com/protocol/prompt-turn)
 
 | 엔진 | 실행 명령 | 계획·리뷰 모드 | 수정 모드 |
 | --- | --- | --- | --- |
 | Gemini | `gemini --acp --approval-mode plan` 또는 `gemini --acp --approval-mode auto_edit` | ACP `plan` | ACP `autoEdit` |
 | Cline | `cline --acp --auto-approve false` | ACP `plan` | ACP `act` |
+
+## 협업 요청함에서 이어가기
+
+질문이 필요한 작업자는 답변 첫 줄에 `AGENT_OFFICE_QUESTION`을 쓰고 다음 줄부터 기술 질문을 적는다. 작업실은 제공자가 이 차례를 `end_turn`으로 끝내고 처리 중인 도구가 모두 정리된 뒤 질문을 접수한다. 사용자가 답하면 같은 프로세스와 세션 ID로 다음 `session/prompt`를 보낸다. 이때 사용자의 답은 원래 작업에 관한 설명으로 전달한다. 한 번의 역할 실행에서 질문은 최대 8회이며, 사용자의 응답을 기다리는 시간도 기본 900초의 실행 제한에 포함된다. 프로세스가 종료되면 이 대화의 전달도 끝난다. 사용자가 답한 요청의 전달 여부는 후속 프롬프트와 ID가 같은 제공자 응답으로 확인한다. [ACP 프롬프트 차례](https://agentclientprotocol.com/protocol/prompt-turn) · [Cline 후속 프롬프트 처리](https://github.com/cline/cline/blob/a459f1d04dea030833b558be645011ab739c463b/apps/cli/src/acp/acpAgent.ts)
+
+Cline 3.0.74가 `session/request_permission`을 보내면 작업실은 아래의 역할·경로·입력 검사를 먼저 수행한다. 통과하면 요청함에 도구 이름과 원본 입력 전체를 표시한다. `read_files` 요청에서는 모든 경로와 줄 범위를, `editor` 요청에서는 경로와 삽입·치환할 텍스트를 확인할 수 있다. 화면에 원문을 온전히 표시할 수 있어야 결정할 수 있다. 사용자의 승인 또는 거절은 해당 호출에만 적용된다. Cline이 거절을 처리하고 다음 작업을 이어가는 동안에도 거절한 호출의 성공 알림은 오류로 처리한다. 권한 결정의 전달 여부는 같은 도구 ID로 돌아오는 상태 알림으로 확인한다. 직접 CLI 실행과 `verify-engine`에서는 기존 역할별 파일 정책을 사용한다. [Cline의 일회성 권한 응답](https://github.com/cline/cline/blob/a459f1d04dea030833b558be645011ab739c463b/apps/cli/src/acp/permissions.ts) · [거절한 도구의 결과 처리](https://github.com/cline/cline/blob/a459f1d04dea030833b558be645011ab739c463b/sdk/packages/agents/src/agent-runtime.ts)
+
+Gemini v0.69.0은 작업실의 기술 질문에 답한 뒤 같은 세션에서 이어갈 수 있다. 이 버전의 도구 권한 요청은 표시용 제목·도구 분류·위치를 제공하고, 원본 도구 입력은 생략한다. 따라서 작업실은 Gemini의 추가 권한 요청을 취소하고 실행을 실패로 기록한다. [Gemini의 권한 요청 구성](https://github.com/google-gemini/gemini-cli/blob/58840eb92ebf1474193a05817c34a74820bd444a/packages/cli/src/acp/acpSession.ts#L724-L764)
 
 ## Gemini CLI
 
