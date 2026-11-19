@@ -89,8 +89,11 @@ h1 { font: 700 clamp(1.7rem, 4vw, 3rem)/1.25 var(--serif); overflow-wrap: anywhe
 .ledger p:empty { display: none; }
 .dark { color: #594422; white-space: nowrap; }
 .dark:hover { color: var(--ink); }
-#ledger-result h3 { margin-block: 12px 4px; font-size: .95rem; }
-#ledger-result p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+#ledger-result { margin-top: 14px; }
+#ledger-result details { color: #3d3227; border-top: 1px solid #d4c2a4; padding-block: 10px; }
+#ledger-result summary { color: #533b22; font-weight: 700; }
+#ledger-result p { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+.ledger :focus-visible { outline-color: #87572f; }
 .empty-room { padding: clamp(28px, 9vw, 110px) 30px; border: 1px solid var(--line); min-height: 370px; background: linear-gradient(90deg, #171a15, #171a15bc 48%, #171a153d), #32271a url("/workspace-study.webp") center / cover; }
 .empty-room p { color: var(--soft); max-width: 38ch; margin-block: 12px 20px; line-height: 1.7; }
 
