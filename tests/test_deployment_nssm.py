@@ -237,6 +237,7 @@ def test_nssm_restarts_and_restores_previous_boot_visible_in_studio(monkeypatch)
         with _service(name, wrapper, python, target, journal, log):
             account_sid = inspect_windows(config, target)["account_sid"]
             _grant(scratch, account_sid, "RX")
+            _grant(target, account_sid, "RX")
             _grant(runtime_data, account_sid, "M")
             try:
                 _deploy(python, release, target, config, 1, first, None, 0)
