@@ -58,9 +58,13 @@ def fixture():
     resume = "--resume" if engine == "claude" else "--conversation"
     if resume in args:
         assert args[args.index(resume) + 1] == session
-        assert 'spec-v2 & "기술 답변"' in raw and "permission" in raw
-        text = "continued"
-        if case == "wrong-session":
+        if '중간 지시 & "원문"' in raw:
+            assert case in ("direction", "direction-lost")
+            text = "지시 반영"
+        else:
+            assert 'spec-v2 & "기술 답변"' in raw and "permission" in raw
+            text = "continued"
+        if case == "wrong-session" or (case == "direction-lost" and text == "지시 반영"):
             session = str(uuid.uuid4())
     else:
         assert "Original specification" in raw and "AGENT_OFFICE_QUESTION" in raw

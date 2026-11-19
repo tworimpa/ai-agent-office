@@ -191,6 +191,141 @@ def test_question_and_permission_validation_and_timeout(journal):
     asyncio.run(exercise())
 
 
+def test_product_decision_is_typed_and_cannot_use_delegated_technical_answer(journal, monkeypatch):
+    from agent_office import away_ledger
+    from agent_office.away_expert import RULES
+    from agent_office.office_state import office_snapshot
+    from agent_office.office_wire import check_office_reply
+    from agent_office.studio_ssh import _check_inbox_reply
+
+    path, run_id, inbox, channel = journal
+    with TaskStore(path, existing=True) as store, store._write():
+        away_ledger.register_policy(store.connection, run_id, {
+            "rules": [{"topic": "test_command", "path": "README.md"}],
+            "specialist_engine": "codex", "verifier_engine": "antigravity",
+        }, "a" * 40)
+    monkeypatch.setattr("agent_office.away_consult.run_consultation",
+                        lambda *a, **k: pytest.fail("product decisions must never consult"))
+
+    async def exercise():
+        waiter, request_id = await pending(channel, inbox, "product_decision", RULES["test_command"])
+        item, = inbox.pending()
+        assert item["kind"] == "product_decision"
+        assert item["source"] is None and not item["delegation_in_progress"]
+        _check_inbox_reply(200, {"requests": [item]}, "GET", "/inbox", None)
+        assert away_ledger.return_report(path)["counts"]["product_decisions"] == 1
+        office = office_snapshot(path)
+        assert office["counts"]["product_decisions"] == 1 and office["counts"]["questions"] == 0
+        check_office_reply(office, 0)
+        with pytest.raises(ValueError):
+            inbox.decide(run_id, request_id, {"action": "approve"})
+        payload = {"action": "answer", "answer": "기존 입력 흐름을 유지합니다."}
+        decided = Inbox(path).decide(run_id, request_id, payload)
+        assert await waiter == decided
+        assert decided["source"] == "operator"
+        with channel.sending(request_id):
+            pass
+        channel.delivered(request_id)
+        history, = Inbox(path).history(run_id)
+        assert history["kind"] == "product_decision" and history["status"] == "delivered"
+
+    asyncio.run(exercise())
+
+
+def test_dialogue_product_decision_marker_has_its_own_continuation():
+    from agent_office.dialogue import continuation_prompt, extract_request
+
+    marker = "AGENT_OFFICE_PRODUCT_DECISION"
+    assert extract_request(marker + "\r\n사용자 동작을 바꿀까요?\r\n") == (
+        "product_decision", "사용자 동작을 바꿀까요?")
+    assert extract_request("AGENT_OFFICE_QUESTION\n테스트 명령?") == ("question", "테스트 명령?")
+    assert "product behavior" in continuation_prompt("keep", kind="product_decision")
+    with pytest.raises(ValueError):
+        extract_request(marker + "\nAGENT_OFFICE_QUESTION\n질문")
+
+
+def test_choice_only_policy_records_guarded_answer_and_rejects_other_actions(journal, monkeypatch):
+    from agent_office import away_ledger
+    from agent_office.studio_ssh import RemoteUnavailable, _check_inbox_reply, _check_return_report
+    from agent_office.technical_choices import CHOICE_MARKER, answer_for_option, render_choice
+
+    path, run_id, inbox, channel = journal
+    revision = "a" * 40
+    choice = {"purpose": "diagnosis", "options": [{"path": "src/worker.py", "line": 9},
+                                                 {"path": "src/other.py", "line": 10}]}
+    evidence = {"purpose": "diagnosis", "option": 1, "path": "src/worker.py", "line": 9,
+                "quote": "def worker():", "revision": revision}
+    calls = []
+
+    async def consult(repo, revision, rule, specialist, verifier, folders, **kwargs):
+        calls.append(rule)
+        assert (specialist, verifier, folders) == ("codex", "codex", ["src"])
+        return {"answer": answer_for_option(evidence), "evidence": evidence}
+
+    monkeypatch.setattr("agent_office.away_consult.run_consultation", consult)
+    with TaskStore(path, existing=True) as store, store._write():
+        store.connection.execute("UPDATE studio_runs SET folders=? WHERE id=?", ('["src"]', run_id))
+        away_ledger.register_choices(store.connection, run_id, revision, ("codex", "codex"))
+    assert away_ledger.get_policy(path, run_id) is None and away_ledger.get_choices(path, run_id)
+
+    async def exercise():
+        waiter = asyncio.create_task(channel.ask("question", CHOICE_MARKER + "\n" + json.dumps(choice), "live-session"))
+        proposal = await asyncio.wait_for(waiter, 3)
+        assert proposal["prompt"] == render_choice(choice) and proposal["source"] == "delegate"
+        with channel.sending(proposal["id"]):
+            pass
+        channel.delivered(proposal["id"])
+        item, = inbox.history(run_id)
+        assert item["delegation_details"]["evidence"] == evidence
+        _check_inbox_reply(200, {"requests": [item]}, "GET", f"/runs/{run_id}/requests", None)
+        report = away_ledger.return_report(path)
+        assert report["counts"]["active"] == report["counts"]["delegated"] == 1
+        _check_return_report(report)
+        tampered = dict(report["delegated"][0], evidence=dict(evidence, option=2))
+        with pytest.raises(RemoteUnavailable):
+            _check_return_report(dict(report, delegated=[tampered]))
+
+        for invalid in (dict(choice, action="approve"), dict(choice, purpose="product")):
+            text = CHOICE_MARKER + "\n" + json.dumps(invalid)
+            answer_waiter, request_id = await pending(channel, inbox, "question", text)
+            item, = inbox.pending()
+            assert item["delegation_reason"] == away_ledger.INVALID_CHOICE
+            with pytest.raises(ValueError):
+                inbox.decide(run_id, request_id, {"action": "approve"})
+            inbox.decide(run_id, request_id, {"action": "answer", "answer": "운영자 결정"})
+            assert (await answer_waiter)["source"] == "operator"
+        assert len(calls) == 1
+
+    asyncio.run(exercise())
+    away_ledger.revoke_policy(path, run_id)
+    assert not away_ledger.get_choices(path, run_id)
+    assert away_ledger.return_report(path)["counts"]["active"] == 0
+
+
+def test_new_inbox_type_migrates_existing_questions_with_away_history(journal):
+    path, run_id, inbox, channel = journal
+
+    async def exercise():
+        waiter, request_id = await pending(channel, inbox, "question")
+        payload = {"action": "answer", "answer": "ok"}
+        inbox.decide(run_id, request_id, payload)
+        await waiter
+        with channel.sending(request_id):
+            pass
+        channel.delivered(request_id)
+
+        with TaskStore(path, existing=True) as store, store._write():
+            db = store.connection
+            db.execute("INSERT INTO studio_away_checks(request_id,reason) VALUES (?,?)",
+                       (request_id, "existing diagnostic"))
+            db.execute("ALTER TABLE studio_requests DROP COLUMN decision_type")
+        row, = Inbox(path).history(run_id)
+        assert row["id"] == request_id and row["kind"] == "question" and row["status"] == "delivered"
+        assert row["delegation_reason"] == "existing diagnostic"
+
+    asyncio.run(exercise())
+
+
 def test_oldest_pending_survives_many_newer_requests(journal, monkeypatch):
     _, run_id, inbox, channel = journal
     monkeypatch.setattr("agent_office.studio_inbox.LIST_LIMIT", 2)

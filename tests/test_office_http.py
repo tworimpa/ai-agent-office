@@ -31,7 +31,8 @@ def test_office_page_assets_navigation_and_query_contract(tmp_path):
             assert code == 200 and "오피스 보기" in page.decode()
         for query in ("host=", "run=123", "host=local&host=local", "host=unknown", "host=local&run=" + "a"*32):
             assert request(office, "/office?" + query)[0] == 400
-        assert b"/office" in request(office, "/")[1]
+        assert b'href="/studio"' in request(office, "/")[1]
+        assert b'href="/office"' in request(office, "/studio")[1]
         for path in ("/office.css", "/office.js"):
             assert request(office, path)[0] == 200
         code, portrait = request(office, "/office-agents.webp")

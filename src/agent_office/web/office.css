@@ -48,7 +48,7 @@ h1 { font-size: clamp(2.1rem, 4.4vw, 3.5rem); line-height: 1.2; letter-spacing: 
 .plant i { position: absolute; width: 4px; height: 30px; bottom: 15px; left: 7px; background: #658363; }
 .plant i::before, .plant i::after { content: ""; position: absolute; top: 2px; left: -10px; width: 10px; height: 8px; background: #74936a; box-shadow: 4px 5px #74936a,1px 14px #587e58; }
 .plant i::after { top: -4px; left: 4px; transform: scaleX(-1); }
-.counters { border: 2px solid var(--ink); border-top: 0; background: var(--paper); display: grid; grid-template-columns: repeat(3, 1fr); box-shadow: 3px 3px #c4c6b4; }
+.counters { border: 2px solid var(--ink); border-top: 0; background: var(--paper); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); box-shadow: 3px 3px #c4c6b4; }
 .counters > div { padding: 11px 22px; display: flex; gap: 10px; justify-content: space-between; align-items: center; }
 .counters > div + div { border-left: 1px solid var(--line); }
 .counters dt { color: var(--muted); font-weight: 650; font-size: .88rem; }

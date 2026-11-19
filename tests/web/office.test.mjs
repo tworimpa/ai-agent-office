@@ -41,20 +41,23 @@ function mount(t, route, query = '') {
   return {window, doc, calls, get: id => doc.getElementById(id)};
 }
 
-test('all hosts keep native child links, two roles using the same engine and both request types', async t => {
-  const waiting = agent({parent_id: parent, parent_task: '주문 서비스 개선', activity: 'waiting', request_count: 3,
-    requests: [{id: '1', kind: 'question', prompt: '<img src=x> 포함할까요?'}, {id: '2', kind: 'permission', prompt: '파일 저장 허용?'}]});
+test('all hosts keep native child links, two roles using the same engine and typed requests', async t => {
+  const waiting = agent({parent_id: parent, parent_task: '주문 서비스 개선', activity: 'waiting', request_count: 4,
+    requests: [{id: '1', kind: 'question', prompt: '<img src=x> 포함할까요?'}, {id: '2', kind: 'permission', prompt: '파일 저장 허용?'},
+      {id: '3', kind: 'product_decision', prompt: '저장 화면을 바꿀까요?'}]});
   const reviewer = agent({role: 'reviewer', activity: 'queued', parent_id: parent});
   const history = agent({run_id: parent, run_state: 'CANCELED', activity: 'stopped'});
   const {get, doc, calls} = mount(t, path => {
     if (path === '/api/office') return page([agent()]);
-    if (path === remoteOffice) return page([waiting, reviewer, history], {counts: {active_runs: 1, questions: 2, permissions: 1}});
+    if (path === remoteOffice) return page([waiting, reviewer, history],
+      {counts: {active_runs: 1, questions: 2, permissions: 1, product_decisions: 1}});
   });
   await until(() => doc.querySelectorAll('.station').length === 4);
   assert.deepEqual(calls.sort(), ['/api/hosts', remoteOffice, '/api/office'].sort());
-  const [question, permission] = doc.querySelectorAll('.speech');
+  const [question, permission, product] = doc.querySelectorAll('.speech');
   assert.equal(question.textContent, '기술 질문<img src=x> 포함할까요?');
   assert.equal(permission.textContent, '권한 요청파일 저장 허용?');
+  assert.equal(product.textContent, '제품 동작 결정저장 화면을 바꿀까요?');
   assert.equal(doc.querySelector('img'), null);
   const card = question.closest('a');
   assert.equal(card.getAttribute('href'), '/?host=' + remote + '&run=' + child + '#detail');
@@ -68,6 +71,7 @@ test('all hosts keep native child links, two roles using the same engine and bot
   assert.equal(get('active-count').textContent, '2');
   assert.equal(get('question-count').textContent, '2');
   assert.equal(get('permission-count').textContent, '1');
+  assert.equal(get('product-decision-count').textContent, '1');
   assert.equal(doc.querySelector('#host-filters [aria-current]').getAttribute('href'), '/office');
 });
 

@@ -29,9 +29,15 @@ from .role_skills import RoleSkillRegistry
 from .studio_runner import LocalRunner
 from .away_ledger import return_report, revoke_policy
 from .studio_ssh import RemoteUnavailable, is_peer_route, remote_request
+from .workspace_rooms import WorkspaceRooms, room_route
 
 ASSETS = {
-    "/": ("studio.html", "text/html"),
+    "/": ("workspace-office.html", "text/html"),
+    "/workspace-office.css": ("workspace-office.css", "text/css"),
+    "/workspace-office.js": ("workspace-office.js", "text/javascript"),
+    "/workspace-study.webp": ("workspace-study.webp", "image/webp"),
+    "/workspace-portraits.webp": ("workspace-portraits.webp", "image/webp"),
+    "/studio": ("studio.html", "text/html"),
     "/studio.js": ("studio.js", "text/javascript"),
     "/studio.css": ("studio.css", "text/css"),
     "/office": ("office.html", "text/html"),
@@ -58,11 +64,13 @@ def _journal_id(store):
         return validate_id(store.connection.execute("SELECT id FROM studio_identity WHERE singleton=1").fetchone()[0])
 
 
-def _valid_page_query(query):
-    pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True, max_num_fields=2)
+def _valid_page_query(path, query):
+    keys = {"host", "run", "workspace"} if path == "/" else {"host", "run"}
+    pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True, max_num_fields=len(keys))
     params = dict(pairs)
-    return (len(pairs) == len(params) and not params.keys() - {"host", "run"}
-            and all(re.fullmatch(r"[a-f0-9]{32}", value) for value in params.values()))
+    return (len(pairs) == len(params) and params.keys() <= keys
+            and all(re.fullmatch(r"[a-f0-9]{32}", value) or (key == "host" and value == "local")
+                    for key, value in pairs))
 
 
 def _improvements_query(query):
@@ -110,6 +118,8 @@ class StudioServer(ThreadingHTTPServer):
             self.skills = RoleSkillRegistry(self.db_path)
             self.engines = StudioEngineCatalog(self.db_path)
             self.runner = LocalRunner(self.db_path)
+            self.directions = self.runner.directions
+            self.rooms = WorkspaceRooms(self.db_path, self.catalog, self.runner, self.engines)
             self.improvements = StudioImprovements(self.db_path, improvement_source)
         except BaseException:
             self.server_close()
@@ -180,7 +190,7 @@ class StudioHandler(ObserverHandler):
         # the rejection response on Windows. Read once after the origin checks.
         payload = self._json_body() if write else None
         if parsed.query:
-            studio_page = parsed.path == "/" and _valid_page_query(parsed.query)
+            studio_page = parsed.path in ("/", "/studio") and _valid_page_query(parsed.path, parsed.query)
             office_page = parsed.path in ("/office", "/versions") and re.fullmatch(r"host=(?:local|[a-f0-9]{32})", parsed.query)
             improvements_page = parsed.path == "/improvements" and _improvements_query(parsed.query)
             if write or not (studio_page or office_page or improvements_page):
@@ -234,6 +244,26 @@ class StudioHandler(ObserverHandler):
     def _local_api(self, path, data):
         write = data is not None
         catalog, runner = self.server.catalog, self.server.runner
+        room = room_route("POST" if write else "GET", path.removeprefix("/api")) if path.startswith("/api/") else None
+        if room:
+            workspace_id, view, cursor = room
+            if view == "assignments":
+                self._reply(202, {"run": self.server.rooms.assign(workspace_id, data)})
+            elif view == "inbox":
+                self._reply(200, {"requests": self.server.rooms.inbox(workspace_id)})
+            elif write:
+                self._reply(200, {"settings": self.server.rooms.save(workspace_id, data)})
+            else:
+                self._reply(200, self.server.rooms.snapshot(workspace_id, cursor))
+            return
+        directions = re.fullmatch(r"/api/runs/([a-f0-9]{32})/directions", path)
+        if directions:
+            run_id = directions[1]
+            if write:
+                self._reply(202, {"direction": self.server.directions.submit(run_id, data)})
+            else:
+                self._reply(200, {"directions": self.server.directions.history(run_id)})
+            return
         if path.startswith("/api/deployment"):
             route = deployment_view.deployment_route("POST" if write else "GET", path.removeprefix("/api"))
             if route is None:

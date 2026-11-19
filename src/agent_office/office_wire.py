@@ -2,6 +2,7 @@
 from datetime import datetime
 import re
 
+from .dialogue import PRODUCT_DECISION, REQUEST_KINDS
 from .engines import SUPPORTED_ENGINES
 from .models import ACTIVE, STATES, validate_id
 from .office_state import ACTIVITIES, PAGE_SIZE, PREVIEW_LIMIT, RECENT_RUNS, REQUEST_PREVIEWS, TASK_LIMIT
@@ -51,13 +52,14 @@ def check_office_reply(data, offset):
     counts = data.get("counts")
     if not isinstance(counts, dict) or not 0 <= total - _count(counts.get("active_runs")) <= RECENT_RUNS:
         raise ValueError("Invalid office summary")
-    for key in ("questions", "permissions"):
-        _count(counts.get(key))
+    request_counts = {"question": _count(counts.get("questions")),
+                      "permission": _count(counts.get("permissions")),
+                      PRODUCT_DECISION: _count(counts.get("product_decisions", 0))}
     rows = data.get("agents")
     if not isinstance(rows, list) or len(rows) > PAGE_SIZE * len(ROLES):
         raise ValueError("Invalid agent list")
     seats, runs, ids = set(), {}, set()
-    visible = {"question": 0, "permission": 0}
+    visible = dict.fromkeys(REQUEST_KINDS, 0)
     page_request_count = 0
     for agent in rows:
         if not isinstance(agent, dict):
@@ -89,7 +91,7 @@ def check_office_reply(data, offset):
             raise ValueError("Invalid pending requests")
         page_request_count += count
         for req in previews:
-            if not isinstance(req, dict) or req.get("kind") not in ("question", "permission"):
+            if not isinstance(req, dict) or req.get("kind") not in REQUEST_KINDS:
                 raise ValueError("Invalid request kind")
             request_id = validate_id(req.get("id"))
             if request_id in ids:
@@ -98,11 +100,11 @@ def check_office_reply(data, offset):
             _text(req.get("prompt"), PREVIEW_LIMIT)
             visible[req["kind"]] += 1
     active_on_page = sum(info[3] in ACTIVE or info[3] == "STOP_REQUESTED" for info in runs.values())
-    all_requests = counts["questions"] + counts["permissions"]
+    all_requests = sum(request_counts.values())
     if (len(runs) != min(PAGE_SIZE, max(total - offset, 0)) or any((rid, "developer") not in seats for rid in runs)
             or active_on_page != min(PAGE_SIZE, max(0, counts["active_runs"] - offset))
             or page_request_count > all_requests
             or (not counts["active_runs"] and all_requests)
             or (offset == 0 and (total <= PAGE_SIZE or counts["active_runs"] <= PAGE_SIZE) and page_request_count != all_requests)
-            or any(visible[kind] > counts[kind + "s"] for kind in visible)):
+            or any(visible[kind] > request_counts[kind] for kind in visible)):
         raise ValueError("Office totals contradict visible assignments")

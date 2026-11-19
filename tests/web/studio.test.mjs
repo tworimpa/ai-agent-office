@@ -587,6 +587,25 @@ test('remote inbox preserves a draft, focus and exact text while polling, and sc
   assert.equal(get('run-id').textContent, runB);
 });
 
+test('a pending product decision keeps existing requests usable and submits an answer', async t => {
+  const product = {...question(), id: 'e'.repeat(32), kind: 'product_decision', prompt: '저장 화면을 바꿀까요?'};
+  const report = {counts: {delegated: 0, questions: 1, permissions: 1, product_decisions: 1}, delegated: [], active: []};
+  const {get, requests} = mount(t, {suffix: '?host=' + remote, runs: [run(runA, 'RUNNING'), run(runB, 'RUNNING')],
+    inbox: [question(), product, permission()], report});
+  await waitFor(() => get('inbox-list').children.length === 3);
+  const card = get('inbox-list').querySelector('[data-kind="product_decision"]');
+  assert.equal(card.querySelector('h3').textContent, '제품 동작 결정');
+  assert.equal(card.querySelectorAll('button').length, 1);
+  assert.match(get('report-note').textContent, /제품 결정 대기 1건/);
+  card.querySelector('textarea').value = '기존 화면을 유지하세요.';
+  card.querySelector('button').click();
+  await waitFor(() => get('inbox-list').children.length === 2);
+  assert.deepEqual(requests.find(req => req.method === 'POST'), {
+    path: remoteAPI + '/runs/' + runA + '/inbox/' + product.id + '/decision', method: 'POST',
+    body: {action: 'answer', answer: '기존 화면을 유지하세요.'},
+  });
+});
+
 test('a conflicting or lost decision receipt resolves from that run’s history even when another run is open', async t => {
   for (const conflict of [true, false]) {
     const p = permission();
@@ -742,6 +761,22 @@ test('selected run retains its original policy and can end delegation outside th
   assert.ok(get('run-delegation-stop').hidden);
   assert.equal(get('run-delegation-rules').textContent, rule);
   assert.deepEqual(requests.filter(req => req.method === 'POST'), [{path: remoteAPI + '/runs/' + runB + '/delegation/stop', method: 'POST', body: {}}]);
+});
+
+test('choice-only run can end delegation from detail', async t => {
+  const item = {...run(runB, 'RUNNING'), assignment: {delegation: true}, delegation_active: true};
+  const {get, requests} = mount(t, {runs: [item], suffix: '?host=' + remote + '&run=' + runB, route(path, method) {
+    if (path.endsWith('/delegation/stop') && method === 'POST') {
+      item.delegation_active = false;
+      return Response.json({run_id: item.id, active: false});
+    }
+  }});
+  await waitFor(() => get('run-delegation-status').textContent === '위임 중' && !get('run-delegation-stop').disabled);
+  assert.match(get('run-delegation-roles').textContent, /기술 선택지/);
+  get('run-delegation-stop').click();
+  await waitFor(() => get('run-delegation-status').textContent === '위임 종료');
+  assert.ok(get('run-delegation-stop').hidden);
+  assert.equal(requests.filter(req => req.method === 'POST').length, 1);
 });
 
 test('remote return report links the original run, quotes literal evidence and ends delegation only on explicit request', async t => {

@@ -21,12 +21,14 @@ from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .events import snapshot_request
 from .models import ACTIVE, OfficeError, OwnerInfo, TaskSpec, validate_id
 from .ownership import RunGuard, RunBusyError, recover_run
-from .store import TaskStore
+from .store import TaskStore, encode
 from .studio_diff import changes_in
+from .studio_directions import DirectionChannel, Directions
 from .studio_inbox import Inbox, InboxChannel, expire_requests
 from .away_evidence import DelegationDeferred, git as evidence_git
 from .away_expert import RULES, in_scope, validate_policy
-from .away_ledger import get_policy, get_revision, register_policy
+from .away_ledger import get_choices, get_policy, get_revision, register_choices, register_policy
+from .technical_choices import CHOICE_INSTRUCTIONS
 from .workspace import map_folders, plan_worktree
 
 
@@ -43,7 +45,8 @@ SUMMARY = """SELECT s.id,s.workspace_id,t.request_snapshot AS task,
     t.updated_at,s.allow_edits,EXISTS(SELECT 1 FROM studio_interactive_runs i WHERE i.id=s.id) AS use_inbox,
     (SELECT policy_json FROM studio_away_policies p WHERE p.run_id=s.id) AS delegation,
     (r.ended_at IS NULL AND s.stop_requested=0 AND s.proposed_state IS NULL AND t.current_run_id=s.id AND
-     EXISTS(SELECT 1 FROM studio_away_policies p WHERE p.run_id=s.id AND p.revoked_at IS NULL)) AS delegation_active"""
+     (EXISTS(SELECT 1 FROM studio_away_policies p WHERE p.run_id=s.id AND p.revoked_at IS NULL) OR
+      EXISTS(SELECT 1 FROM studio_away_choice_policies c WHERE c.run_id=s.id AND c.revoked_at IS NULL))) AS delegation_active"""
 SOURCE = """ FROM studio_runs s JOIN runs r ON r.run_id=s.id JOIN tasks t ON t.task_id=r.task_id"""
 DETAIL = ",s.folders,s.developer_output,s.test_output,s.review_output,s.changes,s.diff,s.diagnostic"
 
@@ -113,7 +116,11 @@ class LocalRunner:
                 store.connection.execute(SCHEMA)
                 store.connection.execute("CREATE TABLE IF NOT EXISTS studio_interactive_runs "
                                          "(id TEXT PRIMARY KEY REFERENCES studio_runs(id))")
+                store.connection.execute("""CREATE TABLE IF NOT EXISTS studio_room_assignments(
+                    run_id TEXT PRIMARY KEY REFERENCES studio_runs(id), assignment_json TEXT NOT NULL,
+                    revision TEXT NOT NULL)""")
                 self.inbox = Inbox(self.path)
+                self.directions = Directions(self.path)
                 team_runs.ensure_schema(store.connection)
                 skills.ensure_schema(store.connection)
                 stale = store.connection.execute(
@@ -195,7 +202,7 @@ class LocalRunner:
     def start(self, run_id: str, workspace_id: str, repo: Path, folders: list[str],
               task: str, allow_edits: bool, *, request_digest=None, developer_engine=DEFAULT_DEVELOPER,
               reviewer_engine=DEFAULT_REVIEWER, use_inbox=False, delegation=None, role_skills=None,
-              indices=None, subtasks=None):
+              indices=None, subtasks=None, room_assignment=None, room_revision=None, room_choices=None):
         validate_id(run_id)
         team_runs.validate_task(task)
         if type(allow_edits) is not bool or not folders or not all(isinstance(f, str) for f in folders):
@@ -220,10 +227,11 @@ class LocalRunner:
             if existing:
                 return existing
             map_folders(repo, folders)
-            revision = None
+            revision = room_revision
             if policy or plan:
                 try:
-                    revision = evidence_git(repo, "rev-parse", "--verify", "HEAD^{commit}").decode("ascii").strip()
+                    if revision is None:
+                        revision = evidence_git(repo, "rev-parse", "--verify", "HEAD^{commit}").decode("ascii").strip()
                     if plan:
                         for folder in folders:
                             spec = f"{revision}^{{tree}}" if folder == "." else f"{revision}:{folder}"
@@ -271,6 +279,10 @@ class LocalRunner:
                             queued[child_id] = (prompt, guard)
                     else:
                         add_run(run_id, task, folders, developer_engine, reviewer_engine, digest)
+                        if room_assignment is not None:
+                            store.connection.execute("INSERT INTO studio_room_assignments VALUES(?,?,?)",
+                                                     (run_id, encode(room_assignment), room_revision))
+                            register_choices(store.connection, run_id, room_revision, room_choices)
                 # Pending entries take ownership only after the entire team registration commits.
                 guards.pop_all()
 
@@ -367,6 +379,10 @@ class LocalRunner:
                 result.update(dict(relation), indices=json.loads(relation["indices"]), kind="subtask")
             elif result["delegation"]:
                 result["base_revision"] = get_revision(self.path, run_id)
+            assigned = db.execute("SELECT assignment_json,revision FROM studio_room_assignments WHERE run_id=?",
+                                  (run_id,)).fetchone()
+            if assigned:
+                result.update(assignment=json.loads(assigned[0]), base_revision=assigned[1])
         versions = skills.selected_metadata(db, run_id)
         result["role_skill_snapshots"] = versions
         result["role_skills"] = {role: [version["id"] for version in items] for role, items in versions.items()}
@@ -475,7 +491,9 @@ def worker(db_path, run_id):
         policy = get_policy(db_path, run_id)
         team = store.connection.execute("""SELECT p.base_revision FROM studio_team_children c
             JOIN studio_teams p ON p.id=c.parent_id WHERE c.id=?""", (run_id,)).fetchone()
-        revision = team[0] if team else get_revision(db_path, run_id)
+        room = store.connection.execute("SELECT revision FROM studio_room_assignments WHERE run_id=?", (run_id,)).fetchone()
+        source = team or room
+        revision = source[0] if source else get_revision(db_path, run_id)
         args = SimpleNamespace(repo=Path(task.project), task=raw_task, developer=task.developer_engine,
                                reviewer=task.reviewer_engine, max_attempts=task.max_attempts,
                                timeout=900, test_command=[sys.executable, "-m", "pytest", "-q"],
@@ -491,12 +509,19 @@ def worker(db_path, run_id):
             store.connection.execute("UPDATE studio_runs SET proposed_state=?,proposed_outcome=? WHERE id=?",
                                      (state, outcome, run_id))
 
+        def inbox_factory(role, engine):
+            channel = InboxChannel(db_path, run_id, role, engine)
+            if room:
+                channel.directions = DirectionChannel(db_path, run_id, role, engine)
+            return channel
+
         try:
             execute_run(args, store, run_id, prepared=True, folders=json.loads(row["folders"]),
                         save_stage=save_stage, defer_final=defer_final,
                         base_revision=revision,
                         delegated_questions=tuple(RULES[rule["topic"]] for rule in policy["rules"]) if policy else (),
-                        inbox_factory=(lambda role, engine: InboxChannel(db_path, run_id, role, engine)) if interactive else None)
+                        technical_choice_guidance=CHOICE_INSTRUCTIONS if room and get_choices(db_path, run_id) else "",
+                        inbox_factory=inbox_factory if interactive else None)
         except (ValueError, OSError, subprocess.SubprocessError, RuntimeError):
             message = {
                 "QUEUED": "Git 작업 트리 또는 선택한 폴더를 준비하지 못했습니다.",

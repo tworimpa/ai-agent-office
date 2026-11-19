@@ -10,12 +10,13 @@ import platform
 import uuid
 
 from . import away_ledger
-from .dialogue import DelegationWithdrawn
+from .dialogue import DelegationWithdrawn, PRODUCT_DECISION, REQUEST_KINDS
 from .events import snapshot_request
 from .models import OfficeError, validate_id
 from .ownership import RunGuard
 from .role_skills import role_guidance
 from .store import TaskStore, now
+from .technical_choices import CHOICE_TOPIC, public_prompt, valid_receipt
 
 
 # Both lists fit the remote Studio response budget even with JSON escaping.
@@ -33,6 +34,9 @@ DEFERRED_REASONS = {
 ROLE_STATE = {"developer": "RUNNING", "reviewer": "REVIEWING"}
 PUBLIC = ("id", "run_id", "kind", "status", "role", "engine", "attempt", "prompt", "decision",
           "answer", "created_at", "decided_at", "delivered_at", "expired_at")
+DECISION_TYPE = (
+    f"decision_type TEXT CHECK(decision_type IS NULL OR (kind='question' AND decision_type='{PRODUCT_DECISION}'))"
+)
 SCHEMA = """CREATE TABLE IF NOT EXISTS studio_requests (
     id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES studio_runs(id),
     role TEXT NOT NULL, engine TEXT NOT NULL, attempt INTEGER NOT NULL,
@@ -40,7 +44,7 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS studio_requests (
     kind TEXT NOT NULL CHECK(kind IN ('question','permission')), prompt TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('pending','decided','delivered','expired')),
     decision TEXT, answer TEXT, created_at TEXT NOT NULL, decided_at TEXT,
-    delivered_at TEXT, expired_at TEXT)"""
+    delivered_at TEXT, expired_at TEXT, """ + DECISION_TYPE + ")"
 RUN = """SELECT r.state,r.attempts,r.ended_at,s.stop_requested,s.proposed_state,
     t.developer_engine,t.reviewer_engine,t.current_run_id=r.run_id AS current_run,
     EXISTS(SELECT 1 FROM studio_interactive_runs i WHERE i.id=s.id) AS interactive
@@ -64,11 +68,14 @@ def _action(payload):
         return action, _text(payload["answer"])
     if action in ("approve", "reject") and set(payload) == {"action"}:
         return action, None
-    raise ValueError("질문에는 답변을, 권한 요청에는 승인 또는 거절을 선택하세요.")
+    raise ValueError("질문과 제품 결정에는 답변을, 권한 요청에는 승인 또는 거절을 선택하세요.")
 
 
 def _public(db, row):
     result = {key: row[key] for key in PUBLIC}
+    result["kind"] = row["decision_type"] or row["kind"]
+    if result["kind"] == "question":
+        result["prompt"] = public_prompt(result["prompt"])
     check = db.execute("SELECT * FROM studio_away_checks WHERE request_id=?", (row["id"],)).fetchone()
     result["source"] = "operator" if row["decision"] is not None else None
     result["delegation_reason"] = check["reason"] if check else None
@@ -132,15 +139,17 @@ def refresh_status(db, path, run_id, request_id):
     return _refresh(db, path, _request(db, run_id, request_id), _run(db, run_id))["status"]
 
 
-def _live_pending(db, path, limit=None):
+def _live_pending(db, path, limit=None, workspace_id=None):
     # Oldest first; expired rows do not consume a slot. A rowid cursor stays
     # stable as _refresh expires stale rows inside this transaction.
     last = 0
     yielded = 0
+    scope, arguments = ("", ()) if workspace_id is None else (" AND s.workspace_id=?", (validate_id(workspace_id),))
     while limit is None or yielded < limit:
         rows = db.execute("""SELECT q.rowid,q.* FROM studio_requests q JOIN runs r ON r.run_id=q.run_id
-            WHERE q.status='pending' AND r.host_name=? AND q.rowid>? ORDER BY q.rowid LIMIT ?""",
-            (platform.node(), last, LIST_LIMIT if limit is None else limit - yielded)).fetchall()
+            JOIN studio_runs s ON s.id=q.run_id WHERE q.status='pending' AND r.host_name=? AND q.rowid>?"""
+            + scope + " ORDER BY q.rowid LIMIT ?",
+            (platform.node(), last, *arguments, LIST_LIMIT if limit is None else limit - yielded)).fetchall()
         if not rows:
             return
         for row in rows:
@@ -153,7 +162,8 @@ def _live_pending(db, path, limit=None):
 def live_pending_counts(db, path):
     counts = {"questions": 0, "permissions": 0}
     for row in _live_pending(db, path):
-        counts[row["kind"] + "s"] += 1
+        key = (row["decision_type"] or row["kind"]) + "s"
+        counts[key] = counts.get(key, 0) + 1
     return counts
 
 
@@ -162,16 +172,20 @@ class Inbox:
         self.path = Path(db_path)
         with TaskStore(self.path, existing=True) as store, store._write():
             store.connection.execute(SCHEMA)
+            # Preserve request IDs and their away ledger foreign keys in old journals.
+            if "decision_type" not in {row["name"] for row in store.connection.execute(
+                    "PRAGMA table_info(studio_requests)")}:
+                store.connection.execute("ALTER TABLE studio_requests ADD COLUMN " + DECISION_TYPE)
             away_ledger.ensure_schema(store.connection)
             store.connection.execute("CREATE INDEX IF NOT EXISTS studio_requests_run "
                                      "ON studio_requests(run_id)")
             store.connection.execute("CREATE INDEX IF NOT EXISTS studio_requests_queue "
                                      "ON studio_requests(status)")
 
-    def pending(self):
+    def pending(self, *, workspace_id=None):
         with TaskStore(self.path, existing=True) as store, store._write():
             return [_public(store.connection, row)
-                    for row in _live_pending(store.connection, self.path, LIST_LIMIT)]
+                    for row in _live_pending(store.connection, self.path, LIST_LIMIT, workspace_id)]
 
     def history(self, run_id):
         with TaskStore(self.path, existing=True) as store, store._write():
@@ -231,7 +245,7 @@ class InboxChannel:
             raise OfficeError("REQUEST_CLOSED")
 
     async def ask(self, kind, prompt, session_id):
-        if kind not in ("question", "permission"):
+        if kind not in REQUEST_KINDS:
             raise ValueError("지원하지 않는 요청입니다.")
         prompt = _text(prompt)
         self._bind(session_id)
@@ -246,10 +260,11 @@ class InboxChannel:
                     raise ValueError("실행당 요청 한도에 도달했습니다.")
                 request_id = uuid.uuid4().hex
                 db.execute("INSERT INTO studio_requests "
-                           "(id,run_id,role,engine,attempt,holder,session_hash,kind,prompt,status,created_at) "
-                           "VALUES (?,?,?,?,?,?,?,?,?,'pending',?)",
+                           "(id,run_id,role,engine,attempt,holder,session_hash,kind,decision_type,prompt,status,created_at) "
+                           "VALUES (?,?,?,?,?,?,?,?,?,?,'pending',?)",
                            (request_id, self.run_id, self.role, self.engine, run["attempts"], self.holder,
-                            self.session_hash, kind, prompt, now()))
+                            self.session_hash, "question" if kind == PRODUCT_DECISION else kind,
+                            PRODUCT_DECISION if kind == PRODUCT_DECISION else None, prompt, now()))
                 plan = (away_ledger.begin_question(db, _request(db, self.run_id, request_id))
                         if kind == "question" else None)
             consultation = (asyncio.create_task(self._consult(store, request_id, plan)) if plan else None)
@@ -311,11 +326,17 @@ class InboxChannel:
                                             skill_guidance=guidance, on_stage=on_stage)
             answer = _text(result["answer"])
             evidence = result["evidence"]
-            if (evidence["path"] != plan.path or evidence["revision"] != plan.revision
-                    or type(evidence["line"]) is not int or evidence["line"] < 1):
+            if (evidence["revision"] != plan.revision or type(evidence["line"]) is not int or evidence["line"] < 1):
                 raise ValueError("Invalid delegation evidence")
-            evidence = {"path": plan.path, "revision": plan.revision, "line": evidence["line"],
-                        "quote": _text(evidence["quote"])}
+            receipt = {"path": evidence["path"], "revision": plan.revision, "line": evidence["line"],
+                       "quote": _text(evidence["quote"])}
+            if plan.topic == CHOICE_TOPIC:
+                receipt.update(purpose=evidence["purpose"], option=evidence["option"])
+                if not valid_receipt(public_prompt(plan.prompt), answer, receipt):
+                    raise ValueError("Invalid choice evidence")
+            elif receipt["path"] != plan.path:
+                raise ValueError("Invalid delegation evidence path")
+            evidence = receipt
         except DelegationDeferred as exc:
             reason = DEFERRED_REASONS.get(exc.reason, away_ledger.FAILED)
         except Exception:
@@ -346,7 +367,7 @@ class InboxChannel:
             try:
                 while True:
                     row = self._current(db, request_id)
-                    if row["kind"] != "question":
+                    if row["kind"] != "question" or row["decision_type"] is not None:
                         raise OfficeError("REQUEST_CLOSED")
                     if row["status"] == "decided":
                         if row["decision"] != "answer":
@@ -381,7 +402,7 @@ class InboxChannel:
             db = store.connection
             row = self._current(db, request_id)
             if proposal is not None:
-                if row["kind"] != "question":
+                if row["kind"] != "question" or row["decision_type"] is not None:
                     raise OfficeError("REQUEST_CLOSED")
                 plan, answer, evidence = proposal
                 current, reason = away_ledger.match_question(db, row)
@@ -422,9 +443,14 @@ class InboxChannel:
         if self.closed:
             return
         self.closed = True
-        if self.session_hash is not None:
-            try:
-                with TaskStore(self.path, existing=True) as store:
-                    _expire(store.connection, "run_id=? AND holder=?", (self.run_id, self.holder))
-            finally:
-                self.guard.__exit__(None, None, None)
+        try:
+            if self.session_hash is not None:
+                try:
+                    with TaskStore(self.path, existing=True) as store:
+                        _expire(store.connection, "run_id=? AND holder=?", (self.run_id, self.holder))
+                finally:
+                    self.guard.__exit__(None, None, None)
+        finally:
+            directions = getattr(self, "directions", None)
+            if directions is not None:
+                directions.close()

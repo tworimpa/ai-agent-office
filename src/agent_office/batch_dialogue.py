@@ -8,7 +8,7 @@ import time
 from uuid import UUID
 
 from .adapters import AgentResult, parse_antigravity, parse_output
-from .dialogue import DelegationWithdrawn, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_question
+from .dialogue import DelegationWithdrawn, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_request
 from .fixture_completion import parse_fixture_completion
 
 
@@ -62,33 +62,57 @@ def _turn(engine, argv, message, workspace, env, deadline, guard):
 def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox):
     deadline = time.monotonic() + timeout
     message = prompt + "\n\n" + QUESTION_INSTRUCTIONS
-    session = decision = None
-    for turn in range(MAX_QUESTIONS + 1):
-        command = argv if decision is None else _resume_argv(engine, argv, session)
-        guard = nullcontext() if decision is None else inbox.sending(decision["id"])
+    directions = getattr(inbox, "directions", None)
+    session = decision = direction = kind = None
+    command = argv
+    questions = 0
+    while True:
+        guard = nullcontext()
+        if decision is not None:
+            guard = inbox.sending(decision["id"])
+        elif direction is not None:
+            guard = direction.sending()
         try:
             result = _turn(engine, command, message, workspace, env, deadline, guard)
         except DelegationWithdrawn:
             decision = asyncio.run(asyncio.wait_for(inbox.await_operator(decision["id"]),
                                                     timeout=max(0, deadline - time.monotonic())))
-            result = _turn(engine, command, continuation_prompt(decision["answer"]), workspace, env, deadline,
+            result = _turn(engine, command, continuation_prompt(decision["answer"], kind=kind), workspace, env, deadline,
                            inbox.sending(decision["id"]))
         if result.returncode:
             return result
+        if (decision is not None or direction is not None) and result.session_id != session:
+            raise ValueError("The provider did not confirm the original conversation ID.")
         if decision is not None:
-            if result.session_id != session:
-                raise ValueError("The provider did not confirm the original conversation ID.")
             inbox.delivered(decision["id"])
-        question = extract_question(result.message)
-        if question is None:
+        if direction is not None:
+            direction.delivered()
+        request = extract_request(result.message)
+        if request is not None:
+            if result.truncated or not isinstance(result.session_id, str):
+                raise ValueError("Incomplete question or missing conversation ID.")
+            if questions == MAX_QUESTIONS:
+                raise ValueError("Operator question limit exceeded.")
+            questions += 1
+            kind, question = request
+            session = result.session_id
+            command = _resume_argv(engine, argv, session)
+            decision = asyncio.run(asyncio.wait_for(inbox.ask(kind, question, session),
+                                                    timeout=max(0, deadline - time.monotonic())))
+            message = continuation_prompt(decision["answer"], source=decision.get("source"), kind=kind)
+            direction = None
+            continue
+        if directions is None:
             return result
-        if result.truncated or not isinstance(result.session_id, str):
-            raise ValueError("Incomplete technical question or missing conversation ID.")
-        if turn == MAX_QUESTIONS:
-            break
         session = result.session_id
-        _resume_argv(engine, argv, session)
-        decision = asyncio.run(asyncio.wait_for(inbox.ask("question", question, session),
-                                                timeout=max(0, deadline - time.monotonic())))
-        message = continuation_prompt(decision["answer"], source=decision.get("source"))
-    raise ValueError("Technical question limit exceeded.")
+        command = None
+        if not result.truncated and isinstance(session, str):
+            try:
+                command = _resume_argv(engine, argv, session)
+            except ValueError:
+                pass
+        direction = directions.next(available=command is not None)
+        if direction is None:
+            return result
+        decision = None
+        message = direction.prompt + "\n\n" + QUESTION_INSTRUCTIONS

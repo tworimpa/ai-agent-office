@@ -9,8 +9,8 @@ from pathlib import Path
 
 from .acp import ProtocolError, _file_target, _unique_fields, close_stdio_process, write_record
 from .adapters import AgentResult
-from .dialogue import (FINAL_MARKER, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, QUESTION_MARKER,
-                       continuation_prompt, extract_question)
+from .dialogue import (FINAL_MARKER, MAX_QUESTIONS, PRODUCT_DECISION_MARKER, QUESTION_INSTRUCTIONS, QUESTION_MARKER,
+                       continuation_prompt, extract_request)
 from .events import snapshot_request
 from .dialogue import DelegationWithdrawn
 from .models import OfficeError
@@ -75,6 +75,7 @@ class CodexSession:
         self.workspace = workspace
         self.edits = edits
         self.inbox = inbox
+        self.directions = getattr(inbox, "directions", None)
         self.thread = None
         self.turn = None
         self.records = 0
@@ -84,9 +85,10 @@ class CodexSession:
         self.server_ids = set()
         self.turn_ids = set()
 
-    async def send(self, message, decision=None):
+    async def send(self, message, decision=None, *, direction=None):
         data = (json.dumps(message, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
-        await write_record(self.process, data, inbox=self.inbox, decision_id=decision, deadline=self.deadline)
+        await write_record(self.process, data, inbox=self.inbox, decision_id=decision, deadline=self.deadline,
+                           direction=direction)
 
     async def read(self, *, allow_eof=False):
         self.records += 1
@@ -121,9 +123,9 @@ class CodexSession:
             if "id" in msg or msg["method"] not in INFORMATIONAL:
                 return msg
 
-    async def rpc(self, method, params, decision=None):
+    async def rpc(self, method, params, decision=None, *, direction=None):
         self.client_id += 1
-        await self.send({"method": method, "params": params, "id": self.client_id}, decision)
+        await self.send({"method": method, "params": params, "id": self.client_id}, decision, direction=direction)
         if method == "turn/start":
             # Core can emit item events before the independent RPC worker
             # replies. Bind them to the acknowledged turn before acting on any.
@@ -340,23 +342,27 @@ class CodexSession:
                     raise ProtocolError("invalid Codex final message")
                 # A phase-less completed item requires our explicit turn marker.
                 lines = value.rstrip().splitlines()
-                if item.get("phase") == "final_answer" or lines[0] == QUESTION_MARKER or lines[-1] == FINAL_MARKER:
+                if (item.get("phase") == "final_answer" or lines[0] in (QUESTION_MARKER, PRODUCT_DECISION_MARKER)
+                        or lines[-1] == FINAL_MARKER):
                     if answer is not None:
                         raise ProtocolError("multiple final Codex messages")
                     answer = value
 
     async def run(self, prompt):
         await self.start()
-        prompt += ("\n\n" + QUESTION_INSTRUCTIONS + " For the completed task append a final standalone line "
-                   + FINAL_MARKER + ".")
-        decision = None
-        for index in range(MAX_QUESTIONS + 1):
+        finish_instruction = "For the completed task append a final standalone line " + FINAL_MARKER + "."
+        prompt += "\n\n" + QUESTION_INSTRUCTIONS + " " + finish_instruction
+        decision = kind = direction = None
+        questions = 0
+        while True:
             try:
-                response = await self.rpc("turn/start", {"threadId": self.thread, "input": [{"type": "text", "text": prompt}]}, decision)
+                response = await self.rpc("turn/start", {"threadId": self.thread, "input": [{"type": "text", "text": prompt}]},
+                                          decision, direction=direction)
             except DelegationWithdrawn:
                 row = await self.wait_decision(self.inbox.await_operator(decision))
                 response = await self.rpc("turn/start", {"threadId": self.thread,
-                                          "input": [{"type": "text", "text": continuation_prompt(row["answer"])}]}, decision)
+                                          "input": [{"type": "text", "text": continuation_prompt(row["answer"], kind=kind)}]},
+                                          decision)
             turn = _object(response.get("turn"))
             self.turn = _identifier(turn.get("id"))
             if self.turn in self.turn_ids or turn.get("status") != "inProgress":
@@ -366,22 +372,32 @@ class CodexSession:
                 self.check_binding(early)
             if decision:
                 self.inbox.delivered(decision)
+            if direction is not None:
+                direction.delivered()
             message = await self.complete_turn()
-            question = extract_question(message)
-            if question is None:
-                lines = message.rstrip().splitlines()
-                if lines[-1] == FINAL_MARKER:
-                    lines.pop()
-                if not lines or FINAL_MARKER in lines or not "\n".join(lines).strip():
-                    raise ProtocolError("invalid final Codex answer")
-                final = "\n".join(lines).rstrip()
+            request = extract_request(message)
+            if request is not None:
+                if questions == MAX_QUESTIONS:
+                    raise ProtocolError("Codex question limit reached")
+                questions += 1
+                kind, question = request
+                row = await self.ask(kind, question)
+                if row.get("decision") != "answer" or not isinstance(row.get("answer"), str) or not row["answer"].strip():
+                    raise ProtocolError("invalid Codex clarification")
+                decision, direction = row["id"], None
+                prompt = continuation_prompt(row["answer"], source=row.get("source"), kind=kind)
+                continue
+            lines = message.rstrip().splitlines()
+            if lines[-1] == FINAL_MARKER:
+                lines.pop()
+            final = "\n".join(lines).rstrip()
+            if not final or FINAL_MARKER in lines:
+                raise ProtocolError("invalid final Codex answer")
+            direction = self.directions.next(available=not self.early) if self.directions is not None else None
+            if direction is None:
                 return AgentResult(0, final[:12000], self.thread, len(final) > 12000)
-            if index == MAX_QUESTIONS:
-                raise ProtocolError("Codex question limit reached")
-            row = await self.ask("question", question)
-            if row.get("decision") != "answer" or not isinstance(row.get("answer"), str) or not row["answer"].strip():
-                raise ProtocolError("invalid Codex clarification")
-            prompt, decision = continuation_prompt(row["answer"], source=row.get("source")), row["id"]
+            decision = None
+            prompt = direction.prompt + "\n\n" + QUESTION_INSTRUCTIONS + " " + finish_instruction
 
 
 async def _run(executable, prompt, workspace, edits, env, timeout, inbox):

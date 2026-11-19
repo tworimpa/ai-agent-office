@@ -102,6 +102,12 @@ def test_timeout_expires_unsent_codex_decision(tmp_path, monkeypatch):
 
 def server():
     scenario = os.environ["OFFICE_FIXTURE_CODEX"]
+    if sys.argv[1:2] == ["exec"] and scenario in ("room-choice", "room-product"):
+        from helpers.away_roles import main
+
+        sys.argv[1] = "codex"
+        main()
+        return
     assert sys.argv[1:] == ["app-server", "--listen", "stdio://"]
 
     def read():
@@ -122,14 +128,25 @@ def server():
         emit(method="turn/completed", params={"threadId": "thread", "turn": {
             "id": turn, "items": [], "status": "failed" if scenario == "failed-turn" else "completed"}})
 
-    def start_turn(first):
+    def start_turn(first, direction=False):
         start = read()
         assert start["method"] == "turn/start" and start["params"]["threadId"] == "thread"
         message = start["params"]["input"][0]["text"]
-        assert ("원래 작업" if first else "둘째 방식") in message
+        if direction:
+            marker = "\nOperator directions (JSON array):\n"
+            if marker in message:
+                directions = message.split(marker, 1)[1].split("\n\n", 1)[0]
+                assert json.loads(directions) == ['중간 지시 & "원문"']
+            else:
+                assert '중간 지시 & "원문"' in message
+        else:
+            answer = os.environ.get("OFFICE_FIXTURE_ROOM_ANSWER", "둘째 방식") if scenario.startswith("room-") else "둘째 방식"
+            assert ("원래 작업" if first else answer) in message
         if first:
             assert "AGENT_OFFICE_QUESTION" in message
-        turn = "1" if first else "2"
+        turn = "1" if first else "3" if direction else "2"
+        if direction and scenario == "direction-lost":
+            return turn
         user = {"type": "userMessage", "id": "user" + turn}
         for method in ("item/started", "item/completed"):
             emit(method=method, params={"threadId": "thread", "turnId": turn, "item": user})
@@ -150,8 +167,9 @@ def server():
     params = start["params"]
     assert start["method"] == "thread/start" and params["approvalsReviewer"] == "user"
     assert params["approvalPolicy"] == "on-request" and Path(params["cwd"]) == Path.cwd()
-    assert params["sandbox"] == ("read-only" if scenario == "read-only" else "workspace-write")
-    policy = {"type": "readOnly"} if scenario == "read-only" else {
+    read_only = scenario in ("read-only", "direction-plan", "room-choice", "room-product")
+    assert params["sandbox"] == ("read-only" if read_only else "workspace-write")
+    policy = {"type": "readOnly"} if read_only else {
         "type": "workspaceWrite", "excludeTmpdirEnvVar": True, "excludeSlashTmp": True}
     if scenario == "bad-mode":
         policy["type"] = "dangerFullAccess"
@@ -161,8 +179,17 @@ def server():
     if scenario == "buffered-trailing":
         assert not sys.stdin.buffer.readline()
         return
-    if scenario in ("approve", "reject"):
+    if scenario in ("approve", "reject", "direction", "direction-lost", "direction-plan"):
         agent("AGENT_OFFICE_QUESTION\n어느 방식?")
+        end()
+        turn = start_turn(False)
+    if scenario in ("room-choice", "room-product"):
+        if scenario == "room-choice":
+            choice = {"purpose": "diagnosis", "options": [{"path": "web/first.py", "line": 1},
+                                                            {"path": "web/second.py", "line": 1}]}
+            agent("AGENT_OFFICE_QUESTION\nAGENT_OFFICE_TECHNICAL_CHOICES\n" + json.dumps(choice))
+        else:
+            agent("AGENT_OFFICE_PRODUCT_DECISION\n기본 표시 동작을 바꿀까요?")
         end()
         turn = start_turn(False)
     for method in ("item/commandExecution/terminalInteraction", "model/verification", "model/safetyBuffering/updated"):
@@ -187,7 +214,8 @@ def server():
         emit(method="serverRequest/resolved", params={"threadId": "thread", "requestId": 71})
         item("completed", {**command, "status": "declined" if scenario == "command" else "completed"})
     elif scenario in ("approve", "reject", "read-only", "grant-root", "outside", "move-outside",
-                      "hidden-secret", "withdrawn", "changed-diff", "wrong-turn", "unexpected-receipt", "timeout"):
+                      "hidden-secret", "withdrawn", "changed-diff", "wrong-turn", "unexpected-receipt", "timeout",
+                      "direction", "direction-lost"):
         grant = {"grantRoot": str(Path.cwd())} if scenario == "grant-root" else {}
         target = Path.cwd() / "answer.txt"
         outside = str(Path.cwd().parent / "outside")
@@ -205,8 +233,9 @@ def server():
             assert not sys.stdin.buffer.readline()
             return
         decision = read()["result"]["decision"]
-        assert decision == ("accept" if scenario in ("approve", "changed-diff", "unexpected-receipt") else "decline")
-        if scenario == "approve":
+        assert decision == ("accept" if scenario in ("approve", "changed-diff", "unexpected-receipt", "direction",
+                                                     "direction-lost") else "decline")
+        if scenario in ("approve", "direction", "direction-lost"):
             target.write_text("fixture", encoding="utf-8")
         if scenario == "changed-diff":
             changes[0]["diff"] += "+unseen"
@@ -220,6 +249,12 @@ def server():
     else:
         agent("작업 완료", "commentary" if scenario == "no-final" else "final_answer")
     end()
+    if scenario in ("direction", "direction-lost", "direction-plan"):
+        turn = start_turn(False, direction=True)
+        if scenario == "direction-lost":
+            return
+        agent("지시 반영")
+        end()
     assert not sys.stdin.buffer.readline()
     if scenario == "trailing-turn":
         end()

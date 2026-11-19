@@ -10,7 +10,7 @@ import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 
-from .dialogue import DelegationWithdrawn, FINAL_MARKER, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_question
+from .dialogue import DelegationWithdrawn, FINAL_MARKER, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_request
 from .engines import CLINE_ACP_VERSION
 from .events import snapshot_request
 
@@ -91,8 +91,12 @@ def _describe_call(call: dict) -> str:
     return name + "\n" + json.dumps(data, ensure_ascii=False, indent=2)
 
 
-async def write_record(process, record, *, inbox, decision_id, deadline):
-    guard = inbox.sending(decision_id) if decision_id is not None else nullcontext()
+async def write_record(process, record, *, inbox, decision_id, deadline, direction=None):
+    guard = nullcontext()
+    if decision_id is not None:
+        guard = inbox.sending(decision_id)
+    elif direction is not None:
+        guard = direction.sending()
     with guard:
         # Acquiring the journal writer lock can outlast the asyncio timer.
         # A synchronous write must independently honor the original deadline.
@@ -109,6 +113,7 @@ class _Session:
         self.workspace = workspace
         self.strict_completion = strict_completion
         self.inbox = inbox
+        self.directions = getattr(inbox, "directions", None)
         self.deadline = deadline
         self.gemini_calls = {}
         self.file_operations = set()
@@ -126,13 +131,14 @@ class _Session:
         self.records = 0
         self.retry_waiting = False
 
-    async def send(self, *, decision_id=None, **message):
+    async def send(self, *, decision_id=None, direction=None, **message):
         encoded = json.dumps({"jsonrpc": "2.0", **message}, ensure_ascii=False)
         record = (encoded + "\n").encode("utf-8")
-        await write_record(self.process, record, inbox=self.inbox, decision_id=decision_id, deadline=self.deadline)
+        await write_record(self.process, record, inbox=self.inbox, decision_id=decision_id, deadline=self.deadline,
+                           direction=direction)
 
-    async def request(self, request_id, method, *, decision_id=None, **params):
-        await self.send(id=request_id, method=method, params=params, decision_id=decision_id)
+    async def request(self, request_id, method, *, decision_id=None, direction=None, **params):
+        await self.send(id=request_id, method=method, params=params, decision_id=decision_id, direction=direction)
         while True:
             self.records += 1
             if self.records > 50_000:
@@ -376,33 +382,45 @@ class _Session:
         if self.inbox is not None:
             instructions += " " + QUESTION_INSTRUCTIONS
         turn_text = prompt + "\n\n" + instructions
-        decision_id = None
-        for turn in range(MAX_QUESTIONS + 1):
+        decision_id = kind = direction = None
+        questions, request_id = 0, 4
+        while True:
             self.fragments.clear()
             try:
-                end = await self.request(4 + turn, "session/prompt", sessionId=self.session_id,
-                                         prompt=[{"type": "text", "text": turn_text}], decision_id=decision_id)
+                end = await self.request(request_id, "session/prompt", sessionId=self.session_id,
+                                         prompt=[{"type": "text", "text": turn_text}], decision_id=decision_id,
+                                         direction=direction)
             except DelegationWithdrawn:
                 row = await self.wait_decision(self.inbox.await_operator(decision_id))
-                end = await self.request(4 + turn, "session/prompt", sessionId=self.session_id,
-                                         prompt=[{"type": "text", "text": continuation_prompt(row["answer"])}],
+                end = await self.request(request_id, "session/prompt", sessionId=self.session_id,
+                                         prompt=[{"type": "text", "text": continuation_prompt(row["answer"], kind=kind)}],
                                          decision_id=decision_id)
             if end.get("stopReason") != "end_turn" or self.pending or self.retry_waiting:
                 raise ProtocolError("ACP did not complete its turn")
+            if direction is not None:
+                direction.delivered()
+            request_id += 1
             text = "".join(self.fragments)
-            question = extract_question(text) if self.inbox is not None else None
-            if question is None:
+            request = extract_request(text) if self.inbox is not None else None
+            if request is not None:
+                if questions == MAX_QUESTIONS:
+                    raise ProtocolError("ACP question limit reached")
+                questions += 1
+                kind, question = request
+                row = await self.ask(kind, question)
+                if row["decision"] != "answer" or not isinstance(row["answer"], str) or not row["answer"].strip():
+                    raise ProtocolError("invalid operator answer")
+                decision_id, direction = row["id"], None
+                turn_text = continuation_prompt(row["answer"], source=row.get("source"), kind=kind)
+                continue
+            answer, sep, marker = text.rstrip().rpartition("\n")
+            if not sep or marker.strip() != FINAL_MARKER or not answer.strip() or FINAL_MARKER in answer.splitlines():
+                raise ProtocolError("ACP did not return a complete final answer")
+            direction = self.directions.next() if self.directions is not None else None
+            if direction is None:
                 break
-            if turn == MAX_QUESTIONS:
-                raise ProtocolError("ACP question limit reached")
-            row = await self.ask("question", question)
-            if row["decision"] != "answer" or not isinstance(row["answer"], str) or not row["answer"].strip():
-                raise ProtocolError("invalid technical answer")
-            decision_id = row["id"]
-            turn_text = continuation_prompt(row["answer"], source=row.get("source"))
-        answer, sep, marker = text.rstrip().rpartition("\n")
-        if not sep or marker.strip() != FINAL_MARKER or not answer.strip() or FINAL_MARKER in answer.splitlines():
-            raise ProtocolError("ACP did not return a complete final answer")
+            decision_id = None
+            turn_text = direction.prompt + "\n\n" + instructions
         if self.engine == "gemini" and self.strict_completion:
             required = {"read", "edit"} if self.allow_edits else {"read"}
             if not required.issubset(self.file_operations):
