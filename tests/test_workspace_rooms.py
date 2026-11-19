@@ -35,6 +35,40 @@ def register(server, paths, name="Workspace", api="/api"):
     return data["workspace"]["id"]
 
 
+def test_room_assignment_preserves_registered_git_trust(tmp_path, monkeypatch):
+    web, contracts = project(tmp_path)
+    repo = web.parent
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    trust = tmp_path / "service-gitconfig"
+    trust.touch()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(trust))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    run = subprocess.run
+
+    def with_different_owner(argv, **options):
+        # Keep the test switch out of the caller's environment. Git in the
+        # production service compares the real checkout owner to its own account.
+        if Path(argv[0]).stem.casefold() == "git":
+            env = dict(options.get("env") or os.environ)
+            env["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
+            options["env"] = env
+        return run(argv, **options)
+
+    monkeypatch.setattr(subprocess, "run", with_different_owner)
+    with studio(tmp_path / "tasks.db") as local:
+        monkeypatch.setattr(local.runner, "_launch", lambda *_args: None)
+        monkeypatch.setattr(local.engines, "snapshot", lambda: engine_snapshot("codex"))
+        workspace = register(local, (web, contracts))
+        route = f"/api/rooms/{workspace}/assignments"
+        task = {"id": uuid4().hex, "message": "파일 수정 없이 검토", "allow_edits": False, "delegation": None}
+        assert request(local, route, task)[0] == 400
+        trust.write_text(f'[safe]\n\tdirectory = "{repo.as_posix()}"\n', encoding="utf-8")
+        status, receipt = request(local, route, task)
+        assert status == 202, receipt
+        assert receipt["run"]["base_revision"] == revision
+        assert receipt["run"]["allow_edits"] is False
+
+
 def room_choice_fixture(tmp_path, monkeypatch):
     workers(tmp_path, monkeypatch)
     install_mock_codex(tmp_path / "mock cli", monkeypatch, "room-choice")
