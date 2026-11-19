@@ -111,6 +111,7 @@ test('manual refresh supersedes late responses and unchanged data preserves keyb
   assert.equal(doc.activeElement, focused);
   assert.equal(get('studio-link').getAttribute('href'), '/?host=' + remote);
   assert.equal(get('improvements-link').getAttribute('href'), '/improvements?host=' + remote);
+  assert.equal(get('versions-link').getAttribute('href'), '/versions?host=' + remote);
   Object.defineProperty(doc, 'hidden', {configurable: true, value: true});
   doc.dispatchEvent(new window.Event('visibilitychange'));
   const before = calls.length;

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>안정 버전 이력 · Agent Office</title>
+  <link rel="stylesheet" href="/studio.css">
+  <link rel="stylesheet" href="/versions.css">
+  <script type="module" src="/versions.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">본문으로 이동</a>
+  <header class="mast"><div class="bar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>Agent Office</div>
+    <span class="connection" id="connection" role="status">연결 확인 중</span>
+  </div></header>
+  <main id="main">
+    <header class="page-head">
+      <h1>안정 버전 이력</h1>
+      <nav class="view-links" aria-label="보기 선택">
+        <a class="history-link" id="studio-link" href="/">작업실로 이동</a>
+        <a class="history-link" id="office-link" href="/office?host=local">오피스 보기</a>
+        <a class="history-link" id="improvements-link" href="/improvements">작업실 개선안</a>
+      </nav>
+    </header>
+    <div class="version-toolbar">
+      <nav class="host-picker" aria-label="실행 호스트"><strong>실행 호스트</strong><ul id="hosts"></ul></nav>
+      <button type="button" id="refresh" class="link-button">새로고침</button>
+    </div>
+    <p id="page-note" role="status"></p>
+    <section class="card current-version" aria-labelledby="current-title">
+      <div><h2 id="current-title">현재 안정 소스</h2><p id="published"></p></div>
+      <div><strong id="current-version">확인 중</strong><code id="current-sha"></code></div>
+    </section>
+    <div class="layout">
+      <section class="card" aria-labelledby="history-title">
+        <div class="card-head"><h2 id="history-title">변경 이력</h2></div>
+        <ol id="history" reversed></ol>
+        <nav class="pager" aria-label="이력 페이지" hidden>
+          <button type="button" class="link-button" id="newer">최근 이력</button>
+          <span id="page-number"></span>
+          <button type="button" class="link-button" id="older">이전 이력</button>
+        </nav>
+      </section>
+      <section class="card" aria-labelledby="compare-title">
+        <div class="card-head"><h2 id="compare-title">버전 비교</h2></div>
+        <div class="compare-body">
+          <div class="role-pickers">
+            <div><label for="from-version">시작 버전</label><select id="from-version" disabled></select></div>
+            <div><label for="to-version">대상 버전</label><select id="to-version" disabled></select></div>
+          </div>
+          <p id="compare-note" role="status"></p>
+          <div id="comparison" hidden>
+            <h3 id="file-count"></h3><ul id="files"></ul>
+            <h3>변경 내용 <span lang="en">diff</span></h3>
+            <pre id="diff" tabindex="0" aria-label="두 버전 사이의 변경 내용"></pre>
+          </div>
+          <details class="rollback-help"><summary>운영자 터미널에서 롤백 검토하기</summary>
+            <p>시작 버전에 현재 안정 소스를, 대상 버전에 되돌아갈 순번을 선택해 변경 내용을 확인하세요. 해당 호스트의 운영자 터미널에서 릴리스 디렉터리와 대상 순번을 지정합니다.</p>
+            <code>agent-office improve --release ROOT rollback TARGET_SEQ</code>
+          </details>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

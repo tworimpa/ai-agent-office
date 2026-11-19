@@ -273,6 +273,7 @@ test('host links discard previous run IDs and a remote host owns registration, s
   const current = doc.querySelector('#hosts [aria-current=page]');
   assert.equal(get('office-link').getAttribute('href'), '/office?host=' + remote);
   assert.equal(get('improvements-link').getAttribute('href'), '/improvements?host=' + remote);
+  assert.equal(get('versions-link').getAttribute('href'), '/versions?host=' + remote);
   assert.equal(current.textContent, '연구실');
   assert.equal(current.getAttribute('href'), '/?host=' + remote);
   assert.equal(get('hosts').querySelector('a').getAttribute('href'), '/');

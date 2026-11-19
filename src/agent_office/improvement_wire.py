@@ -75,6 +75,9 @@ def _job(row):
 
 def _candidate(row, detail=False):
     fields = "id job_id sha base state title validation decision"
+    if isinstance(row, dict) and "stale_base" in row:
+        fields += " stale_base"
+        _require(type(row["stale_base"]) is bool)
     extra = " diff expected rationale image run_ids history validation_output exit_code diff_truncated output_truncated history_omitted"
     _keys(row, fields + (extra if detail else ""))
     validate_id(row["id"])
@@ -88,6 +91,7 @@ def _candidate(row, detail=False):
                "passed": ("passed",), "approved": ("passed",), "rejected": (None, "passed", "failed")}
     _require(isinstance(state, str) and result in allowed.get(state, ()))
     _require(decision == (state if state in ("approved", "rejected") else None))
+    _require(not (decision and row.get("stale_base")))
     if not detail:
         return
     _require(isinstance(row["image"], str) and re.fullmatch(r"sha256:[a-f0-9]{64}", row["image"]))

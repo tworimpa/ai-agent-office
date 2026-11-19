@@ -105,6 +105,7 @@ export function mountStudio(win) {
   };
   const hostId = addressHost();
   if (validId(hostId)) {
+    get('versions-link').href = '/versions?host=' + hostId;
     get('office-link').href = '/office?host=' + hostId;
     get('improvements-link').href = '/improvements?host=' + hostId;
   }

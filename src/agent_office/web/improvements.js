@@ -11,7 +11,8 @@ const labels = {
 };
 const label = value => Object.hasOwn(labels, value) ? labels[value] : value;
 const dateLabel = stamp => Number.isFinite(Date.parse(stamp)) ? new Date(stamp).toLocaleString('ko-KR') : '시각 미확인';
-const decisionStatus = (row, stable) => label(row.decision) || (stable && row.base !== stable ? '기준 변경 · 재제안 필요' : '결정 대기');
+const decisionStatus = (row, stable) => label(row.decision) ||
+  (row.stale_base || (stable && row.base !== stable) ? '기준 변경 · 재제안 필요' : '결정 대기');
 const categories = ['runs', 'jobs', 'candidates'];
 const emptyMessage = {runs: '선택할 수 있는 종료 실행이 없습니다.', jobs: '아직 생성 내역이 없습니다.', candidates: '아직 게시된 후보가 없습니다.'};
 
@@ -58,6 +59,7 @@ export function mountImprovements(win) {
     return path + (query.size ? '?' + query : '');
   }
   if (hostId) {
+    get('versions-link').href = '/versions?host=' + hostId;
     get('studio-link').href = route('/');
     get('office-link').href = route('/office', hostId === 'local' ? {host: 'local'} : {});
   }

@@ -10,7 +10,6 @@ import re
 import sqlite3
 import tempfile
 import time
-from uuid import uuid4
 
 from . import release_store
 from .improvement_proposal import verify_history
@@ -149,17 +148,10 @@ def _journal_id(journal):
 
 
 def _release_identity(root):
+    from .stable_history import identity
+
     with release_store._db(root) as db:
-        if db.execute("SELECT 1 FROM sqlite_master WHERE name='studio_release_identity' AND type='table'").fetchone():
-            row = db.execute("SELECT i.id,r.stable FROM studio_release_identity i CROSS JOIN release r "
-                             "WHERE i.slot=1 AND r.slot=1").fetchone()
-            return row["id"], row["stable"]
-    with release_store._db(root, write=True) as db:
-        stable = db.execute("SELECT stable FROM release WHERE slot=1").fetchone()[0]
-        db.execute("CREATE TABLE IF NOT EXISTS studio_release_identity "
-                   "(slot INTEGER PRIMARY KEY CHECK(slot=1), id TEXT NOT NULL)")
-        db.execute("INSERT OR IGNORE INTO studio_release_identity VALUES(1,?)", (uuid4().hex,))
-        return db.execute("SELECT id FROM studio_release_identity WHERE slot=1").fetchone()[0], stable
+        return identity(db), release_store._release(db)["stable"]
 
 
 def _initialize(path, journal_id, release_id, stable):
@@ -197,18 +189,33 @@ def _bounded(value, maximum):
 def _import_jobs(root, journal, view):
     from .studio_improvements import ready_artifact, ready_job_receipts
 
+    meta = _metadata(view)
     view.execute("CREATE TEMP TABLE ready(id TEXT PRIMARY KEY)")
+    view.execute("CREATE TEMP TABLE bindings(job TEXT,digest TEXT,candidate TEXT,PRIMARY KEY(job,digest))")
+    with release_store._db(root) as source, view:
+        if source.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='studio_imports'").fetchone():
+            bindings = source.execute("SELECT job,digest,candidate FROM studio_imports WHERE journal=?", (meta["journal"],))
+            view.executemany("INSERT INTO bindings VALUES(?,?,?)", bindings)
     for job_id, claimed in ready_job_receipts(journal):
         digest = claimed if isinstance(claimed, str) and re.fullmatch("[0-9a-f]{64}", claimed) else None
         with view:
             view.execute("INSERT INTO ready VALUES(?)", (job_id,))
-        prior = view.execute("SELECT digest,retry_after FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if prior and prior["digest"] == digest and (prior["retry_after"] is None or time.time() < prior["retry_after"]):
-            continue
+        prior = view.execute("SELECT j.digest,j.candidate,j.retry_after,b.candidate AS bound FROM jobs j "
+                             "LEFT JOIN bindings b ON b.job=j.id AND b.digest=j.digest WHERE j.id=?", (job_id,)).fetchone()
+        previous_candidate = None
+        if prior and prior["digest"] == digest:
+            previous_candidate = prior["candidate"]
+            if prior["retry_after"] is not None:
+                if time.time() < prior["retry_after"]:
+                    continue
+            elif previous_candidate == prior["bound"]:
+                continue
         candidate_id, error, retry = None, None, None
         try:
             proposal = ready_artifact(journal, job_id)
-            candidate_id = release_store.submit(root, proposal)["id"]
+            record = release_store.submit(root, proposal, studio_job=(meta["journal"], job_id, digest),
+                                          prior_candidate=previous_candidate, expected_release_id=meta["release_id"])
+            candidate_id = record["id"]
         except (OSError, sqlite3.OperationalError):
             retry = time.time() + 30
             error = "Temporary journal or release storage error. Publication will retry."
@@ -218,7 +225,8 @@ def _import_jobs(root, journal, view):
                     "timed out", "no space left", "disk full", "permission denied", ".lock", "git is required")):
                 retry = time.time() + 30
                 error = "Git is temporarily unavailable. Check Git and release storage. Publication will retry."
-            elif reason == "Proposal base differs from current stable source":
+            elif reason in {"Proposal base differs from current stable source",
+                            "Candidate missing from release. Inspect the restored release store."}:
                 error = reason
             else:
                 error = "Proposal admission failed. Check the generation receipt, run evidence and patch."
@@ -228,6 +236,10 @@ def _import_jobs(root, journal, view):
                          "retry_after=excluded.retry_after", (job_id, digest, candidate_id, error, retry))
     with view:
         view.execute("DELETE FROM jobs WHERE NOT EXISTS(SELECT 1 FROM ready WHERE ready.id=jobs.id)")
+
+
+def _stale_base(record):
+    return record["state"] not in {"approved", "rejected"} and record["base_seq"] != record["stable_seq"]
 
 
 def _projection(db, record, proposal, job_id, cached, root):
@@ -250,7 +262,7 @@ def _projection(db, record, proposal, job_id, cached, root):
         else:
             issue = "Validation was interrupted. Inspect the candidate and run improve verify " + cid
             output = issue
-    elif job_id and record["state"] == "submitted" and record["base"] != record["stable"]:
+    elif job_id and record["state"] == "submitted" and record["base_seq"] != record["stable_seq"]:
         issue = "Candidate base differs from current stable source"
         output = issue
     if cached:
@@ -260,6 +272,7 @@ def _projection(db, record, proposal, job_id, cached, root):
         diff, diff_truncated = _bounded(
             release_store._diff(root / "objects.git", record["base"], record["sha"]), 48 * 1024)
     summary = {"id": cid, "job_id": job_id, "sha": record["sha"], "base": record["base"],
+               "stale_base": _stale_base(record),
                "state": record["state"], "title": proposal["title"], "validation": validation,
                "decision": record["state"] if record["state"] in ("approved", "rejected") else None}
     detail = {"diff": diff, "diff_truncated": diff_truncated, "expected": proposal["expected"],
@@ -274,9 +287,10 @@ def _projection(db, record, proposal, job_id, cached, root):
 def _publish_one(root, journal, view, cid, *, journal_changed=True):
     with release_store._db(root) as db:
         record = db.execute(
-            "SELECT c.*,r.stable,(SELECT count(*) FROM history WHERE candidate=c.id) AS entries, "
+            "SELECT c.*,(SELECT max(seq) FROM stable_versions) AS stable_seq, "
+            "(SELECT count(*) FROM history WHERE candidate=c.id) AS entries, "
             "(SELECT time FROM history WHERE candidate=c.id ORDER BY seq DESC LIMIT 1) AS last_event "
-            "FROM candidates c CROSS JOIN release r WHERE c.id=? AND r.slot=1", (cid,)).fetchone()
+            "FROM candidates c WHERE c.id=?", (cid,)).fetchone()
         if record is None:
             with view:
                 view.execute("DELETE FROM candidates WHERE id=?", (cid,))
@@ -299,7 +313,8 @@ def _publish_one(root, journal, view, cid, *, journal_changed=True):
             cached = None
         if cached and cached["last_event"] == record["last_event"] and not cached["running"]:
             previous = json.loads(cached["summary"])
-            if previous["job_id"] == job_id and previous["state"] == record["state"]:
+            if (previous["job_id"] == job_id and previous["state"] == record["state"]
+                    and previous.get("stale_base") == _stale_base(record)):
                 if not job_id or record["state"] != "submitted":
                     return False
         detail_cache = view.execute("SELECT detail FROM candidates WHERE id=?", (cid,)).fetchone() if cached else None
@@ -311,8 +326,7 @@ def _publish_one(root, journal, view, cid, *, journal_changed=True):
                      (cid, record["fingerprint"], record["last_event"], summary["validation"] == "running",
                       json.dumps(summary, ensure_ascii=False), json.dumps(detail, ensure_ascii=False)))
         view.execute("UPDATE jobs SET error=? WHERE candidate=?", (issue, cid))
-        view.execute("UPDATE publication SET stable=?,updated_at=? WHERE slot=1", (record["stable"], now()))
-    return bool(job and record["state"] == "submitted" and record["base"] == record["stable"]
+    return bool(job and record["state"] == "submitted" and record["base_seq"] == record["stable_seq"]
                 and summary["validation"] is None and issue is None)
 
 
@@ -323,6 +337,7 @@ class PublicationWatch:
         self.sources = {}
         self.view_file = None
         self.snapshot_dir = None
+        self.published_stable = None
 
     def changed(self, path):
         stat = path.stat()
@@ -355,6 +370,7 @@ class PublicationWatch:
             db.close()
         self.sources.clear()
         self.view_file = None
+        self.published_stable = None
         if self.snapshot_dir is not None:
             self.snapshot_dir.cleanup()
             self.snapshot_dir = None
@@ -400,10 +416,12 @@ def _refresh(root, journal, view, journal_changed):
                      "WHERE candidate IS NOT NULL AND NOT EXISTS(SELECT 1 FROM present WHERE present.id=jobs.candidate)")
 
 
-def sync_once(journal, root, path, *, watch=None):
+def sync_once(journal, root, path, *, watch=None, stable_history=False):
+    from . import stable_view
+
     if watch is None:
         with closing(PublicationWatch()) as once:
-            return sync_once(journal, root, path, watch=once)
+            return sync_once(journal, root, path, watch=once, stable_history=stable_history)
     journal = Path(journal).expanduser().resolve(strict=True)
     root = Path(root).expanduser().resolve(strict=True)
     path = _view_path(path, journal, root)
@@ -417,10 +435,20 @@ def sync_once(journal, root, path, *, watch=None):
         with closing(_open(path, "rw")) as view:
             release_changed = watch.changed(root / "release.sqlite3")
             file = path.stat()
-            view_file = (file.st_dev, file.st_ino)
-            if watch.view_file != view_file:
+            meta = _metadata(view)
+            if (meta["journal"], meta["release_id"]) != (journal_id, release_id):
+                raise ValueError("This view belongs to another release or journal. Choose a new view filename")
+            identity = (file.st_dev, file.st_ino)
+            if watch.view_file != (*identity, meta["updated_at"]):
                 journal_changed = True
-                watch.view_file = view_file
+                watch.published_stable = None
+            # An interrupted pass may have written candidate rows before it failed.
+            # Only a complete projection can be reused by the following poll.
+            watch.view_file = None
+            if release_changed or not stable_history:
+                watch.published_stable = None
+            if not stable_history:
+                stable_view.revoke(view)
             retry = view.execute("SELECT 1 FROM jobs WHERE retry_after<=? LIMIT 1", (time.time(),)).fetchone()
             if journal_changed or release_changed or retry:
                 _refresh(root, journal, view, journal_changed)
@@ -431,10 +459,29 @@ def sync_once(journal, root, path, *, watch=None):
                                            "ORDER BY rowid LIMIT ?", (cursor, PAGE)).fetchall():
                     for cursor, cid in rows:
                         _publish_one(root, journal, view, cid, journal_changed=False)
-            stable = release_store.release_status(root)["stable"]
             updated = now()
-            with view:
-                view.execute("UPDATE publication SET stable=?,updated_at=? WHERE slot=1", (stable, updated))
-            return {"stable": stable, "updated_at": updated,
-                    "candidates": view.execute("SELECT count(*) FROM candidates").fetchone()[0],
-                    "job_errors": view.execute("SELECT count(*) FROM jobs WHERE error IS NOT NULL").fetchone()[0]}
+            if stable_history:
+                # Another operator sync may have disabled history on the same view
+                # between polls. Restore the requested publication before reusing it.
+                try:
+                    head, _ = stable_view._head(view, _metadata(view))
+                    rebuild = False
+                except OfficeError:
+                    # Older sync clients may have updated only publication.stable.
+                    # Readers refuse that mixed generation until this rebuild commits.
+                    head, rebuild = None, True
+                if head is None or head != watch.published_stable:
+                    watch.published_stable = stable_view.publish(view, root, updated, rebuild=rebuild)
+                else:
+                    with view:
+                        view.execute("UPDATE publication SET updated_at=? WHERE slot=1", (updated,))
+                stable = watch.published_stable["sha"]
+            else:
+                stable = release_store.release_status(root)["stable"]
+                with view:
+                    view.execute("UPDATE publication SET stable=?,updated_at=? WHERE slot=1", (stable, updated))
+            result = {"stable": stable, "updated_at": updated,
+                      "candidates": view.execute("SELECT count(*) FROM candidates").fetchone()[0],
+                      "job_errors": view.execute("SELECT count(*) FROM jobs WHERE error IS NOT NULL").fetchone()[0]}
+            watch.view_file = (*identity, updated)
+            return result

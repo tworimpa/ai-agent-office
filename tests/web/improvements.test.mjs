@@ -66,6 +66,7 @@ test('evidence selection survives paging, caps at eight, and retries only the sa
   await until(() => get('runs').children.length === 24);
   assert.equal(get('generate').disabled, true);
   assert.equal(get('studio-link').getAttribute('href'), '/?host=' + host);
+  assert.equal(get('versions-link').getAttribute('href'), '/versions?host=' + host);
   assert.equal(get('hosts').querySelector('[aria-current]').textContent, '연구실');
   for (const box of [...doc.querySelectorAll('[name=run]')].slice(0, 8)) box.click();
   assert.equal(doc.querySelectorAll('[name=run]:checked').length, 8);
@@ -161,6 +162,17 @@ test('unknown and ambiguous host selectors never read or submit to another host'
     assert.ok(get('generate').disabled);
     assert.deepEqual(requests.map(row => row.path), ['/api/hosts']);
   }
+});
+
+test('a verified candidate from before rollback is stale even when the published SHA matches again', async t => {
+  const earlier = {...candidate, stale_base: true};
+  const {get} = mount(t, {suffix: '?host=' + host + '&candidate=' + candidateId, route(path) {
+    if (path === '/candidates/page/0') return {items: [earlier], next_offset: null};
+    if (path === '/candidates/' + candidateId) return {candidate: earlier, studio_run_ids: []};
+  }});
+  await until(() => get('detail-body').textContent.includes('기준 변경'));
+  assert.match(get('candidates').textContent, /검증 통과.*기준 변경/);
+  assert.doesNotMatch(get('detail-body').textContent, /결정 대기/);
 });
 
 test('a gateway 404 retains the saved payload and does not submit a duplicate when the original receipt reappears', async t => {

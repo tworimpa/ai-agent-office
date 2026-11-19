@@ -12,9 +12,9 @@ import subprocess
 import tempfile
 from uuid import uuid4
 
-from . import release_validation
+from . import release_validation, stable_history
 from .engines import resolve_executable
-from .improvement_proposal import validate_proposal
+from .improvement_proposal import _digest, validate_proposal
 from .models import validate_id
 from .ownership import RunBusyError, RunGuard
 
@@ -103,13 +103,29 @@ def _publish_directory(dest):
 
 @contextmanager
 def _db(root, *, write=False):
-    path, _ = _paths(root)
+    path, git = _paths(root)
     if not path.is_file():
         raise ValueError("Release store is not initialized")
     with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, timeout=30)) as db:
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
-        db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+        begin = "BEGIN IMMEDIATE" if write else "BEGIN"
+        db.execute(begin)
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version == 0:
+            db.rollback()
+            db.execute("BEGIN IMMEDIATE")
+            with db:
+                if db.execute("PRAGMA user_version").fetchone()[0] == 0:
+                    stable_history.migrate(db, git)
+            db.execute(begin)
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version != 1:
+            raise ValueError("Unsupported release store version")
+        pointer = db.execute("SELECT 1 FROM release WHERE slot=1 AND stable="
+                             "(SELECT sha FROM stable_versions ORDER BY seq DESC LIMIT 1)").fetchone()
+        if pointer is None:
+            raise ValueError("Stable pointer disagrees with version history")
         with db:
             yield db
 
@@ -132,8 +148,10 @@ def _candidate(db, id):
 
 
 def _log(db, id, event, details):
+    when = datetime.now(timezone.utc).isoformat()
     db.execute("INSERT INTO history(candidate,time,event,details) VALUES(?,?,?,?)",
-               (id, datetime.now(timezone.utc).isoformat(), event, json.dumps(details)))
+               (id, when, event, json.dumps(details)))
+    return when
 
 
 def _check_image(image):
@@ -166,24 +184,67 @@ def init_release(root, repo, revision, image):
         with closing(sqlite3.connect(database)) as db, db:
             db.executescript(_SCHEMA)
             db.execute("INSERT INTO release VALUES(1,?,?)", (sha, image))
+            stable_history.initialize(db, sha)
     return {"stable": sha, "image": image}
 
 
-def submit(root, proposal, image=None):
+def _fingerprint(image, encoded, first_seq, base_seq):
+    # Keep legacy fingerprints on the first visit to a SHA. A new submission
+    # after rollback belongs to a fresh review generation.
+    digest = hashlib.sha256(image.encode("ascii") + b"\0" + encoded.encode("utf-8"))
+    if first_seq != base_seq:
+        digest.update(b"\0" + str(base_seq).encode("ascii"))
+    return digest.hexdigest()
+
+
+def _admitted(db, id, job):
+    if job is not None:
+        db.execute("INSERT INTO studio_imports VALUES(?,?,?,?)", (*job, id))
+    return _candidate(db, id)
+
+
+def submit(root, proposal, image=None, *, studio_job=None, prior_candidate=None, expected_release_id=None):
     proposal = validate_proposal(proposal)
     encoded = json.dumps(proposal, sort_keys=True, ensure_ascii=False, allow_nan=False)
     _, git = _paths(root)
     with _db(root, write=True) as db:
+        if expected_release_id is not None:
+            stable_history.identity(db, expected_release_id)
         release = _release(db)
         if image is None:
             image = release["image"]
         _check_image(image)
-        fingerprint = hashlib.sha256(image.encode("ascii") + b"\0" + encoded.encode("utf-8")).hexdigest()
+        base = proposal["base"]
+        first_seq, base_seq = db.execute("SELECT min(seq),max(seq) FROM stable_versions WHERE sha=?",
+                                         (base,)).fetchone()
+        if studio_job is not None:
+            journal_id, job_id, artifact_digest = studio_job
+            validate_id(journal_id)
+            validate_id(job_id)
+            if artifact_digest != _digest(proposal):
+                raise ValueError("Studio job digest disagrees with the proposal")
+            db.execute("""CREATE TABLE IF NOT EXISTS studio_imports(
+                journal TEXT NOT NULL, job TEXT NOT NULL, digest TEXT NOT NULL,
+                candidate TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+                PRIMARY KEY(journal,job,digest)) WITHOUT ROWID""")
+            bound = db.execute("SELECT candidate FROM studio_imports WHERE journal=? AND job=? AND digest=?",
+                               studio_job).fetchone()
+            candidate = bound["candidate"] if bound else prior_candidate
+            if candidate is not None:
+                prior = db.execute("SELECT proposal,image,fingerprint,base_seq FROM candidates WHERE id=?",
+                                   (validate_id(candidate),)).fetchone()
+                if prior is None:
+                    raise ValueError("Candidate missing from release. Inspect the restored release store.")
+                if (prior["proposal"] != encoded or prior["image"] != image
+                        or prior["fingerprint"] != _fingerprint(image, encoded, first_seq, prior["base_seq"])):
+                    raise ValueError("Studio import disagrees with its candidate")
+                return _candidate(db, candidate) if bound else _admitted(db, candidate, studio_job)
+        fingerprint = _fingerprint(image, encoded, first_seq, base_seq)
         existing = db.execute("SELECT id FROM candidates WHERE fingerprint=?", (fingerprint,)).fetchone()
         if existing:
-            return _candidate(db, existing["id"])
+            return _admitted(db, existing["id"], studio_job)
         stable = release["stable"]
-        if proposal["base"] != stable:
+        if base != stable:
             raise ValueError("Proposal base differs from current stable source")
         patch = proposal["patch"].encode("utf-8")
         if b"\nGIT binary patch\n" in patch:
@@ -202,10 +263,11 @@ def submit(root, proposal, image=None):
         id = uuid4().hex
         # Pin in Git before committing a SQL record referencing these immutable objects.
         run_git(git, "update-ref", "refs/candidates/" + id, sha)
-        db.execute("INSERT INTO candidates VALUES(?,?,?,?,?,?,?)",
-                   (id, fingerprint, stable, sha, "submitted", encoded, image))
+        db.execute("INSERT INTO candidates(id,fingerprint,base,sha,state,proposal,image,base_seq) "
+                   "VALUES(?,?,?,?,?,?,?,?)",
+                   (id, fingerprint, stable, sha, "submitted", encoded, image, base_seq))
         _log(db, id, "submitted", {"base": stable, "sha": sha, "image": image})
-        return _candidate(db, id)
+        return _admitted(db, id, studio_job)
 
 
 def _diff(git, base, sha):
@@ -225,17 +287,25 @@ def list_candidates(root):
 
 
 def review(root, id):
+    return review_with_version(root, id)[0]
+
+
+def review_with_version(root, id):
     _, git = _paths(root)
     with _db(root) as db:
         result = _candidate(db, id)
-        proposal = db.execute("SELECT proposal FROM candidates WHERE id=?", (id,)).fetchone()[0]
+        proposal, base_seq = db.execute("SELECT proposal,base_seq FROM candidates WHERE id=?", (id,)).fetchone()
         history = [dict(event=row["event"], time=row["time"], details=json.loads(row["details"]))
                    for row in db.execute("SELECT * FROM history WHERE candidate=? ORDER BY seq", (id,))]
-        result["stable"] = _release(db)["stable"]
+        current = dict(stable_history.latest(db))
+        release_id = stable_history.identity(db)
+        result["stable"] = current["sha"]
+        result["stale_base"] = (result["state"] not in ("approved", "rejected")
+                                and (base_seq, result["base"]) != (current["seq"], current["sha"]))
     result.update(proposal=json.loads(proposal), diff=_diff(git, result["base"], result["sha"]),
                   history=history, validation=next((row["details"] for row in reversed(history)
                                                      if row["event"] == "validation_finished"), None))
-    return result
+    return result, current, base_seq, release_id
 
 
 @contextmanager
@@ -256,14 +326,13 @@ def verify_candidate(root, id, *, first_attempt_only=False, on_started=None):
     with _guard(root, id):
         with _db(root, write=True) as db:
             record = _candidate(db, id)
-            release = _release(db)
             if first_attempt_only and (record["state"] != "submitted" or db.execute(
                     "SELECT 1 FROM history WHERE candidate=? AND event='validation_started' LIMIT 1",
                     (id,)).fetchone()):
                 return None
             if record["state"] == "passed":
                 return review(root, id)
-            if record["state"] not in {"submitted", "failed"} or release["stable"] != record["base"]:
+            if record["state"] not in {"submitted", "failed"} or not _current_base(db, id):
                 raise ValueError("Candidate is terminal or its base is stale")
             sha, image = record["sha"], record["image"]
             _log(db, id, "validation_started", {"sha": sha, "image": image})
@@ -287,11 +356,20 @@ def verify_candidate(root, id, *, first_attempt_only=False, on_started=None):
         return review(root, id)
 
 
-def decide(root, id, sha, decision):
+def _current_base(db, id):
+    current = stable_history.latest(db)
+    return db.execute("SELECT 1 FROM candidates WHERE id=? AND base_seq=? AND base=?",
+                      (id, current["seq"], current["sha"])).fetchone() is not None
+
+
+def decide(root, id, sha, decision, *, reviewed_version=None, expected_release_id=None):
     if decision not in {"approve", "reject"}:
         raise ValueError("Decision must be approve or reject")
     state = "approved" if decision == "approve" else "rejected"
     with _guard(root, id), _db(root, write=True) as db:
+        stable_history.identity(db, expected_release_id)
+        if reviewed_version is not None and stable_history.version(db, reviewed_version["seq"]) != reviewed_version:
+            raise ValueError("Stable version changed during review")
         record = _candidate(db, id)
         if sha != record["sha"]:
             raise ValueError("Expected SHA differs from candidate")
@@ -302,12 +380,14 @@ def decide(root, id, sha, decision):
         if decision == "approve":
             if record["state"] != "passed":
                 raise ValueError("Only a passed candidate can be approved")
-            updated = db.execute("UPDATE release SET stable=? WHERE slot=1 AND stable=?",
-                                 (sha, record["base"]))
-            if updated.rowcount != 1:
+            if not _current_base(db, id):
                 raise ValueError("Candidate base differs from current stable source")
+            if reviewed_version is not None and reviewed_version["seq"] != stable_history.latest(db)["seq"]:
+                raise ValueError("Stable version changed during review")
         db.execute("UPDATE candidates SET state=? WHERE id=?", (state, id))
-        _log(db, id, state, {"sha": sha, "base": record["base"]})
+        when = _log(db, id, state, {"sha": sha, "base": record["base"]})
+        if decision == "approve":
+            stable_history.advance(db, "promotion", sha, when=when, candidate_id=id)
         return _candidate(db, id)
 
 
