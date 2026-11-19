@@ -24,6 +24,9 @@ p, h1, h2, h3 { margin: 0; }
 .brand { display: inline-flex; align-items: center; gap: 12px; font-weight: 700; letter-spacing: .015em; text-decoration: none; }
 .seal { display: grid; place-items: center; inline-size: 35px; block-size: 35px; background: #713626; border: 1px solid #ba7a5b; outline: 1px solid #713626; outline-offset: 2px; color: #fff1dc; font: 23px var(--serif); }
 .top-actions, .section-title, .room-actions { display: flex; align-items: center; gap: 12px; }
+.top-actions, .operations-nav { flex-wrap: wrap; justify-content: flex-end; }
+.operations-nav { display: flex; gap: 12px; }
+.operations-nav a { white-space: nowrap; }
 .connection { display: flex; align-items: center; gap: 7px; color: var(--soft); font-size: .82rem; }
 .connection::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--gold); flex: none; }
 .connection[data-online="true"]::before { background: #a4c28d; }
@@ -164,7 +167,7 @@ legend { font-size: .87rem; font-weight: 700; color: var(--gold); }
   .brand { font-size: .88rem; }
   .seal { width: 28px; height: 28px; font-size: 19px; }
   .topbar { min-height: 56px; padding-inline: 13px; }
-  .top-actions { gap: 8px; }
+  .top-actions, .operations-nav { gap: 5px 8px; }
   .topbar .quiet, .connection { font-size: .72rem; }
   .room-heading { align-items: flex-start; flex-direction: column; }
   .room-scene { min-height: 440px; padding: 10px; background-position: center, center top; }

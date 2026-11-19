@@ -168,6 +168,7 @@ test('legacy remote execution links find the workspace and retain the last progr
   }, {query: '?host=' + remote + '&run=' + runId + '#detail'});
   await until(() => person('developer').querySelector('.seat-line').textContent === run.lines.developer);
   assert.equal(get('host').value, remote);
+  assert.equal(get('versions-link').search, '?host=' + remote);
   assert.equal(new URLSearchParams(window.location.search).get('workspace'), workspace.id);
   assert.equal(get('detail-link').pathname, '/studio');
   assert.equal(get('detail-link').search, '?host=' + remote + '&run=' + runId);

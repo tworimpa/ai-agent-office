@@ -220,6 +220,7 @@ export function mountWorkspaceOffice(win = window) {
       if (focused) [...node.children].find(link => link.href === focused)?.focus({preventScroll: true});
     });
     get('classic').href = address(hostId, null, null, '/studio');
+    get('versions-link').href = address(hostId, null, null, '/versions');
   }
 
   async function loadOlderHistory() {
