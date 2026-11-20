@@ -225,7 +225,7 @@ def conduct_meeting(task, workspace, developer, reviewer, *, record, adapters, f
                     scratch = Path(directory)
                     git(scratch, "init", "--quiet", "--template=")
                     result = adapters[engine].execute(prompt, workspace=scratch, allow_edits=False,
-                                                      strict_completion=True, prompt_only=engine in ("gemini", "cline"))
+                                                      strict_completion=True, prompt_only=True)
             except (OSError, ValueError, RuntimeError, DelegationDeferred) as exc:
                 raise ValueError(f"{role} ({engine}) 회의를 실행할 수 없습니다.") from exc
             if result.returncode:
