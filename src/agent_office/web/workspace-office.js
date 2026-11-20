@@ -255,7 +255,7 @@ export function mountWorkspaceOffice(win = window) {
   }
 
   const api = (path, body) => request(scope(hostId) + path, body);
-  const goals = mountGoals({win, get, make, api, refresh, context: () => ({
+  const goals = mountGoals({win, get, make, api, refresh, onPolicySaved: () => { room.goal_default = true; }, context: () => ({
     hostId, workspaceId, runId, epoch, supported: room?.goal_supported === true,
     writable: canWrite(), pending: selected()?.pending_count, meetingPhase: selected()?.meeting?.status ?? selected()?.meeting_status,
   }), openInbox: () => get('inbox').click(), openMeeting: () => openEvidence('room', 'meeting')});

@@ -72,13 +72,16 @@ function fixture(route) {
 }
 
 test('overnight settings save the user-selected scope to the workspace, separately from ordinary assignments', async (t) => {
-  let saved, assignment;
+  let saved, assignment, releaseRefresh;
   const {get, person, window, submit} = mount(
     t,
     fixture((path, body) => {
       if (path === base + '/goal-policy' && body) {
         saved = body;
         return {policy: body};
+      }
+      if (path === base && saved) {
+        return new Promise(resolve => { releaseRefresh = () => resolve({...room(), goal_supported: true, goal_default: true}); });
       }
       if (path === base + '/assignments' && body) {
         assignment = body;
@@ -92,14 +95,15 @@ test('overnight settings save the user-selected scope to the workspace, separate
   const argv = get('goal-check-fields').querySelector('[name="argv"]');
   argv.value = 'python\n-m\npytest\n-q\ntests/test_settings.py';
   submit('goal-policy-form');
-  await until(() => Boolean(saved));
+  await until(() => Boolean(releaseRefresh));
   assert.deepEqual(saved.checks[0].argv, ['python', '-m', 'pytest', '-q', 'tests/test_settings.py']);
   assert.equal(saved.active_seconds, 28800);
   get('room-settings').close();
   person('coordinator').click();
   assert.equal(get('goal-option').hidden, true);
   get('allow-edits').click();
-  get('overnight-goal').click();
+  assert.equal(get('overnight-goal').checked, true);
+  releaseRefresh();
   get('goal-criteria').value = '저장한 설정 복원\n빈 설정 파일 처리';
   get('message').value = 'Windows 설정을 복원해 주세요.';
   submit('chat-form');

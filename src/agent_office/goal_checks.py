@@ -137,12 +137,24 @@ def _command(workspace, check, report):
     return [node, str(harness), str(installed)], kind
 
 
+def portable_case_id(key):
+    filename, separator, remainder = key.partition("::")
+    return filename.replace("\\", "/") + separator + remainder
+
+
+def portable_cases(cases):
+    normalized = {portable_case_id(key): value for key, value in cases.items()}
+    if len(normalized) != len(cases):
+        raise ValueError("같은 파일 경로로 해석되는 중복 테스트가 있습니다.")
+    return normalized
+
+
 def _pytest_results(path):
     if path.stat().st_size > 8 * 1024 * 1024:
         raise ValueError("테스트 결과 파일이 제한을 초과했습니다.")
     cases = {}
     for case in ElementTree.parse(path).iter("testcase"):
-        key = "::".join(case.get(attr, "") for attr in ("file", "classname", "name"))
+        key = portable_case_id("::".join(case.get(attr, "") for attr in ("file", "classname", "name")))
         if key in cases or len(cases) >= 20000:
             raise ValueError("테스트 식별자가 중복되었거나 제한을 초과했습니다.")
         cases[key] = ("failed" if case.find("failure") is not None or case.find("error") is not None

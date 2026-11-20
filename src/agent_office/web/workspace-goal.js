@@ -52,7 +52,7 @@ const active = new Set(['QUEUED', 'RUNNING', 'WAITING_USER', 'TESTING', 'REVIEWI
 const canAdoptCandidate = (candidate) =>
   candidate?.eligible === true && candidate.status === 'passed' && candidate.review_status === 'approved';
 
-export function mountGoals({win, get, make, api, refresh, context, openInbox, openMeeting}) {
+export function mountGoals({win, get, make, api, refresh, onPolicySaved, context, openInbox, openMeeting}) {
   let latest = null,
     counter = 0,
     policyRead = 0,
@@ -693,6 +693,7 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
         checks
       });
       if (current === sameRoom() && serial === policyRead) {
+        onPolicySaved();
         get('goal-policy-note').textContent =
           '검증 설정을 저장했습니다. 다음 파일 수정 작업부터 밤샘 목표가 기본으로 선택됩니다.';
         await refresh();

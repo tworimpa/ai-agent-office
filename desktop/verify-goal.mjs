@@ -202,7 +202,7 @@ try {
     await page.locator('#test-files').fill('tests/test_settings.py')
     record('scope', '운영자가 관련 테스트 파일을 지정')
   } else {
-    await page.locator('#overnight-goal').check()
+    assert.equal(await page.locator('#overnight-goal').isChecked(), true, 'Saved verification settings must default edit assignments to a goal')
   }
   await screenshot('01-intake')
   const accepted = page.waitForResponse((r) => r.url().endsWith('/assignments') && r.request().method() === 'POST')

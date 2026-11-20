@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 
 from .events import snapshot_request
-from .goal_checks import recipe, run_check
+from .goal_checks import portable_cases, recipe, run_check
 from .goal_candidates import capture, scope_changes
 from . import goal_recovery
 from .store import encode, now
@@ -147,7 +147,7 @@ class GoalVerification:
         return valid
 
     def _rows(self, attempt):
-        return [(json.loads(receipt), json.loads(cases)) for receipt, cases in self.db.execute(
+        return [(json.loads(receipt), portable_cases(json.loads(cases))) for receipt, cases in self.db.execute(
             "SELECT receipt,cases FROM studio_goal_checks WHERE run_id=? AND attempt=? ORDER BY position",
             (self.id, attempt))]
 
@@ -172,13 +172,14 @@ class GoalVerification:
             from .goal_peer import run_remote
             receipt, cases = run_remote(self.store, self.id, attempt, position, workspace or self.root,
                                        self.revision, check, timeout=timeout, on_start=lambda item: save(item, {}))
+        cases = portable_cases(cases)
         base = baseline or {}
         previous = None
         if attempt > 1:
             row = self.db.execute("SELECT receipt,cases FROM studio_goal_checks WHERE run_id=? AND attempt=? AND position=?",
                                   (self.id, attempt - 1, position)).fetchone()
             if row and json.loads(row[0])["status"] not in {"timeout", "unverified", "running"}:
-                previous = json.loads(row[1])
+                previous = portable_cases(json.loads(row[1]))
         reference = previous if previous is not None else {}
         removed = sorted(base.keys() - cases.keys())
         skipped = sorted(k for k in base.keys() & cases.keys() if cases[k] == "skipped" and base[k] != "skipped")
@@ -216,7 +217,7 @@ class GoalVerification:
             result = json.loads(receipt)
             if result["stage"] != "full" or recipe(result["recipe_argv"]) != "pytest":
                 continue
-            cases = json.loads(raw)
+            cases = portable_cases(json.loads(raw))
             failed = sorted(k.split("::", 1)[0] for k, status in cases.items() if status == "failed")
             files = list(dict.fromkeys(failed or sorted(k.split("::", 1)[0] for k in cases)[:1]))[:16]
             if files:
@@ -316,8 +317,20 @@ class GoalVerification:
             explanation = str(exc)
         eligible = bool(digest and not scope_reduced and not interrupted)
         passed = passed and eligible
-        fixed = sum(r["fixed_count"] for r in records)
-        regressions = sum(r["new_failure_count"] for r in records)
+        # A focused test often runs a second time in the full suite. Count the
+        # test once per execution host and checker, keeping conflicting outcomes.
+        def observed(rows):
+            results = {}
+            for receipt, cases in rows:
+                argv = receipt["recipe_argv"]
+                checker = tuple(argv) if argv[0] == "host-check" else recipe(argv)
+                for case, status in cases.items():
+                    results.setdefault((receipt["host"], checker, case), set()).add(status)
+            return results
+        initial = observed(baseline)
+        current = observed(self._rows(attempt))
+        fixed = sum("failed" in initial.get(key, ()) and states == {"passed"} for key, states in current.items())
+        regressions = sum("failed" not in initial.get(key, ()) and "failed" in states for key, states in current.items())
         stages_passed = sum(r["status"] == "passed" for r in records)
         score = int(passed) * 1000000 + stages_passed * 10000 + fixed * 10 - regressions * 10
         last = describe(self.db, self.id) or {}

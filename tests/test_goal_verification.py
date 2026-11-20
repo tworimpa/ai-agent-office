@@ -8,6 +8,15 @@ import pytest
 from agent_office import goal_checks, goal_verification as goals
 
 
+def test_junit_matches_nested_workspace_paths_without_rewriting_parameter_ids(tmp_path):
+    report = tmp_path / "report.xml"
+    report.write_text(r'<testsuite><testcase file="tests\test_settings.py" classname="suite" '
+                      r'name="restore[C:\settings]"><failure/></testcase></testsuite>')
+    expected = {r"tests/test_settings.py::suite::restore[C:\settings]": "failed"}
+    assert goal_checks._pytest_results(report) == expected
+    assert goal_checks.portable_cases({r"tests\test_settings.py::suite::restore[C:\settings]": "failed"}) == expected
+
+
 def test_missing_reproducer_is_measured_before_any_implementation_change(goal):
     from agent_office.adapters import AgentResult
     from agent_office.workflow import build_graph
@@ -83,6 +92,7 @@ def test_measure_baseline_then_quick_full_regression_and_immutable_patch(goal):
     assert goal.verify({"attempts": 2}, None)[:3] == (True, False, False)
     report = goals.describe(goal.db, goal.id)
     assert report["best_attempt"] == 2
+    assert report["candidates"][0]["fixed_count"] == 1
     assert [row["exit_code"] for row in report["checks"]] == [1, 1, 0, 1, 0, 0]
     assert report["checks"][3]["new_failures"] and report["checks"][3]["fixed_ids"]
     assert report["checks"][5]["previous_attempt"] == 1 and report["checks"][5]["fixed_since_previous_count"] == 1
