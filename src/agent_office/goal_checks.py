@@ -162,6 +162,10 @@ def run_check(workspace, check, *, timeout, on_start=None):
             env["PYTHONDONTWRITEBYTECODE"] = "1"
             code, output = execute(command, workspace, env, timeout)
             receipt.update(exit_code=code, summary=snapshot_request(output))
+            if kind in {"host_exit", "host_junit"}:
+                from .goal_host_checks import definition
+                if definition(argv[1], workspace)[1] != argv[2]:
+                    raise ValueError("검증 중 호스트 명령 또는 고정한 입력이 변경되었습니다.")
             if kind == "installed":
                 if installed_evidence(workspace, Path(command[-1])) != receipt["artifact"]:
                     raise ValueError("검증 도중 설치판 또는 후보가 변경되었습니다.")

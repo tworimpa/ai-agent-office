@@ -8,6 +8,36 @@ import pytest
 from agent_office import goal_checks, goal_verification as goals
 
 
+def test_missing_reproducer_is_measured_before_any_implementation_change(goal):
+    from agent_office.adapters import AgentResult
+    from agent_office.workflow import build_graph
+    from test_workflow import base_state, MockAdapter
+
+    git = ["git", "-C", str(goal.root), "-c", "user.name=Fixture", "-c", "user.email=u@example.invalid"]
+    (goal.root / "test_restore.py").write_text("from settings import value\ndef test_empty(): assert value(None) is None\n")
+    subprocess.run([*git, "commit", "-am", "original suite only checks empty setting", "-q"], check=True)
+    goal.revision = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+    new_test = goal.root / "test_saved_theme.py"
+
+    class Worker:
+        def execute(self, prompt, *, workspace, allow_edits):
+            assert allow_edits and workspace == goal.root
+            if "add only a new pytest regression" in prompt:
+                new_test.write_text("from settings import value\ndef test_dark(): assert value('dark') == 'dark'\n")
+            else:
+                assert "New regression measured against unchanged baseline" in prompt
+                (workspace / "settings.py").write_text("def value(saved): return saved\n")
+            return AgentResult(0, "기존 설정값 복원")
+
+    graph = build_graph({"claude": Worker(), "codex": MockAdapter([AgentResult(0, "VERDICT: APPROVED")])}, goal=goal)
+    assert graph.invoke(base_state(goal.root))["status"] == "READY_FOR_HUMAN_REVIEW"
+    proof = [r for r in goals.describe(goal.db, goal.id)["checks"] if r["attempt"] == 0 and r["status"] == "failed"]
+    assert len(proof) == 1 and "test_dark" in proof[0]["failed_ids"][0]
+    new_test.write_text("def test_dark(): assert True\n")
+    assert not goal.verify({"attempts": 2}, None)[0]
+    assert goals.describe(goal.db, goal.id)["best_attempt"] == 1
+
+
 @pytest.fixture
 def goal(tmp_path, monkeypatch):
     root = tmp_path / "fixture"

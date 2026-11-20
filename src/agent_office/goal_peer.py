@@ -1,9 +1,10 @@
 """One-use verification offers, armed by a foreground operator on the execution host."""
 from collections import Counter
+from datetime import datetime
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import platform
 import re
 import stat
@@ -20,7 +21,7 @@ from .ownership import RunGuard
 from .release_store import run_git
 from .release_validation import MAX_FILES, MAX_SOURCE, committed_files
 from .store import TaskStore, encode, now
-from .studio_catalog import StudioCatalog
+from .studio_catalog import StudioCatalog, _git
 
 
 def _digest(data):
@@ -44,7 +45,7 @@ def _runtime_digest(root, check):
 
 
 def source_digest(root):
-    """Exact tracked and non-ignored source bytes, including portable Git executable modes."""
+    """Compare canonical Git text and literal binary bytes with the approved commit."""
     index = {}
     for row in run_git(root, "ls-files", "--stage", "-z").split(b"\0")[:-1]:
         header, path = row.split(b"\t", 1)
@@ -56,6 +57,17 @@ def source_digest(root):
     names = sorted(index.keys() | set(new))
     _safe_names(names)
     _check_destination(root, names)
+    autocrlf = _git(root, "config", "--default=false", "--get", "core.autocrlf",
+                    error="줄바꿈 변환 설정을 확인할 수 없습니다.").lower() in {"true","input","yes","on","1"}
+    convert = set()
+    for entry in run_git(root,"ls-files","--eol","--cached","--others","--exclude-standard","-z").split(b"\0")[:-1]:
+        columns, name = entry.split(b"\t", 1)
+        indexed, working, attr = columns.strip().split(None, 2)
+        # Never translate binary, -text, mixed, or stored CRLF files. Git has already
+        # classified the content. No clean filter or repository-provided command is run.
+        if (indexed in (b"i/lf",b"i/none",b"i/") and working == b"w/crlf"
+                and (attr.startswith(b"attr/text") or attr == b"attr/" and autocrlf)):
+            convert.add(name.decode())
     files, total = [], 0
     for name in names:
         path = root / name
@@ -72,6 +84,8 @@ def source_digest(root):
             content = stream.read(info.st_size + 1)
         if len(content) != info.st_size:
             raise ValueError("검증 소스가 수집 중 변경되었습니다.")
+        if name in convert and b"\0" not in content:
+            content = content.replace(b"\r\n", b"\n")
         mode = (index.get(name, 0o644) if os.name == "nt" else
                 0o755 if info.st_mode & stat.S_IXUSR else 0o644)
         files.append((name, mode, content))
@@ -101,10 +115,14 @@ def configure(path, peers):
 def pin_targets(db, run_id, policy):
     ensure_schema(db)
     for requested in {c["host"] for c in policy.get("checks", [])}:
-        if requested.casefold() in {"local", platform.node().casefold()}:
+        if requested.casefold() == "local":
             continue
         peers = list(db.execute("SELECT journal_id,alias,port FROM studio_goal_peers WHERE journal_id=? "
                                 "OR alias=? COLLATE NOCASE", (requested,requested)))
+        if requested.casefold() == platform.node().casefold():
+            if peers:
+                raise ValueError("현재 컴퓨터 이름과 SSH 별칭이 같습니다. 원격 저널 ID 또는 local을 지정하세요.")
+            continue
         if len(peers) != 1:
             raise ValueError("검증할 SSH 호스트의 등록된 저널 ID 또는 고유 별칭을 확인하세요.")
         db.execute("INSERT INTO studio_goal_peer_targets VALUES(?,?,?,?,?)",(run_id,requested,*peers[0]))
@@ -160,6 +178,42 @@ def _check_ids(base, commit):
         raise ValueError("기준 및 검증 커밋의 전체 SHA가 필요합니다.")
 
 
+def _timestamp(value):
+    if not isinstance(value, str) or len(value) > 64:
+        raise ValueError("원격 검증 시각이 누락되었습니다.")
+    parsed = datetime.fromisoformat(value)
+    if parsed.utcoffset() is None:
+        raise ValueError("원격 검증 시각의 시간대가 누락되었습니다.")
+    return parsed
+
+
+def _invocation_matches(result):
+    from .goal_checks import _pytest_files
+    argv, planned = result["argv"], result["recipe_argv"]
+    kind = recipe(planned)
+    if kind == "pytest":
+        if len(argv) < 11 or argv[1:3] != ["-I","-B"] or PureWindowsPath(argv[3]).name != "goal_pytest.py":
+            return False
+        if (argv[4:8] != ["-q","-o","junit_family=xunit1","-o"] or not argv[8].startswith("cache_dir=")
+                or argv[9] != "--junitxml"):
+            return False
+        paths = _pytest_files(planned)
+        expected = (["-x"] if "-x" in planned else []) + (["--",*paths] if paths else [])
+        return argv[11:] == expected
+    if PureWindowsPath(argv[0]).name.casefold() not in ("node","node.exe"):
+        return False
+    if kind == "web":
+        index = 3 if argv[1:2] == ["--import"] else 1
+        if (argv[index:index+2] != ["--test","--test-reporter=junit"] or len(argv)<=index+3
+                or not argv[index+2].startswith("--test-reporter-destination=")):
+            return False
+        return all(re.fullmatch(r"tests/web/[^/\\]+\.test\.mjs",path) for path in argv[index+3:])
+    artifact = result.get("artifact")
+    return (len(argv)==3 and isinstance(artifact,dict) and artifact.get("executable")==argv[2]
+            and all(isinstance(artifact.get(k),str) and re.fullmatch(r"[a-f0-9]{64}",artifact[k])
+                    for k in ("executable_sha256","archive_sha256","source_sha256")))
+
+
 def check_reply(status, data, identifier, requested):
     if status != 200 or data.get("id") != identifier:
         raise ValueError("원격 요청 ID를 확인하세요.")
@@ -172,17 +226,32 @@ def check_reply(status, data, identifier, requested):
     state, result, cases = data.get("state"), data.get("result"), data.get("cases")
     if state in ("claimed","running","interrupted") and result is None and cases == {}:
         return
-    if (state != "finished" or not isinstance(result,dict) or not isinstance(cases,dict) or len(cases)>20000
-            or not all(isinstance(k,str) and len(k)<=2048 and v in ("passed","skipped","failed") for k,v in cases.items())
-            or result.get("source_digest") != data["source"] or result.get("source_commit") != data["commit"]
-            or not isinstance(result.get("environment"),dict) or not isinstance(result.get("host"),str)
-            or not isinstance(result.get("cwd"),str) or not isinstance(result.get("argv"),list)
-            or not all(isinstance(s,str) for s in result["argv"]) or not isinstance(result.get("started_at"), str)
+    if state != "finished" or not isinstance(result,dict) or not isinstance(cases,dict) or len(cases)>20000:
+        raise ValueError("원격 검증이 종료되지 않았습니다.")
+    profile = {"stage":result.get("stage"), "argv":result.get("recipe_argv"), "timeout_seconds":result.get("timeout_seconds")}
+    if (profile["stage"] not in ("quick","full","journey") or type(profile["timeout_seconds"]) is not int
+            or not 1 <= profile["timeout_seconds"] <= 86400 or recipe(profile["argv"]) == "host"
+            or _selector(profile) != bound["recipe"] or result.get("source_digest") != bound["source"]
+            or result.get("source_commit") != data["commit"]):
+        raise ValueError("원격 검증 소스와 실행 정의가 요청과 다릅니다.")
+    env, host, cwd, argv = (result.get(k) for k in ("environment","host","cwd","argv"))
+    if (not isinstance(env,dict) or not isinstance(host,str) or not host.strip() or len(host)>253
+            or host!=env.get("host") or not isinstance(env.get("digest"),str)
+            or not re.fullmatch(r"[a-f0-9]{64}",env["digest"])
+            or not all(isinstance(env.get(k),str) and env[k].strip() for k in ("python","platform"))
+            or not isinstance(cwd,str) or not (PurePosixPath(cwd).is_absolute() or PureWindowsPath(cwd).is_absolute())
+            or not isinstance(argv,list) or not 1<=len(argv)<=2048 or not all(isinstance(s,str) and s for s in argv)):
+        raise ValueError("원격 검증의 호스트 또는 실행 환경을 확인할 수 없습니다.")
+    if (_timestamp(result.get("finished_at")) < _timestamp(result.get("started_at"))
+            or type(result.get("elapsed_seconds")) not in (float,int) or not 0<=result["elapsed_seconds"]<=172800
             or not isinstance(result.get("summary"),str) or len(result["summary"])>8192
-            or type(result.get("elapsed_seconds")) not in (float,int) or not 0 <= result["elapsed_seconds"] <= 172800
-            or result.get("status") not in ("passed","failed","timeout","unverified")
-            or result.get("counts") != dict(Counter(cases.values()))
-            or (result["status"]=="passed" and (not cases or result.get("exit_code") != 0 or "failed" in cases.values()))):
+            or not all(isinstance(k,str) and 0<len(k)<=2048 and v in ("passed","skipped","failed") for k,v in cases.items())
+            or not isinstance(result.get("counts"),dict) or any(type(n) is not int for n in result["counts"].values())
+            or result["counts"] != dict(Counter(cases.values())) or result.get("status") not in ("passed","failed","timeout","unverified")
+            or result.get("exit_code") is not None and type(result["exit_code"]) is not int
+            or result["status"] in ("passed","failed") and (result.get("exit_code") is None or not _invocation_matches(result))
+            or result["status"]=="passed" and (not result["counts"].get("passed") or "failed" in result["counts"]
+                                                or result.get("exit_code") != 0)):
         raise ValueError("원격 검증의 실제 실행 결과를 확인할 수 없습니다.")
 
 
@@ -245,8 +314,8 @@ def prepare(path, workspace_id, base, commit, check, wait_seconds):
                     cases = {}
                 result.update(source_digest=digest, source_commit=commit,
                               environment={"platform":platform.platform(), "python":sys.version.split()[0],
-                                           "digest":environment},
-                              recipe_argv=check["argv"])
+                                           "digest":environment, "host":platform.node()},
+                              recipe_argv=check["argv"], timeout_seconds=check["timeout_seconds"], finished_at=now())
                 db.execute("UPDATE studio_peer_checks SET state='finished',result=?,cases=? WHERE ticket=?",
                            (encode(result), encode(cases), ticket))
                 return result["status"] == "passed"

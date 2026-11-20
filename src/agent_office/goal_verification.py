@@ -52,6 +52,8 @@ def validate_policy(value):
 
 
 def init_schema(db):
+    from . import goal_reproduction
+    goal_reproduction.schema(db)
     db.execute("""CREATE TABLE IF NOT EXISTS studio_goal_checks (
         run_id TEXT NOT NULL REFERENCES runs(run_id), attempt INTEGER NOT NULL, position INTEGER NOT NULL,
         receipt TEXT NOT NULL, cases TEXT NOT NULL, PRIMARY KEY(run_id,attempt,position))""")
@@ -113,6 +115,7 @@ class GoalVerification:
         self.folders = folders
         self.policy = validate_policy(assignment["goal_policy"])
         self.reproduce_required = assignment.get("reproduce_required", False)
+        self.needs_reproducer = False
         init_schema(self.db)
 
     def stop(self, reason):
@@ -247,6 +250,8 @@ class GoalVerification:
         reproduction = (any(k.split("::", 1)[0] in configured_files for k in failures)
                         if configured_files else bool(failures))
         if self.reproduce_required and not reproduction:
+            self.needs_reproducer = any(
+                c["stage"] == "quick" and recipe(c["argv"]) == "pytest" for c in self.policy["checks"])
             self.stop("기준 커밋에서 문제가 재현되지 않았습니다. 실패하는 회귀 테스트 또는 재현 조건이 필요합니다.")
             return False, self.format(records)
         return True, self.format(records)
@@ -262,6 +267,7 @@ class GoalVerification:
             for r in records))
 
     def verify(self, state, meeting):
+        from . import goal_reproduction
         attempt = state["attempts"]
         baseline = self._rows(0)
         start = state.get("check_index", 0)
@@ -271,6 +277,9 @@ class GoalVerification:
         try:
             files, patch, digest = capture(self.root, self.revision, self.folders)
             scope = scope_changes(self.root, self.revision, files)
+            added = goal_reproduction.read(self.db, self.id)
+            if added and not goal_reproduction.intact(self.root, added[0]):
+                scope.append("최초 실패를 증명한 회귀 테스트가 변경되었습니다.")
         except (OSError, ValueError) as exc:
             reason = snapshot_request(str(exc))
             record = dict(attempt=attempt, created_at=now(), digest="", score=0, eligible=False, status="unverified",
@@ -279,7 +288,10 @@ class GoalVerification:
             self.db.execute("INSERT INTO studio_goal_candidates VALUES(?,?,?,?)", (self.id, attempt, encode(record), ""))
             self.stop(reason)
             return False, False, False, reason
-        for pos, check in enumerate(self.policy["checks"][start:], start):
+        ordered = list(enumerate(self.policy["checks"]))
+        if added:
+            ordered.insert(0, (len(ordered), added[1]))
+        for index, (pos, check) in enumerate(ordered[start:], start):
             if "--lf" in check["argv"]:
                 check = self._focused(check)
             receipt, cases = self._run(attempt, pos, check, baseline=baseline[pos][1])
@@ -288,9 +300,9 @@ class GoalVerification:
                 meeting.record_goal_cases(cases, check["stage"])
             if receipt["status"] != "passed":
                 break
-            if pos + 1 < len(self.policy["checks"]):
-                self.checkpoint("test", dict(state, check_index=pos + 1))
-        passed = len(records) == len(self.policy["checks"]) and all(r["status"] == "passed" for r in records)
+            if index + 1 < len(ordered):
+                self.checkpoint("test", dict(state, check_index=index + 1))
+        passed = len(records) == len(ordered) and all(r["status"] == "passed" for r in records)
         interrupted = any(r["status"] in ("timeout", "unverified") for r in records)
         scope_reduced = bool(scope) or any(r["scope_changes"] for r in records)
         explanation = ""

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import sqlite3
 import sys
 import sysconfig
 
@@ -33,6 +34,10 @@ def ensure_schema(db):
         REFERENCES studio_requests(id), started_at TEXT NOT NULL)""")
     db.execute("""CREATE TABLE IF NOT EXISTS studio_goal_drains(run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
         drained_at TEXT NOT NULL)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS studio_goal_owners(run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+        seen_at TEXT NOT NULL)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS studio_goal_gaps(run_id TEXT NOT NULL REFERENCES runs(run_id),
+        started_at TEXT NOT NULL, ended_at TEXT NOT NULL, PRIMARY KEY(run_id,started_at))""")
 
 
 def is_goal(db, run_id):
@@ -45,6 +50,25 @@ def note_wait(db, request_id):
         db.execute("""INSERT OR IGNORE INTO studio_goal_waits
             SELECT q.id,? FROM studio_requests q JOIN studio_goals g ON g.id=q.run_id WHERE q.id=?""",
                    (now(), request_id))
+
+
+def note_owner(db, run_id):
+    try:
+        db.execute("INSERT OR REPLACE INTO studio_goal_owners VALUES(?,?)", (run_id, now()))
+    except sqlite3.OperationalError as exc:
+        if getattr(exc, "sqlite_errorcode", 0) & 255 not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            raise
+
+
+def mark_owner_gap(db, run_id):
+    if not is_goal(db,run_id):
+        return
+    ensure_schema(db)
+    last = db.execute("""SELECT max(stamp) FROM (
+        SELECT seen_at AS stamp FROM studio_goal_owners WHERE run_id=?
+        UNION ALL SELECT timestamp FROM events WHERE run_id=?)""", (run_id,run_id)).fetchone()[0]
+    if last:
+        db.execute("INSERT OR IGNORE INTO studio_goal_gaps VALUES(?,?,?)",(run_id,last,now()))
 
 
 def timing(db, run_id, *, at=None):
@@ -79,11 +103,15 @@ def timing(db, run_id, *, at=None):
             paused = None
     if paused:
         add("offline", "", paused, end)
+    for lower, upper in db.execute("SELECT started_at,ended_at FROM studio_goal_gaps WHERE run_id=?", (run_id,)):
+        add("unknown", "", lower, upper)
     def mode(t):
         groups = {}
         for kind, key, lower, upper in intervals:
             if lower <= t < upper:
                 groups.setdefault(kind, set()).add(key)
+        if "unknown" in groups:
+            return "unknown"
         if "offline" in groups:
             return "offline"
         if "plan" in groups or ("wait" in groups and groups.get("worker", set()) <= groups["wait"]):
@@ -91,7 +119,7 @@ def timing(db, run_id, *, at=None):
         return "active"
 
     edges = sorted({start, end, *(t for _, _, a, b in intervals for t in (a, b))})
-    elapsed = {"active": 0., "wait": 0., "offline": 0.}
+    elapsed = {"active": 0., "wait": 0., "offline": 0., "unknown": 0.}
     for left, right in zip(edges, edges[1:]):
         elapsed[mode(left)] += (datetime.fromisoformat(right) - datetime.fromisoformat(left)).total_seconds()
     # The final interval may end at the time of this sample itself. Check the current gate separately.
@@ -101,6 +129,7 @@ def timing(db, run_id, *, at=None):
         ON q.id=w.request_id WHERE q.run_id=? AND q.status='pending'""", (run_id,))}
     plan = db.execute("SELECT 1 FROM studio_meetings WHERE run_id=? AND status='awaiting_review'", (run_id,)).fetchone()
     return {"active_seconds": round(elapsed["active"], 3), "user_wait_seconds": round(elapsed["wait"], 3),
+            "unobserved_seconds": round(elapsed["unknown"], 3),
             "waiting_for_user": bool(not run["ended_at"] and (plan or waits and workers <= waits))}
 
 
@@ -124,8 +153,8 @@ def _environment(root, checks, update):
     update(encode(packages).encode())
     host_module = Path(__file__).parent
     for name in ("goal_checks.py", "goal_candidates.py", "goal_verification.py", "goal_host_checks.py",
-                 "goal_peer.py", "goal_pytest.py", "goal_process.py", "goal_artifact.py", "studio_process.py",
-                 "workflow.py"):
+                 "goal_peer.py", "goal_pytest.py", "goal_process.py", "goal_artifact.py",
+                 "goal_reproduction.py", "studio_process.py", "workflow.py"):
         file(host_module / name)
     files = set()
     for check in checks:
@@ -191,6 +220,11 @@ def _fingerprint(db, run_id):
     if db.execute("SELECT 1 FROM sqlite_master WHERE name='studio_goal_checks'").fetchone():
         rows = db.execute("SELECT attempt,position,receipt,cases FROM studio_goal_checks WHERE run_id=? "
                           "ORDER BY attempt,position", (run_id,))
+        for row in rows:
+            update(encode(tuple(row)).encode())
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='studio_goal_reproducers'").fetchone():
+        rows = db.execute("SELECT files_json,check_json,created_at FROM studio_goal_reproducers WHERE run_id=?",
+                          (run_id,))
         for row in rows:
             update(encode(tuple(row)).encode())
     return digest.hexdigest()
@@ -263,6 +297,8 @@ def detail(store, run_id):
         action, reason = "inspect", "실행 저널이 열려 있습니다. 호스트에서 작업자의 소유 상태를 확인하고 있습니다."
     elif run.state != "RECOVERY_REQUIRED" or stopped:
         action, reason = "closed", "실행이 종료되었습니다."
+    elif db.execute("SELECT 1 FROM studio_goal_redacted_requests WHERE goal_id=?", (run_id,)).fetchone():
+        action, reason = "inspect", "저장할 때 원래 요청의 일부를 가렸습니다. 계속할 요청 내용을 확인하세요."
     elif directions or decisions:
         action, reason = "inspect", "미전달 지시나 미결 요청을 확인하세요."
     elif not db.execute("SELECT 1 FROM studio_goal_drains WHERE run_id=?", (run_id,)).fetchone():
@@ -316,6 +352,7 @@ def reconcile(runner, run_id, request_id):
                     db.execute("UPDATE studio_runs SET diagnostic='',proposed_state=NULL,proposed_outcome=NULL "
                                "WHERE id=?", (run_id,))
                     db.execute("UPDATE studio_goal_checkpoints SET claimed=1 WHERE run_id=?", (run_id,))
+                    db.execute("DELETE FROM studio_goal_drains WHERE run_id=?", (run_id,))
                     store._record(run_id, operation_key=f"{run_id}:resume:{request_id}", event_type="RECOVERY_RESUMED",
                                   payload={"phase":"run"})
                     db.execute("INSERT INTO studio_goal_recoveries VALUES (?,?, 'resumed',?,?)",

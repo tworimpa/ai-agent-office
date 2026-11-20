@@ -114,6 +114,29 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             for column in ("developer_output", "test_output", "review_output"):
                 save_stage(column, "")
         emit("STAGE_STARTED", "developer", count, state="RUNNING", engine=state["developer"])
+        feedback = state.get("feedback", "(none)")
+        if goal and goal.needs_reproducer:
+            from .goal_reproduction import measure
+            repro = run_role(state, "developer", (
+                "Reproduce the reported behavior before editing the implementation. Within the allowed folders "
+                "add only a new pytest regression file which calls the original application and asserts the "
+                "requested behavior. Keep existing source, configuration and tests intact. Never commit, push, "
+                "merge, deploy or change permissions. If expected behavior is unclear ask the operator.\n\n"
+                + folder_context(state, state["developer"]) + "\nTask:\n" + state["task"]))
+            try:
+                if repro.returncode:
+                    raise ValueError("재현 테스트를 준비하지 못했습니다. " + repro.message[:500])
+                witness = measure(goal)
+                feedback += "\nNew regression measured against unchanged baseline:\n" + goal.format([witness])
+                goal.needs_reproducer = False
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                reason = str(exc)
+                goal.stop(reason)
+                if save_stage:
+                    save_stage("developer_output", reason)
+                emit("STAGE_FAILED", "developer", count, returncode=1, engine=state["developer"])
+                return {"status": "RECOVERY_REQUIRED" if repro.returncode == 124 else "FAILED",
+                        "attempts": count, "developer_output": reason, "feedback": reason}
         if meeting is not None and count == 1 and state["allow_edits"]:
             meeting.dispatch(guidance.get("developer", ""))
         prompt = (
@@ -125,7 +148,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             f"{guidance.get('developer', '')}"
             f"{folder_context(state, state['developer'])}"
             f"Task:\n{state['task']}\n\n"
-            f"Feedback from last attempt:\n{state.get('feedback', '(none)')}"
+            f"Feedback from last attempt:\n{feedback}"
         )
         if meeting is not None and meeting.applied_work:
             prompt += "\n\n" + meeting.applied_work
@@ -306,7 +329,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
     if goal:
         def baseline(_state):
             ok, output = goal.baseline()
-            return {"status": "NEW" if ok else "TEST_FAILED", "feedback": output, "test_output": output}
+            return {"status": "NEW" if ok or goal.needs_reproducer else "TEST_FAILED", "feedback": output, "test_output": output}
         graph.add_node("baseline", baseline)
         graph.add_conditional_edges("baseline", lambda s: "develop" if s["status"] == "NEW" else "end",
                                     {"develop": "develop", "end": END})

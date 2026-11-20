@@ -547,6 +547,7 @@ export function mountWorkspaceOffice(win = window) {
       return;
     }
     say('room-title', room.workspace.name);
+    if (!roomOnline) goals.stale();
     const count = room.runs.reduce((total, run) => total + (run.pending_count ?? 0), 0);
     get('inbox-count').hidden = count < 1;
     say('inbox-count', String(count));

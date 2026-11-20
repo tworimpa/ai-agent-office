@@ -14,7 +14,7 @@ agent-office --db peer.sqlite3 studio --port 8766 --accept-remote
 agent-office --db goals.sqlite3 studio --port 8767 --remote linux-ci 8766 PEER_JOURNAL_ID
 ```
 
-수신 Studio의 작업공간 첫 폴더에 검증용 Git 저장소 루트를 등록하세요. 기준 커밋과 검증할 커밋은 운영자가 검토하여 해당 저장소에 미리 준비합니다. 기준 검증은 두 SHA가 같습니다. 후보 검증은 후보와 같은 파일 내용·경로·실행 모드를 담은 후속 커밋을 준비합니다. 호스트 간 줄바꿈 변환으로 실제 바이트가 달라져도 서로 다른 소스로 판정합니다.
+수신 Studio의 작업공간 첫 폴더에 검증용 Git 저장소 루트를 등록하세요. 기준 커밋과 검증할 커밋은 운영자가 검토하여 해당 저장소에 미리 준비합니다. 기준 검증은 두 SHA가 같습니다. 후보 검증은 후보와 같은 파일 내용·경로·실행 모드를 담은 후속 커밋을 준비합니다. Git의 텍스트 설정으로 Windows에서 CRLF로 체크아웃한 파일은 커밋의 LF 표현과 비교합니다. 바이너리와 `-text` 파일은 원래 바이트까지 일치해야 합니다.
 
 예를 들어 목표의 전체 검증을 `linux-ci`, `python -m pytest -q`, 300초로 설정했다면 수신 호스트의 별도 터미널에서 다음 명령을 실행합니다. 작업공간 ID는 해당 작업공간 주소의 `workspace` 값입니다. `BASE_SHA`와 `CANDIDATE_SHA`는 전체 커밋 SHA입니다.
 

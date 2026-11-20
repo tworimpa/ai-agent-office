@@ -1,13 +1,91 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import socket
+import sqlite3
 import subprocess
 import time
 from uuid import uuid4
+import pytest
 
 from agent_office import goal_checks, goal_peer, studio_ssh
 from agent_office.store import TaskStore
 from test_studio_http import studio
+
+
+def test_alias_matching_owner_hostname_requires_an_explicit_peer_journal(monkeypatch):
+    with sqlite3.connect(":memory:") as db:
+        goal_peer.ensure_schema(db)
+        peer = uuid4().hex
+        db.execute("INSERT INTO studio_goal_peers VALUES(?, 'host-a', 8766)", (peer,))
+        monkeypatch.setattr(goal_peer.platform, "node", lambda: "host-a")
+        goal = uuid4().hex
+        with pytest.raises(ValueError, match="저널 ID"):
+            goal_peer.pin_targets(db, goal, {"checks":[{"host":"host-a"}]})
+        goal_peer.pin_targets(db, goal, {"checks":[{"host":peer}]})
+        assert db.execute("SELECT journal_id FROM studio_goal_peer_targets").fetchone()[0] == peer
+
+
+@pytest.mark.parametrize("edit", ["skipped","counts","stage","recipe","argv","host","environment","started","finished","order"])
+def test_peer_receipt_rejects_unbound_or_incomplete_verification(edit):
+    identifier, ticket = uuid4().hex, uuid4().hex
+    profile = {"stage":"full","argv":["pytest","-q"],"timeout_seconds":20}
+    requested = {"base":"1"*40,"source":"a"*64,"recipe":goal_peer._selector(profile),"limit_ms":20000}
+    result = {"status":"passed", "exit_code":0,"counts":{"passed":1}, "source_digest":requested["source"],
+              "source_commit":"2"*40, "stage":"full", "recipe_argv":profile["argv"],"timeout_seconds":20,
+              "environment":{"python":"3.13","host":"peer","platform":"Linux","digest":"3"*64},
+              "host":"peer","cwd":"/tmp/candidate","argv":["/bin/python","-I","-B","/app/goal_pytest.py","-q",
+                                                            "-o","junit_family=xunit1","-o","cache_dir=/tmp/cache",
+                                                            "--junitxml","/tmp/report.xml"],
+              "elapsed_seconds":1,"started_at":"2026-11-20T13:00:00+00:00",
+              "finished_at":"2026-11-20T13:00:01+00:00","summary":""}
+    packet = dict(requested,id=identifier,ticket=ticket,commit="2"*40,state="finished",result=result,
+                  cases={"test_one":"passed"})
+    goal_peer.check_reply(200,packet,identifier,requested)
+    if edit=="skipped":
+        packet["cases"]["test_one"]="skipped"
+        result["counts"]={"skipped":1}
+    elif edit=="counts":
+        result["counts"]={"passed":True}
+    elif edit=="stage":
+        result["stage"]="quick"
+    elif edit=="recipe":
+        result["recipe_argv"]=["pytest","-q","test_other.py"]
+    elif edit=="argv":
+        result["argv"]=["/bin/python","--version"]
+    elif edit=="host":
+        result["host"]="different-peer"
+    elif edit=="environment":
+        result["environment"]["digest"]=""
+    elif edit=="started":
+        result["started_at"]="2026-11-20T13:00:00"
+    elif edit=="finished":
+        result["finished_at"]="invalid"
+    else:
+        result["finished_at"]="2026-11-20T12:00:00+00:00"
+    with pytest.raises(ValueError):
+        goal_peer.check_reply(200,packet,identifier,requested)
+
+
+def test_manifest_uses_git_text_conversion_without_normalizing_binary(tmp_path):
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=tmp_path).decode().strip()
+    git("init", "-q")
+    git("config", "core.autocrlf", "true")
+    (tmp_path/".gitattributes").write_bytes(b"*.bin -text\n*.txt text eol=crlf\n")
+    (tmp_path/"tracked.txt").write_bytes(b"first\nsecond\n")
+    (tmp_path/"default.py").write_bytes(b"x = 1\ny = 2\n")
+    # The -text attribute protects even binary records containing only printable bytes.
+    (tmp_path/"record.bin").write_bytes(b"first\r\nsecond\r\n")
+    git("add", ".")
+    git("-c","user.name=Test","-c","user.email=a@example.invalid","commit","-qm","text and binary")
+    commit = git("rev-parse","HEAD")
+    approved = goal_peer._manifest(goal_peer.committed_files(tmp_path/".git",commit))
+    for name in ("default.py","tracked.txt"):
+        file = tmp_path/name
+        file.write_bytes(file.read_bytes().replace(b"\n",b"\r\n"))
+    assert goal_peer.source_digest(tmp_path)==approved
+    (tmp_path/"record.bin").write_bytes(b"first\nsecond\n")
+    assert goal_peer.source_digest(tmp_path)!=approved
 
 
 def test_two_studios_match_an_operator_armed_commit_and_recover_lost_ack(tmp_path, monkeypatch):

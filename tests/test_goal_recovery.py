@@ -65,9 +65,25 @@ def test_worker_loss_after_checkpoint_resumes_once_under_original_id(goal, monke
     assert calls == [(run_id, "fixture")]
     assert recovery.resume_state(db, run_id) == dict(next_stage="test", status="DEVELOPED",
                                                      attempts=1, developer_output="done")
-    recovery.invalidate_checkpoint(db, run_id)
-    finish_drained(store, run_id, worker_succeeded=False, preview_finished=False)
-    assert recovery.detail(store, run_id)["disposition"] == "inspect"
+    # The new supervisor dies before posting a drain receipt. The last owner's
+    # receipt cannot authorize another launch even though the files are identical.
+    assert runner._recover(store, run_id)
+    refused = recovery.reconcile(runner, run_id, uuid4().hex)
+    assert refused["disposition"] == "inspect" and len(calls)==1
+
+
+def test_redacted_original_request_requires_inspection(goal):
+    _, store, run_id, _ = goal
+    db = store.connection
+    row = db.execute("SELECT base_commit FROM studio_goals WHERE id=?", (run_id,)).fetchone()
+    db.execute("DELETE FROM studio_goals WHERE id=?", (run_id,))
+    token = "ghp_" + "fakefixtureexample"
+    overnight_goals.register(db,run_id,"workspace","inspect " + token,row[0],["."],
+                             {"goal_criteria":["check"],"goal_policy":{"active_seconds":600}})
+    assert token not in db.execute("SELECT request FROM studio_goals WHERE id=?", (run_id,)).fetchone()[0]
+    recovery.checkpoint(db,run_id,"test",dict(status="DEVELOPED",attempts=1))
+    finish_drained(store,run_id,worker_succeeded=False,preview_finished=False)
+    assert recovery.detail(store,run_id)["disposition"]=="inspect"
 
 
 def test_normal_supervisor_resumes_only_the_next_review(goal, monkeypatch):
@@ -167,4 +183,20 @@ def test_wait_clock_counts_only_blocked_work_and_never_double_counts_requests(go
                    (ident, run_id, holder, kind, "decided" if end else "pending", stamp(start), stamp(end) if end else None))
         db.execute("INSERT INTO studio_goal_waits VALUES(?,?)", (ident, stamp(start)))
     assert recovery.timing(db, run_id, at=stamp(12)) == {
-        "active_seconds":6, "user_wait_seconds":6, "waiting_for_user":True}
+        "active_seconds":6, "user_wait_seconds":6, "unobserved_seconds":0, "waiting_for_user":True}
+
+
+def test_lost_supervisor_does_not_charge_the_gap_before_restart(goal, monkeypatch):
+    _, store, run_id, _ = goal
+    db = store.connection
+    start = "2026-11-20T00:00:00+00:00"
+    last = "2026-11-20T00:00:07+00:00"
+    restart = "2026-11-20T08:00:07+00:00"
+    db.execute("UPDATE runs SET started_at=? WHERE run_id=?", (start,run_id))
+    db.execute("UPDATE events SET timestamp=? WHERE run_id=?", (start,run_id))
+    monkeypatch.setattr(recovery,"now", lambda: last)
+    recovery.note_owner(db,run_id)
+    monkeypatch.setattr(recovery,"now", lambda: restart)
+    recovery.mark_owner_gap(db,run_id)
+    clock = recovery.timing(db,run_id,at=restart)
+    assert clock["active_seconds"]==7 and clock["unobserved_seconds"]==8*3600

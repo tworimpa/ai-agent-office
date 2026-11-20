@@ -127,6 +127,8 @@ def recover_run(store, run_id: str, *, host_name: str, studio_owner=False):
         if run.host_name != host_name:
             raise OfficeError("HOST_MISMATCH")
         if run.state in ACTIVE:
+            from .goal_recovery import mark_owner_gap
+            mark_owner_gap(store.connection,run_id)
             store._record(run_id, operation_key=f"{run_id}:recovery:{run.next_seq}", event_type="RECOVERY_REQUIRED",
                           state="RECOVERY_REQUIRED", outcome="INTERRUPTED", payload={"phase": "run"})
         return store.get_run(run_id)

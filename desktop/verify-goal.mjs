@@ -107,9 +107,9 @@ async function decide() {
   record('decision', '기본 테마를 밝게로 선택하고 계획 시작')
 }
 async function waitForQuestion(id) {
-  for (const deadline = Date.now() + 120000; Date.now() < deadline;) {
+  for (const deadline = Date.now() + 120000; Date.now() < deadline; ) {
     const {requests} = await json('/api/runs/' + id + '/inbox')
-    if (requests.some(row => row.kind === 'question' && row.status === 'pending')) return
+    if (requests.some((row) => row.kind === 'question' && row.status === 'pending')) return
     const {goal} = await json('/api/runs/' + id + '/goal')
     if (goal?.recovery?.disposition === 'closed') {
       throw Error('Goal stopped before its product decision: ' + (goal.stop_reason || goal.state))
@@ -331,15 +331,28 @@ try {
       const {run: detail} = await json('/api/runs/' + run.id)
       const {goal} = await json('/api/runs/' + run.id + '/goal')
       const diagnostic = {
-        run_id: run.id, state: detail.state, outcome: detail.outcome, diagnostic: detail.diagnostic,
-        developer: detail.developer_output?.slice(-1200), test: detail.test_output?.slice(-1200),
-        stop_reason: goal?.stop_reason, checks: goal?.checks.map(({attempt, stage, status, exit_code, summary}) =>
-          ({attempt, stage, status, exit_code, summary: summary.slice(-1200)})),
-        pending: goal?.recovery?.pending_decisions, next_action: goal?.next_action
+        run_id: run.id,
+        state: detail.state,
+        outcome: detail.outcome,
+        diagnostic: detail.diagnostic,
+        developer: detail.developer_output?.slice(-1200),
+        test: detail.test_output?.slice(-1200),
+        stop_reason: goal?.stop_reason,
+        checks: goal?.checks.map(({attempt, stage, status, exit_code, summary}) => ({
+          attempt,
+          stage,
+          status,
+          exit_code,
+          summary: summary.slice(-1200)
+        })),
+        pending: goal?.recovery?.pending_decisions,
+        next_action: goal?.next_action
       }
       console.error('Installed goal diagnostic:', JSON.stringify(diagnostic))
       await writeFile(join(evidence, 'diagnostic.json'), JSON.stringify(diagnostic, null, 2))
-    } catch (readError) { console.error('Could not read fixture diagnostic:', readError.message) }
+    } catch (readError) {
+      console.error('Could not read fixture diagnostic:', readError.message)
+    }
   }
   if (page && !page.isClosed()) await screenshot('error').catch(() => {})
   throw error

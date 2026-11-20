@@ -38,8 +38,11 @@ const statusText = {
 };
 const label = (value) => statusText[value] ?? value ?? '미확인';
 const attemptLabel = (value) => (value === 0 ? '기준 커밋' : value + '차 시도');
-const elapsed = (value) =>
-  Number.isFinite(value) ? Math.floor(value / 60) + '분 ' + Math.floor(value % 60) + '초' : '미확인';
+function elapsed(value) {
+  if (!Number.isFinite(value) || value < 0) return '미확인';
+  if (value > 0 && value < 1) return '1초 미만';
+  return (value >= 60 ? Math.floor(value / 60) + '분 ' : '') + Math.floor(value % 60) + '초';
+}
 const formatted = (value) => {
   if (!value) return '미확인';
   const date = new Date(value);
@@ -91,14 +94,24 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
     for (const value of values) list.append(make('li', value));
     parent.append(list);
   }
-  function renderCheck(check) {
+  function renderCheck(check, live) {
     const counts = Object.entries(check.counts ?? {}).map(([key, value]) => label(key) + ' ' + value + '개');
+    const unfinished = check.status === 'running';
+    const outcome = unfinished && !live ? '종료 상태 미확인' : label(check.status);
     const node = fold(
-      [attemptLabel(check.attempt), stages[check.stage] ?? check.stage, label(check.status), ...counts].join(' · ')
+      [attemptLabel(check.attempt), stages[check.stage] ?? check.stage, outcome, ...counts].join(' · ')
     );
     node.dataset.goalCheck = check.stage;
+    const timing = make('p', '시작 ' + formatted(check.started_at));
+    if (live) {
+      const clock = make('span');
+      clock.dataset.checkStarted = check.started_at;
+      timing.append(clock);
+    } else if (!unfinished) {
+      timing.append(' · 소요 ' + elapsed(check.elapsed_seconds));
+    }
     node.append(
-      make('p', '시작 ' + formatted(check.started_at) + ' · 소요 ' + elapsed(check.elapsed_seconds)),
+      timing,
       make(
         'p',
         '실행 호스트 ' +
@@ -145,7 +158,23 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
       candidates = goal.candidates ?? [],
       events = goal.events ?? [];
     get('goal-report').hidden = false;
-    const running = checks.findLast((check) => check.status === 'running');
+    const lastCheck = checks.at(-1);
+    const unfinished = lastCheck?.status === 'running' ? lastCheck : null;
+    const running =
+      !readError &&
+      context().writable &&
+      active.has(goal.state) &&
+      goal.recovery?.worker_alive === true &&
+      goal.recovery.disposition === 'working'
+        ? unfinished
+        : null;
+    const observed = goal.observed_at ? Date.parse(goal.observed_at) : Date.now();
+    const age = (started) => elapsed((observed - Date.parse(started)) / 1000);
+    const updateClocks = () => {
+      for (const clock of get('goal-record').querySelectorAll('[data-check-started]')) {
+        clock.textContent = ' · 시작 후 경과 ' + age(clock.dataset.checkStarted);
+      }
+    };
     const recent = events.at(-1);
     const best = candidates.find((candidate) => candidate.attempt === goal.best_attempt);
     get('goal-progress').textContent =
@@ -153,10 +182,16 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
       (goal.adopted_attempt != null
         ? attemptLabel(goal.adopted_attempt) + '의 후보 채택을 기록했습니다.'
         : running
-          ? attemptLabel(running.attempt) + ' · ' + (stages[running.stage] ?? running.stage) + ' 실행 중'
-          : goal.stop_reason ||
-            goal.outcome ||
-            (recent ? label(stages[recent.stage] ?? recent.stage) + ' · ' + label(recent.kind) : '접수됨'));
+          ? attemptLabel(running.attempt) +
+            ' · ' +
+            (stages[running.stage] ?? running.stage) +
+            ' 실행 중 · 시작 후 경과 ' +
+            age(running.started_at)
+          : unfinished
+            ? (stages[unfinished.stage] ?? unfinished.stage) + ' · 종료 상태 미확인'
+            : goal.stop_reason ||
+              goal.outcome ||
+              (recent ? label(stages[recent.stage] ?? recent.stage) + ' · ' + label(recent.kind) : '접수됨'));
     let next = goal.next_action || '실행 호스트의 다음 기록을 기다립니다.';
     if (goal.recovery?.disposition === 'closed') {
       next =
@@ -197,6 +232,7 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
       candidates,
       events,
       goal.recovery?.disposition,
+      goal.recovery?.worker_alive,
       goal.recovery?.checkpoint,
       goal.recovery?.pending_directions,
       goal.recovery?.pending_decisions,
@@ -206,7 +242,10 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
       context().writable,
       context().meetingPhase
     ]);
-    if (reportKey === key) return;
+    if (reportKey === key) {
+      updateClocks();
+      return;
+    }
     reportKey = key;
     const root = get('goal-record');
     const opened = new Set([...root.querySelectorAll('details[open]')].map((node) => node.dataset.key));
@@ -379,7 +418,7 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
       revisions.append(node);
     }
     const validation = section('실제 검증 범위', 'verification');
-    for (const check of checks) validation.append(renderCheck(check));
+    for (const check of checks) validation.append(renderCheck(check, check === running));
     if (!checks.length) validation.append(make('p', '아직 실행된 검증이 없습니다.'));
     const manual = section('남은 수동 확인', 'manual');
     for (const check of goal.manual_checks ?? [])
@@ -468,6 +507,7 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
       node.dataset.key = node.parentElement.dataset.goalSection + ':' + node.querySelector('summary').textContent;
       if (opened.has(node.dataset.key)) node.open = true;
     }
+    updateClocks();
   }
   async function mutate(goal, operation, body, node) {
     if (!context().writable || latest?.run_id !== goal.run_id || node.disabled) return;
@@ -531,15 +571,20 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
     } catch {
       if (current !== identity() || serial !== counter) return;
       get('goal-report').hidden = false;
-      readError = true;
-      get('goal-note').textContent = '목표의 최신 상태를 확인할 수 없습니다.';
-      get('goal-record')
-        .querySelectorAll('button')
-        .forEach((node) => {
-          node.disabled = true;
-        });
-      reportKey = '';
+      stale();
     }
+  }
+  function stale() {
+    readError = true;
+    reportKey = '';
+    if (latest) render(latest);
+    get('goal-note').textContent = '목표의 최신 상태를 확인할 수 없습니다. 마지막으로 확인한 기록을 표시합니다.';
+    get('goal-record')
+      .querySelectorAll('button')
+      .forEach((node) => {
+        node.disabled = true;
+      });
+    reportKey = '';
   }
   function row(check) {
     const group = make('fieldset');
@@ -659,5 +704,5 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
       get('goal-save-policy').disabled = false;
     }
   });
-  return {reset, load, settings};
+  return {reset, load, settings, stale};
 }

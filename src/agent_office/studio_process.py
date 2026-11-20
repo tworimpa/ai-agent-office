@@ -155,10 +155,11 @@ class WindowsChild:
             raise TimeoutError("Coordinator did not exit")
 
 
-def run_child(mode, db_path, run_id, payload, stop, *, timeout=None, waiting_for_user=None, active_remaining=None):
+def run_child(mode, db_path, run_id, payload, stop, *, timeout=None, waiting_for_user=None, active_remaining=None,
+              heartbeat=None):
     argv = [sys.executable, "-m", "agent_office.studio_runner", mode, str(db_path), run_id]
     return run_owned_command(argv, payload, stop, timeout=timeout, waiting_for_user=waiting_for_user,
-                             active_remaining=active_remaining)
+                             active_remaining=active_remaining, heartbeat=heartbeat)
 
 
 def run_preview(db_path, run_id):
@@ -166,7 +167,8 @@ def run_preview(db_path, run_id):
     return run_child("preview", db_path, run_id, b"preview\n", threading.Event(), timeout=5)
 
 
-def run_owned_command(argv, payload, stop, *, timeout=None, output=None, waiting_for_user=None, active_remaining=None):
+def run_owned_command(argv, payload, stop, *, timeout=None, output=None, waiting_for_user=None, active_remaining=None,
+                      heartbeat=None):
     """Called in a dedicated supervisor so draining never claims unrelated children."""
     tree = WindowsJob() if os.name == "nt" else LinuxChildren()
     try:
@@ -178,8 +180,12 @@ def run_owned_command(argv, payload, stop, *, timeout=None, output=None, waiting
             process.stdin.close()
             deadline = None if timeout is None else time.monotonic() + timeout
             checked = time.monotonic()
+            last_heartbeat = checked
             while process.poll() is None:
                 current = time.monotonic()
+                if heartbeat and current-last_heartbeat >= 5:
+                    heartbeat()
+                    last_heartbeat = current
                 if active_remaining and current >= deadline:
                     remaining = active_remaining()
                     if remaining <= 0:
@@ -242,16 +248,18 @@ def supervise(db_path, run_id, payload):
         if not stopping:
             # Two complete develop/test/review attempts plus coordinator setup.
             budget = 2 * (900 + 300 + 900) + 60
-            from .goal_recovery import is_goal, timing
+            from .goal_recovery import is_goal, note_owner, timing
             from .meeting_store import summary
             if is_goal(store.connection, run_id):
                 import json
                 store.connection.execute("DELETE FROM studio_goal_drains WHERE run_id=?", (run_id,))
+                note_owner(store.connection,run_id)
                 policy = json.loads(store.connection.execute("SELECT policy_json FROM studio_goals WHERE id=?",
                                                             (run_id,)).fetchone()[0])
                 remaining = policy["active_seconds"] - timing(store.connection, run_id)["active_seconds"]
                 if remaining > 0:
                     success = run_child("worker", db_path, run_id, payload, disconnected, timeout=remaining,
+                                        heartbeat=lambda: note_owner(store.connection,run_id),
                                         active_remaining=lambda: policy["active_seconds"] -
                                         timing(store.connection, run_id)["active_seconds"])
                 if (not success and not disconnected.is_set() and

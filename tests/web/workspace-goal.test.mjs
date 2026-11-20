@@ -213,3 +213,55 @@ test('attempt comparison shows the actual patch fallback and missing checks with
   assert.match(row.textContent, /각 후보의 패치 비교 · 출력 일부만 표시/);
   assert.equal(row.querySelector('[data-goal-adopt]'), null);
 });
+
+test('a passing candidate remains review-only until the independent reviewer approves it', async (t) => {
+  const pending = {...candidate, review_status: 'changes_requested'};
+  const {get} = mount(
+    t,
+    fixture((path) => {
+      if (path === runPath + '/goal')
+        return {goal: {...goal, candidates: [pending], recovery: {disposition: 'closed'}}};
+    })
+  );
+  await until(() => !get('goal-report').hidden);
+  assert.match(get('goal-next').textContent, /미검증 항목을 확인/);
+  assert.equal(get('goal-report').querySelector('[data-goal-adopt]'), null);
+});
+
+test('elapsed time tracks host observations while the worker owns a running check and stops on interruption', async (t) => {
+  const receipt = {
+    ...check,
+    attempt: 1,
+    stage: 'full',
+    status: 'running',
+    exit_code: null,
+    elapsed_seconds: 0,
+    counts: {},
+    started_at: '2026-11-21T00:00:00Z'
+  };
+  let snapshot = {
+    ...goal,
+    state: 'TESTING',
+    checks: [receipt],
+    progress_uncertain: true,
+    observed_at: '2026-11-21T00:15:02Z',
+    recovery: {disposition: 'working', worker_alive: true}
+  };
+  const {get} = mount(
+    t,
+    fixture((path) => (path === runPath + '/goal' ? {goal: snapshot} : undefined))
+  );
+  await until(() => get('goal-progress').textContent.includes('15분 2초'));
+  const receiptNode = get('goal-record').querySelector('[data-goal-check="full"]');
+  assert.match(receiptNode.textContent, /시작 후 경과 15분 2초/);
+  snapshot = {...snapshot, observed_at: '2026-11-21T00:16:05Z'};
+  get('refresh').click();
+  await until(() => receiptNode.textContent.includes('16분 5초'));
+  assert.ok(receiptNode.isConnected);
+  snapshot = {...snapshot, state: 'RECOVERY_REQUIRED', recovery: {disposition: 'inspect', worker_alive: false}};
+  get('refresh').click();
+  await until(() => get('goal-progress').textContent.includes('종료 상태 미확인'));
+  const interrupted = get('goal-record').querySelector('[data-goal-check="full"]').textContent;
+  assert.match(interrupted, /종료 상태 미확인/);
+  assert.doesNotMatch(interrupted, /실행 중|시작 후 경과|소요 0초/);
+});
