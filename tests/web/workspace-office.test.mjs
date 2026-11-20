@@ -121,7 +121,9 @@ test('a lost assignment receipt preserves the exact request ID, choices and mess
     if (path === base + '/assignments') {
       if (++attempts === 1) {
         posted = body;
-        storedRun = {...run, id: body.id, task: body.message};
+        assert.deepEqual(body.test_files, ['tests/test_review_regressions.py']);
+        storedRun = {...run, id: body.id, task: body.message, allow_edits: body.allow_edits,
+          assignment: {...run.assignment, test_files: body.test_files}};
         throw new Error('lost after journal write');
       }
       assert.deepEqual(body, posted);
@@ -133,7 +135,10 @@ test('a lost assignment receipt preserves the exact request ID, choices and mess
   const first = mount(t, attemptsRoute);
   await until(() => first.get('room-title').textContent === workspace.name);
   first.person('coordinator').click();
-  first.get('message').value = '읽기 전용으로 리뷰해줘';
+  first.get('message').value = '저널 경로 설명을 보완해줘';
+  first.get('allow-edits').click();
+  assert.equal(first.get('assignment-test-scope').hidden, false);
+  first.get('test-files').value = 'tests/test_review_regressions.py';
   first.get('run-delegation').value = 'false';
   first.submit('chat-form');
   await until(() => first.get('chat-note').textContent.includes('같은 요청을 다시 보내세요'));
@@ -146,6 +151,8 @@ test('a lost assignment receipt preserves the exact request ID, choices and mess
   assert.equal(second.get('message').value, posted.message);
   assert.equal(second.get('message').readOnly, true);
   assert.equal(second.get('run-delegation').value, 'false');
+  assert.equal(second.get('test-files').value, posted.test_files[0]);
+  assert.equal(second.get('test-files').disabled, true);
   assert.equal(second.get('send').textContent, '같은 요청 다시 보내기');
   second.submit('chat-form');
   await until(() => second.get('chat-note').textContent.includes('같은 요청을 다시 보내세요'));
@@ -154,6 +161,7 @@ test('a lost assignment receipt preserves the exact request ID, choices and mess
   await until(() => second.get('chat-note').textContent === '작업을 배정했습니다.');
   assert.equal(second.get('message').readOnly, false);
   assert.equal(second.window.sessionStorage.length, 0);
+  await until(() => second.get('ledger-result').textContent.includes(posted.test_files[0]));
   assert.equal(attempts, 3);
 });
 

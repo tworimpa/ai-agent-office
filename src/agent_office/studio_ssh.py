@@ -20,6 +20,7 @@ from .dialogue import REQUEST_KINDS
 from .studio_directions import MESSAGE_BYTES, PUBLIC, RUN_LIMIT
 from .technical_choices import CHOICE_TOPIC, valid_receipt
 from .team_wire import check_run_features, check_skill_reply
+from .studio_catalog import normalize_test_files
 from .workspace_rooms import CURSOR_PATTERN, ROLES, ROOM_LIMIT, normalize_profiles, normalize_settings, room_route
 
 
@@ -247,10 +248,14 @@ def _check_assignment(row, required=False):
     assignment = row.get("assignment")
     if assignment is None and not required:
         return
-    if (not isinstance(assignment, dict) or set(assignment) != {"roles", "note", "delegation"}
+    if (not isinstance(assignment, dict) or set(assignment) - {"test_files"} != {"roles", "note", "delegation"}
             or type(assignment["delegation"]) is not bool or not isinstance(assignment["note"], str)
             or not 1 <= len(assignment["note"]) <= 520 or row.get("use_inbox") is not True):
         raise RemoteUnavailable()
+    if "test_files" in assignment:
+        if row.get("allow_edits") is not True:
+            raise RemoteUnavailable()
+        normalize_test_files(assignment["test_files"])
     profiles = normalize_profiles(assignment["roles"])
     if any(profiles[role]["engine"] != row.get(f"{role}_engine") for role in ROLES):
         raise RemoteUnavailable()
@@ -275,6 +280,8 @@ def _check_room_reply(status, data, headers, journal, method, route, payload):
                 or not isinstance(message, str) or row.get("task") != snapshot_request(message)):
             raise RemoteUnavailable()
         _check_assignment(row, required=True)
+        if row["assignment"].get("test_files") != payload.get("test_files"):
+            raise RemoteUnavailable()
         if payload.get("delegation") is not None and row["assignment"]["delegation"] is not payload["delegation"]:
             raise RemoteUnavailable()
         _check_reply(200, data, headers, journal, "GET", "/runs/" + row["id"], None)

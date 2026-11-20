@@ -53,17 +53,61 @@ def _git(folder: Path, *args: str, error: str, env=None) -> str:
     return result.stdout.removesuffix("\n")
 
 
+def _local_git_environment():
+    return {**os.environ, "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": "", "GIT_TERMINAL_PROMPT": "0"}
+
+
 def read_workspace_revision(repo: Path) -> str:
     """Pin HEAD for a checkout already checked by the workspace catalog."""
     error = "작업에 사용할 기준 커밋을 확인할 수 없습니다."
     # This fixed Git read uses the same configured ownership trust as select().
     # An incomplete checkout must not attempt network access to resolve HEAD.
-    env = {**os.environ, "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": "", "GIT_TERMINAL_PROMPT": "0"}
     revision = _git(repo, "--no-replace-objects", "-c", "core.fsmonitor=false", "rev-parse",
-                    "--verify", "HEAD^{commit}", error=error, env=env)
+                    "--verify", "HEAD^{commit}", error=error, env=_local_git_environment())
     if not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", revision):
         raise ValueError(error)
     return revision
+
+
+def normalize_test_files(value):
+    error = "테스트 파일은 저장소 기준 상대 경로로 1개 이상 16개 이하를 지정하세요."
+    if not isinstance(value, list) or not 1 <= len(value) <= 16:
+        raise ValueError(error)
+    for path in value:
+        if (not isinstance(path, str) or len(path) > 240
+                or not re.fullmatch(r"[\w][\w.-]*(?:/[\w][\w.-]*)*", path)
+                or any(part.endswith(".") for part in path.split("/"))):
+            raise ValueError(error)
+        if not re.fullmatch(r"(?:test_[\w.-]*|[\w][\w.-]*_test)\.py", path.rsplit("/", 1)[-1]):
+            raise ValueError("pytest 테스트 파일 이름(test_*.py 또는 *_test.py)을 지정하세요.")
+    if len({path.casefold() for path in value}) != len(value):
+        raise ValueError("같은 테스트 파일을 두 번 지정할 수 없습니다.")
+    return value
+
+
+def verify_committed_test_files(repo, revision, paths):
+    error = "기준 커밋에 포함된 일반 테스트 파일을 지정하세요."
+    output = _git(repo, "--no-replace-objects", "--literal-pathspecs", "-c", "core.fsmonitor=false", "ls-tree",
+                  "--full-tree", "-z", revision, "--", *paths, error=error, env=_local_git_environment())
+    committed = set()
+    for row in output.split("\0"):
+        metadata, _, name = row.partition("\t")
+        if metadata.startswith(("100644 blob ", "100755 blob ")):
+            committed.add(name)
+    if committed != set(paths):
+        raise ValueError(error)
+
+
+def verify_worktree_test_files(workspace, paths):
+    error = "지정한 테스트 파일이 작업 트리의 일반 파일이 아닙니다."
+    for path in paths:
+        current = workspace
+        for part in path.split("/"):
+            current /= part
+            if _redirected(current.lstat()):
+                raise ValueError(error)
+        if not current.is_file():
+            raise ValueError(error)
 
 
 class StudioCatalog:

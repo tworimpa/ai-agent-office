@@ -22,6 +22,7 @@ from .events import snapshot_request
 from .models import ACTIVE, OfficeError, OwnerInfo, TaskSpec, validate_id
 from .ownership import RunGuard, RunBusyError, recover_run
 from .store import TaskStore, encode
+from .studio_catalog import normalize_test_files
 from .studio_diff import changes_in
 from .studio_directions import DirectionChannel, Directions
 from .studio_inbox import Inbox, InboxChannel, expire_requests
@@ -491,12 +492,18 @@ def worker(db_path, run_id):
         policy = get_policy(db_path, run_id)
         team = store.connection.execute("""SELECT p.base_revision FROM studio_team_children c
             JOIN studio_teams p ON p.id=c.parent_id WHERE c.id=?""", (run_id,)).fetchone()
-        room = store.connection.execute("SELECT revision FROM studio_room_assignments WHERE run_id=?", (run_id,)).fetchone()
+        room = store.connection.execute("SELECT revision,assignment_json FROM studio_room_assignments WHERE run_id=?",
+                                        (run_id,)).fetchone()
         source = team or room
         revision = source[0] if source else get_revision(db_path, run_id)
+        selected_tests = json.loads(room["assignment_json"]).get("test_files") if room else None
+        test_files = normalize_test_files(selected_tests) if selected_tests is not None else []
+        test_command = [sys.executable, "-m", "pytest", "-q"]
+        if test_files:
+            test_command.extend(["--", *test_files])
         args = SimpleNamespace(repo=Path(task.project), task=raw_task, developer=task.developer_engine,
                                reviewer=task.reviewer_engine, max_attempts=task.max_attempts,
-                               timeout=900, test_command=[sys.executable, "-m", "pytest", "-q"],
+                               timeout=900, test_command=test_command, test_files=test_files,
                                allow_edits=bool(row["allow_edits"]))
 
         def save_stage(column, value):
