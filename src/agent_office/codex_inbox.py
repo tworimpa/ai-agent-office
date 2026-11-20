@@ -12,6 +12,7 @@ from .adapters import AgentResult
 from .dialogue import (FINAL_MARKER, MAX_QUESTIONS, PRODUCT_DECISION_MARKER, QUESTION_INSTRUCTIONS, QUESTION_MARKER,
                        continuation_prompt, extract_request)
 from .events import snapshot_request
+from .engines import codex_backend_args
 from .dialogue import DelegationWithdrawn
 from .models import OfficeError
 from .studio_process import WINDOWS_SERVICE_CODEX_CONTEXT, windows_service_session
@@ -508,7 +509,7 @@ async def _run(executable, prompt, workspace, edits, env, timeout, inbox):
     try:
         async with asyncio.timeout_at(deadline):
             process = await asyncio.create_subprocess_exec(
-                executable, "app-server", "--listen", "stdio://", cwd=workspace, env=env,
+                executable, *codex_backend_args(), "app-server", "--listen", "stdio://", cwd=workspace, env=env,
                 start_new_session=os.name != "nt", stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=1024 * 1024)
             try:

@@ -9,6 +9,13 @@ DEFAULT_DEVELOPER = "codex"
 DEFAULT_REVIEWER = "antigravity"
 
 
+def codex_backend_args() -> list[str]:
+    if os.name == "nt" and os.environ.get("AGENT_OFFICE_DESKTOP_LOCAL") == "1":
+        # Select MXC for the bundled local Studio process only.
+        return ["-c", "windows.sandbox=mxc"]
+    return []
+
+
 def resolve_executable(command: str) -> str | None:
     """Do not implicitly search a repository for a vendor CLI on Windows."""
     if os.path.isabs(command):

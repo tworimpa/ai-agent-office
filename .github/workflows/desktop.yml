@@ -1,0 +1,51 @@
+name: Desktop installers
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: '${{ matrix.os }} desktop installer'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.12.3'
+      - run: npm ci --prefix desktop
+      - run: npm test --prefix desktop
+      - run: npm run package --prefix desktop
+      - name: Install and verify the Windows desktop app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem -LiteralPath desktop/dist -Filter '*Setup*.exe' -File).FullName
+          $installed = Start-Process -FilePath $installer -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+          if ($installed.ExitCode -ne 0) { exit $installed.ExitCode }
+          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'AI Agent Office.lnk'
+          $exe = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut).TargetPath
+          node desktop/verify-install.mjs $exe
+      - name: Install and verify the Linux desktop app
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ./desktop/dist/*.deb xvfb xauth
+          test -f /usr/share/applications/ai-agent-office-desktop.desktop
+          xvfb-run -a node desktop/verify-install.mjs /usr/bin/ai-agent-office-desktop

@@ -9,7 +9,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from .acp import run_acp
-from .engines import SUPPORTED_ENGINES, resolve_executable
+from .engines import SUPPORTED_ENGINES, codex_backend_args, resolve_executable
 
 
 @dataclass(frozen=True)
@@ -58,6 +58,8 @@ class CLIAdapter:
         if executable is None:
             return AgentResult(127, f"Missing CLI: {argv[0]}. Install and authenticate it first.")
         argv[0] = executable
+        if self.engine == "codex":
+            argv[1:1] = codex_backend_args()
         # Python-based tools launched on Windows otherwise inherit a legacy
         # console encoding even though the parent writes UTF-8 to stdin.
         # For Node-based CLIs this has no behavioral effect.
