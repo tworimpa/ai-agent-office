@@ -95,8 +95,9 @@ def test_native_connector_question_gets_no_authorization_and_technical_turn_can_
     assert operator.requests == [("question", "일정은?")] and operator.confirmed == ["1"]
 
 
-def test_readonly_codex_handles_remote_control_status_during_startup(tmp_path, monkeypatch):
-    operator, result = fixture(tmp_path, monkeypatch, "remote-status", edits=False)
+@pytest.mark.parametrize("scenario", ["remote-status", "account-status"])
+def test_readonly_codex_handles_status_during_startup(tmp_path, monkeypatch, scenario):
+    operator, result = fixture(tmp_path, monkeypatch, scenario, edits=False)
     assert (result.returncode, result.session_id, result.message) == (0, "thread", "작업 완료")
     assert not operator.requests and not operator.confirmed
 
@@ -105,6 +106,7 @@ def test_readonly_codex_handles_remote_control_status_during_startup(tmp_path, m
     ("rpc-rejected", "Codex app-server [thread/start] protocol: RPC rejected (code=-32602)."),
     ("startup-notification", "Codex app-server [thread/start] protocol: unexpected notification (windows/worldWritableWarning)."),
     ("unknown-startup-notification", "Codex app-server [thread/start] protocol: unexpected notification (unrecognized)."),
+    ("account-status-request", "Codex app-server [thread/start] protocol: unexpected server request (account/updated)."),
     ("bad-mode", "Codex app-server [thread/start] protocol: requested sandbox mode not confirmed."),
     ("failed-turn", "Codex app-server [turn/completed] protocol: provider turn failed (unauthorized)."),
 ])
@@ -190,6 +192,11 @@ def server():
     params = start["params"]
     assert start["method"] == "thread/start" and params["approvalsReviewer"] == "user"
     assert params["approvalPolicy"] == "on-request" and Path(params["cwd"]) == Path.cwd()
+    if scenario == "account-status":
+        emit(method="account/updated", params={"authMode": "chatgpt", "planType": "plus"})
+    if scenario == "account-status-request":
+        emit(id=42, method="account/updated", params={"authMode": "chatgpt", "planType": "plus"})
+        return
     if scenario == "rpc-rejected":
         emit(id=start["id"], error={"code": -32602, "message": "provider-private-text", "data": "private-response"})
         return
@@ -197,7 +204,7 @@ def server():
         topic = "windows/worldWritableWarning" if scenario == "startup-notification" else "unexpected/private-method-text"
         emit(method=topic, params={"path": "provider-private-text"})
         return
-    read_only = scenario in ("read-only", "direction-plan", "room-choice", "room-product", "remote-status")
+    read_only = scenario in ("read-only", "direction-plan", "room-choice", "room-product", "remote-status", "account-status")
     assert params["sandbox"] == ("read-only" if read_only else "workspace-write")
     policy = {"type": "readOnly"} if read_only else {
         "type": "workspaceWrite", "excludeTmpdirEnvVar": True, "excludeSlashTmp": True}
