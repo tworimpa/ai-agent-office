@@ -107,7 +107,8 @@ test('a prose list after a pasted diff stays visible and a single long JSON line
 test('the simple summary uses the first prose paragraph after technical blocks', () => {
   const technical = '# 제목\r\n\r\n~~~\r\n여기부터 코드\r\n~~~\r\n\r\n|제목|값|\r\n|---|---|\r\n|x|y|\r\n' +
     'INFO 시작\r\nWARN 재시도\r\nERROR 종료\r\n' + patch + '\r\n- 체크 목록\r\n';
-  assert.equal(firstProseParagraph(technical), '');
+  assert.equal(firstProseParagraph(technical), '체크 목록');
+  assert.equal(firstProseParagraph('## 결과\n- 알림 복원을 수정했습니다.'), '알림 복원을 수정했습니다.');
   assert.equal(firstProseParagraph('const answer = 42;'), '');
   assert.equal(firstProseParagraph(technical + '\r\n**작업 결과**입니다.\r\n둘째 줄입니다.\r\n\r\n다음 단락'),
     '**작업 결과**입니다. 둘째 줄입니다.');

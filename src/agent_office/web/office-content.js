@@ -238,7 +238,12 @@ function* markdownBlocks(text) {
 }
 
 export function firstProseParagraph(text) {
+  let fallback = '';
   for (const block of markdownBlocks(text)) {
+    if (!fallback) {
+      const candidate = block.items?.[0] || (block.tag === 'blockquote' ? block.text.split('\n')[0] : '');
+      if (candidate && !rawKind(candidate)) fallback = candidate;
+    }
     if (block.tag !== 'p') continue;
     const prose = [];
     for (const line of block.text.split('\n')) {
@@ -250,7 +255,7 @@ export function firstProseParagraph(text) {
     const chars = Array.from(value);
     return chars.length > 320 ? chars.slice(0, 319).join('') + '…' : value;
   }
-  return '';
+  return Array.from(fallback).slice(0, 320).join('');
 }
 
 export function renderMarkdown(doc, text, {key = 'message', source = false} = {}) {

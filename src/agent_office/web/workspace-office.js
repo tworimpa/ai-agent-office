@@ -33,6 +33,11 @@ const stateName = state => states[state] ?? '상태 미확인';
 const runLabel = run => (run.state === 'RUNNING' || run.state === 'QUEUED') &&
   ['planning', 'awaiting_review'].includes(run.meeting_status) ? meetingStates[run.meeting_status] : stateName(run.state);
 const engineName = engine => engines[engine] ?? '엔진 미확인';
+function taskTitle(task) {
+  const prose = firstProseParagraph(task ?? '');
+  const chars = Array.from(prose);
+  return chars.length > 90 ? chars.slice(0, 89).join('') + '…' : prose || '작업 요청';
+}
 const codeBytes = value => new TextEncoder().encode(value).length;
 const stamp = ts => {
   if (!ts || Number.isNaN(Date.parse(ts))) return '';
@@ -301,8 +306,9 @@ export function mountWorkspaceOffice(win = window) {
     link.href = address(hostId, workspaceId, run.id);
     if (run.id === runId) link.setAttribute('aria-current', 'page');
     const meta = [runLabel(run), stamp(run.created_at), run.pending_count && '응답 ' + run.pending_count + '건'].filter(Boolean);
-    link.append(make('span', run.task, 'run-task'), make('small', meta.join(' · ')));
-    link.title = run.task;
+    const title = taskTitle(run.task);
+    link.append(make('span', title, 'run-task'), make('small', meta.join(' · ')));
+    link.title = title;
     link.addEventListener('click', event => navClick(event, hostId, workspaceId, run.id));
     return link;
   }
@@ -411,7 +417,7 @@ export function mountWorkspaceOffice(win = window) {
       if (!line) line = current && (role === 'developer' || current.allow_edits) ? stateName(current.state) : '배정된 작업이 없습니다.';
       const roleText = label + ' · ' + engineName(engine);
       const task = node.querySelector('.seat-task');
-      const assignment = role === 'developer' || current?.allow_edits || current?.assignment?.meeting ? current?.task : '';
+      const assignment = current && (role === 'developer' || current.allow_edits || current.assignment?.meeting) ? taskTitle(current.task) : '';
       node.querySelector('.seat-name').textContent = profile.name;
       node.querySelector('.seat-role').textContent = roleText;
       node.querySelector('.seat-line').textContent = line;
@@ -434,7 +440,7 @@ export function mountWorkspaceOffice(win = window) {
     get('stop-run').hidden = !stoppable(run?.state);
     get('stop-run').disabled = !canWrite() || stopping.has(run?.id);
     say('ledger-label', run ? runLabel(run) : '작업 기록');
-    say('ledger-heading', run?.task ?? '선택한 작업이 없습니다');
+    say('ledger-heading', run ? taskTitle(run.task) : '선택한 작업이 없습니다');
     say('ledger-note', run ? stamp(run.created_at) : '조정자에게 요청을 보내 작업을 시작할 수 있습니다.');
     get('office-thread').hidden = !run;
     renderViewTools('room', run);
@@ -507,9 +513,11 @@ export function mountWorkspaceOffice(win = window) {
   }
 
   function openEvidence(place, key) {
+    if (!detail || detail.id !== runId || key === 'meeting' && !detail.meeting) return;
     jump = {place, key, view, scroll: scrollContainers(place).map(node => node.scrollTop)};
     changeView(key === 'meeting' ? 'collaboration' : 'technical', false);
     const target = key === 'meeting' ? get('meeting-heading') : get('evidence-' + key);
+    if (!target) { returnToThread(); return; }
     if (key !== 'meeting') target.open = true;
     if (key === 'changes' && !target.querySelector('.office-diff details[open]')) {
       const first = target.querySelector('.office-diff details');
@@ -840,12 +848,18 @@ export function mountWorkspaceOffice(win = window) {
     const label = directory.find(item => item.id === hostId)?.name;
     say('connection', status.dataset.online === 'true' ? label + ' 연결됨' :
       room ? '연결 끊김 · 마지막 기록' : directory.length ? '연결 확인 필요' : '연결 중');
+    renderChatConnection();
+  }
+
+  function renderChatConnection() {
+    say('chat-connection', room && !roomOnline ? '연결 끊김 · 마지막 기록' : get('detail-status').textContent);
   }
 
   function render() {
     renderConnection();
     renderNavigation();
     renderRoom();
+    if (chatRole) renderChatLog();
     chatControls();
     requestControls();
   }
@@ -861,12 +875,14 @@ export function mountWorkspaceOffice(win = window) {
         meetingReadOK = false;
         detail = null;
         say('detail-status', '이 실행은 선택한 작업공간에 속하지 않습니다.');
+        renderChatConnection();
         renderRoom();
         return;
       }
       detail = run;
       meetingReadOK = true;
       say('detail-status', '');
+      renderChatConnection();
       renderRoom();
       if (get('conversation').open) {
         renderChatLog();
@@ -876,6 +892,7 @@ export function mountWorkspaceOffice(win = window) {
       if (sameContext(token) && expected === runId && read === detailRead) {
         meetingReadOK = false;
         say('detail-status', '실행 상세의 최신 상태를 확인할 수 없습니다.');
+        renderChatConnection();
         renderRoom();
       }
     }
@@ -1030,7 +1047,7 @@ export function mountWorkspaceOffice(win = window) {
     const name = assignment ? '조정자' : (current?.assignment?.roles?.[role] ?? roomPerson(role)).name;
     say('chat-title', name + '와 대화');
     get('chat-portrait').dataset.person = role;
-    say('chat-context', assignment ? room.workspace.name : current?.task ?? '배정된 작업이 없습니다.');
+    say('chat-context', assignment ? room.workspace.name : current ? taskTitle(current.task) : '배정된 작업이 없습니다.');
     say('chat-label', assignment ? '요청할 작업' : '이 작업에 추가할 지시');
     get('message').placeholder = assignment ? '예시 · 이 프로젝트의 테스트 실패 원인을 찾아줘.' : '예시 · Windows에서만 재현되는지 확인해줘.';
     get('assignment-options').hidden = !assignment;
@@ -1159,14 +1176,16 @@ export function mountWorkspaceOffice(win = window) {
 
       const failed = ['FAILED', 'RECOVERY_REQUIRED'].includes(run.state);
       const reviewStage = run.state === 'REVIEWING' || ['CHANGES_REQUESTED', 'REVIEW_FAILED', 'REVIEW_UNDECIDED'].includes(run.outcome);
-      const ownerRole = run.kind === 'parallel' || failed && (run.diagnostic || run.meeting?.error || run.outcome === 'TEST_FAILED') ? 'coordinator' :
+      const interrupted = run.state === 'RECOVERY_REQUIRED';
+      const ownerRole = run.kind === 'parallel' || interrupted || failed && (run.diagnostic || run.meeting?.error || run.outcome === 'TEST_FAILED') ? 'coordinator' :
         reviewStage || role === 'reviewer' && !activeStates.has(run.state) ? 'reviewer' : 'developer';
       const name = assignment?.roles?.[ownerRole]?.name ?? meetingRoles[ownerRole];
       const phase = run.meeting?.status;
       const state = ['planning', 'awaiting_review'].includes(phase) ? meetingStates[phase] : runLabel(run);
       const status = message('agent', name + ' · ' + state);
       const testFailure = run.outcome === 'TEST_FAILED' && run.test_output?.split(/\r?\n/).find(line => /^FAILED |^ERROR |^E\s{3}\S/.test(line));
-      const explanation = failed ? run.diagnostic || run.meeting?.error || testFailure || (run.outcome === 'TEST_FAILED' ? run.test_output :
+      const interruption = interrupted ? (run.review_output || run.test_output || '').split(/\r?\n/).find(line => /timed?\s*out|timeout|시간\s*(?:초과|제한)|중단/i.test(line)) || outcomes.INTERRUPTED : '';
+      const explanation = failed ? run.diagnostic || run.meeting?.error || interruption || testFailure || (run.outcome === 'TEST_FAILED' ? run.test_output :
         ownerRole === 'reviewer' ? run.review_output : run.developer_output) :
         activeStates.has(run.state) ? run.lines?.[ownerRole] : ownerRole === 'reviewer' ? run.review_output : run.developer_output;
       const prose = ownerRole === 'reviewer' ? explanation?.replace(/^\s*VERDICT: (?:CHANGES_REQUESTED|APPROVED)\s*$/gm, '') : explanation;
@@ -1439,7 +1458,7 @@ export function mountWorkspaceOffice(win = window) {
     node.dataset.request = key;
     node.tabIndex = -1;
     const run = roomRuns().find(item => item.id === row.run_id);
-    const meta = [roleLabels[row.role], run?.task, stamp(row.created_at)].filter(Boolean);
+    const meta = [roleLabels[row.role], run && taskTitle(run.task), stamp(row.created_at)].filter(Boolean);
     node.append(make('h3', title), make('small', meta.join(' · ')), make(row.kind === 'permission' ? 'pre' : 'p', row.prompt));
     if (row.kind === 'permission') node.append(make('small', '승인 범위 · 이 작업의 이번 요청 1회'));
     if (row.delegation_reason) node.append(make('small', row.delegation_reason));

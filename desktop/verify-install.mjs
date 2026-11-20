@@ -244,7 +244,7 @@ try {
   await window.waitForURL(url => url.searchParams.get('run') === run.id)
   await window.locator('.seat[data-person="developer"]').click()
   await window.locator('#chat-log .request-item textarea').fill('네. 대기 중인 추가 지시를 적용해 주세요.')
-  await window.getByRole('button', { name: '답변 보내기' }).click()
+  await window.locator('#conversation').getByRole('button', { name: '답변 보내기' }).click()
   await window.getByRole('button', { name: '대화 닫기' }).click()
   if (!live) {
     const approved = await approvePlan(window, 3, false)

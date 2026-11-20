@@ -150,6 +150,8 @@ h1 { font: 700 clamp(1.7rem, 4vw, 3rem)/1.25 var(--serif); overflow-wrap: anywhe
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 10px;
 }
 #chat-view-controls { padding: 4px 18px; border-bottom: 1px solid var(--line); }
+#chat-connection:empty { display: none; }
+#chat-connection:not(:empty) { margin: 4px 18px; color: var(--gold); }
 #chat-view-controls .evidence-links { margin: 2px 0; }
 .view-picker, .evidence-links { min-inline-size: 0; }
 .chat-dialog .evidence-links button { border-color: #76654e; background: transparent; color: var(--sand); }

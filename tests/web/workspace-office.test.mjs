@@ -34,6 +34,34 @@ async function until(predicate) {
   assert.ok(predicate(), '작업실 응답 대기 시간 초과');
 }
 
+test('pasted code stays out of room, portrait and dialog titles while surrounding prose remains available', async t => {
+  const task = '설정을 확인하세요.\n\n```js\nconst saved = option;\n```\n\n재접속도 확인하세요.';
+  const row = {...run, task};
+  const {get, person} = mount(t, path => {
+    if (path === base) return room([row]);
+    if (path === runPath) return {run: row};
+  }, {query: '?workspace=' + workspace.id + '&run=' + runId});
+  await until(() => get('ledger-heading').textContent === '설정을 확인하세요.');
+  person('developer').click();
+  assert.equal(get('chat-context').textContent, '설정을 확인하세요.');
+  assert.doesNotMatch(person('developer').title, /const saved/);
+  assert.match(get('chat-log').textContent, /재접속도 확인하세요/);
+  assert.equal(get('chat-log').querySelector('details').open, false);
+});
+
+test('recovery status shows the interrupted stage diagnostic before a previous successful answer', async t => {
+  const row = {...run, state:'RECOVERY_REQUIRED', outcome:'INTERRUPTED', developer_output:'수정 완료',
+    test_output:'Test command timed out after 300 seconds'};
+  const {get, person} = mount(t, path => {
+    if (path === base) return room([row]);
+    if (path === runPath) return {run: row};
+  }, {query:'?workspace='+workspace.id+'&run='+runId});
+  await until(() => get('ledger-label').textContent === '복구 필요');
+  person('developer').click();
+  await until(() => get('chat-log').textContent.includes('timed out'));
+  assert.doesNotMatch(get('chat-log').textContent, /수정 완료/);
+});
+
 function mount(t, route, {query = '', storage = {}, preferences = {}} = {}) {
   const dom = new JSDOM(html, {url: 'http://127.0.0.1:8766/' + query, pretendToBeVisual: true});
   const {window} = dom;
