@@ -140,8 +140,8 @@ def _changes(workspace, changes):
 
 
 class CodexSession:
-    def __init__(self, process, workspace, edits, inbox, deadline):
-        self.deadline = deadline
+    def __init__(self, process, workspace, edits, inbox, timer):
+        self.timer = timer
         self.process = process
         self.workspace = workspace
         self.edits = edits
@@ -160,7 +160,7 @@ class CodexSession:
 
     async def send(self, message, decision=None, *, direction=None):
         data = (json.dumps(message, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
-        await write_record(self.process, data, inbox=self.inbox, decision_id=decision, deadline=self.deadline,
+        await write_record(self.process, data, inbox=self.inbox, decision_id=decision, deadline=self.timer.when(),
                            direction=direction)
 
     async def read(self, *, allow_eof=False):
@@ -499,6 +499,8 @@ class CodexSession:
             direction = self.directions.next(available=not self.early) if self.directions is not None else None
             if direction is None:
                 return AgentResult(0, final[:12000], self.thread, len(final) > 12000)
+            if direction.meeting_seconds:
+                self.timer.reschedule(self.timer.when() + direction.meeting_seconds)
             decision = None
             prompt = direction.prompt + "\n\n" + QUESTION_INSTRUCTIONS + " " + finish_instruction
 
@@ -507,13 +509,13 @@ async def _run(executable, prompt, workspace, edits, env, timeout, inbox):
     deadline = asyncio.get_running_loop().time() + timeout
     session = None
     try:
-        async with asyncio.timeout_at(deadline):
+        async with asyncio.timeout_at(deadline) as timer:
             process = await asyncio.create_subprocess_exec(
                 executable, *codex_backend_args(), "app-server", "--listen", "stdio://", cwd=workspace, env=env,
                 start_new_session=os.name != "nt", stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=1024 * 1024)
             try:
-                session = CodexSession(process, workspace.resolve(), edits, inbox, deadline)
+                session = CodexSession(process, workspace.resolve(), edits, inbox, timer)
                 result = await session.run(prompt)
                 await session.finish()
                 return result

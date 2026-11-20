@@ -84,7 +84,7 @@ def make_parser() -> argparse.ArgumentParser:
 
 def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage=None, defer_final=None,
                 inbox_factory=None, base_revision=None, delegated_questions=(), technical_choice_guidance="",
-                studio_preview=None):
+                studio_preview=None, room_meeting=False):
     repo = args.repo.expanduser().resolve()
     worktree = plan_worktree(repo, run_id)
     recorder = RunRecorder(store, run_id)
@@ -102,9 +102,15 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
             for engine in SUPPORTED_ENGINES
         }
         guidance = role_guidance(store.connection, run_id, ("developer", "reviewer")) if prepared else {}
+        meeting = None
+        if room_meeting:
+            from .meeting_runtime import RoomMeeting
+            meeting = RoomMeeting(store.path, run_id, worktree.path, args.task, args.developer, args.reviewer,
+                                  folders or ["."], adapters)
         graph = build_graph(adapters, recorder=recorder, save_stage=save_stage, inbox_factory=inbox_factory,
                             delegated_questions=delegated_questions, skill_guidance=guidance,
-                            technical_choice_guidance=technical_choice_guidance, studio_preview=studio_preview)
+                            technical_choice_guidance=technical_choice_guidance, studio_preview=studio_preview,
+                            meeting=meeting)
         initial = {
             "task": args.task,
             "workspace": str(worktree.path),

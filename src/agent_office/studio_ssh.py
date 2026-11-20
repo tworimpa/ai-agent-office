@@ -70,7 +70,7 @@ def is_peer_route(method: str, route: str) -> bool:
     if route.startswith("/rooms/"):
         return room_route(method, route) is not None
     pattern = (r"/runs/[0-9a-f]{32}(?:/inbox|/directions)?" if method == "GET"
-               else r"/runs/[0-9a-f]{32}/(?:stop|delegation/stop|inbox/[0-9a-f]{32}/decision|directions)")
+               else r"/runs/[0-9a-f]{32}/(?:stop|delegation/stop|inbox/[0-9a-f]{32}/decision|directions|meeting/decision)")
     return re.fullmatch(pattern, route) is not None
 
 
@@ -173,6 +173,14 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
     if route.endswith("/directions"):
         _check_directions_reply(status, data, method, payload)
         return
+    if route.endswith("/meeting/decision"):
+        meeting = data.get("meeting")
+        from .meeting_wire import check_decision_receipt, check_meeting
+        if status != 200:
+            raise RemoteUnavailable()
+        check_meeting(meeting, route.split("/")[2])
+        check_decision_receipt(meeting, payload)
+        return
     if "/inbox" in route:
         _check_inbox_reply(status, data, method, route, payload)
         return
@@ -228,6 +236,9 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
             if row["id"] != expected_id:
                 raise RemoteUnavailable()
         if not workspace:
+            if row.get("meeting") is not None:
+                from .meeting_wire import check_meeting
+                check_meeting(row["meeting"], row["id"])
             check_run_features(row, listing=listing, submitted=payload if method == "POST" and route == "/runs" else None)
             if method == "POST" and route == "/runs":
                 proposed = payload.get("delegation")
@@ -248,7 +259,7 @@ def _check_assignment(row, required=False):
     assignment = row.get("assignment")
     if assignment is None and not required:
         return
-    if (not isinstance(assignment, dict) or set(assignment) - {"test_files"} != {"roles", "note", "delegation"}
+    if (not isinstance(assignment, dict) or set(assignment) - {"test_files", "meeting", "review_plan"} != {"roles", "note", "delegation"}
             or type(assignment["delegation"]) is not bool or not isinstance(assignment["note"], str)
             or not 1 <= len(assignment["note"]) <= 520 or row.get("use_inbox") is not True):
         raise RemoteUnavailable()
@@ -256,6 +267,9 @@ def _check_assignment(row, required=False):
         if row.get("allow_edits") is not True:
             raise RemoteUnavailable()
         normalize_test_files(assignment["test_files"])
+    if ("meeting" in assignment or "review_plan" in assignment) and (
+            assignment.get("meeting") is not True or type(assignment.get("review_plan")) is not bool):
+        raise RemoteUnavailable()
     profiles = normalize_profiles(assignment["roles"])
     if any(profiles[role]["engine"] != row.get(f"{role}_engine") for role in ROLES):
         raise RemoteUnavailable()
@@ -280,6 +294,14 @@ def _check_room_reply(status, data, headers, journal, method, route, payload):
                 or not isinstance(message, str) or row.get("task") != snapshot_request(message)):
             raise RemoteUnavailable()
         _check_assignment(row, required=True)
+        overrides = payload.get("role_engines", {})
+        if not isinstance(overrides, dict) or any(
+                role not in ROLES or row["assignment"]["roles"][role]["engine"] != engine
+                for role, engine in overrides.items()):
+            raise RemoteUnavailable()
+        if (bool(row["assignment"].get("meeting")) != bool(payload.get("meeting")) or
+                bool(row["assignment"].get("review_plan")) != bool(payload.get("review_plan"))):
+            raise RemoteUnavailable()
         if row["assignment"].get("test_files") != payload.get("test_files"):
             raise RemoteUnavailable()
         if payload.get("delegation") is not None and row["assignment"]["delegation"] is not payload["delegation"]:
@@ -308,7 +330,7 @@ def _check_room_reply(status, data, headers, journal, method, route, payload):
         lines = row.get("lines")
         pending = row.get("pending_count")
         if (row.get("workspace_id") != workspace_id or row["id"] in seen or type(pending) is not int or pending < 0
-                or not isinstance(lines, dict) or set(lines) != set(ROLES)
+                or not isinstance(lines, dict) or set(lines) not in (set(ROLES), {*ROLES, "coordinator"})
                 or not all(isinstance(line, str) and len(line) <= 160 for line in lines.values())):
             raise RemoteUnavailable()
         seen.add(row["id"])

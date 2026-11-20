@@ -1,6 +1,7 @@
 """Operator directions scoped to one active Studio role and workflow attempt."""
 from contextlib import contextmanager
 import json
+import time
 from pathlib import Path
 
 from .events import snapshot_request
@@ -116,6 +117,7 @@ class DirectionChannel:
     def __init__(self, db_path, run_id, role, engine):
         self.path, self.run_id, self.role = Path(db_path), validate_id(run_id), role
         self.closed = False
+        self.replan = None
         with TaskStore(self.path, existing=True) as store:
             db = store.connection
             run = _run(db, run_id)
@@ -145,9 +147,15 @@ class DirectionChannel:
                 # across the transport boundary can never move these rows back to queued.
                 db.execute("UPDATE studio_directions SET delivery='sending' WHERE run_id=? AND role=? AND attempt=? "
                            "AND delivery='queued'", phase)
-                return _Delivery(self, rows)
-        self.closed = True
-        return None
+        if not rows or not available:
+            self.closed = True
+            return None
+        delivery = _Delivery(self, rows)
+        if self.replan:
+            started = time.monotonic()
+            delivery.prompt += "\n\nUpdated meeting plan and decisions:\n" + self.replan(rows)
+            delivery.meeting_seconds = time.monotonic() - started
+        return delivery
 
     def close(self):
         if not self.closed:
@@ -161,6 +169,7 @@ class _Delivery:
         self.channel = channel
         self.ids = [(row["run_id"], row["id"]) for row in rows]
         self.started = False
+        self.meeting_seconds = 0.0
         self.prompt = (
             "Continue the assigned work in this same session. The operator added the directions listed below in order. "
             "Apply them within the original role, worktree, task scope and permission limits. "

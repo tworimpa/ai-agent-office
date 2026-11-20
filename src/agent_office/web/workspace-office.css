@@ -96,6 +96,27 @@ h1 { font: 700 clamp(1.7rem, 4vw, 3rem)/1.25 var(--serif); overflow-wrap: anywhe
 #ledger-result details { color: #3d3227; border-top: 1px solid #d4c2a4; padding-block: 10px; }
 #ledger-result summary { color: #533b22; font-weight: 700; }
 #ledger-result p { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+.meeting { margin-block-start: 18px; padding-block-start: 16px; border-top: 1px solid #c4af8e; overflow-wrap: anywhere; }
+.meeting-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; }
+.meeting-heading h3 { font: 700 1.2rem/1.5 var(--serif); }
+#meeting-phase, .contribution small { color: #75502f; font-size: .83rem; }
+.meeting p, .meeting li { white-space: pre-wrap; line-height: 1.6; }
+.meeting h5 { margin: 14px 0 3px; font-size: .9rem; }
+.meeting ul, .meeting ol { margin: 0; padding-inline-start: 1.6rem; }
+.contribution { margin-block: 10px; border-inline-start: 2px solid #ad8960; padding-inline-start: 12px; }
+.meeting-version, .meeting-editor { color: var(--ink); margin-block-start: 10px; border-top: 1px solid #d4c2a4; }
+.meeting summary { color: #533b22; font-weight: 650; padding-block: 4px; }
+#meeting-decision { margin-block-start: 16px; padding: 12px; background: #fdf5e8; border: 1px solid #c4af8e; border-radius: 4px; }
+#decision-heading { margin: 0; }
+#meeting-inputs fieldset { margin: 12px 0; border-color: #ac9877; }
+#meeting-inputs legend { color: #624423; }
+#meeting-inputs input[type="radio"] { width: auto; min-height: 0; accent-color: #7e562e; }
+.meeting-option { display: flex; gap: 8px; align-items: baseline; padding-block: 6px; }
+.meeting-editor label { display: block; margin-block: 10px 4px; }
+.meeting-editor textarea, .meeting-editor select { font-size: 1rem; color: var(--ink); background: #fffaf0; color-scheme: light; }
+#approve-plan { margin-block-start: 10px; }
+#meeting-note { margin-block-start: 8px; }
+#chat-meeting { align-self: flex-start; margin: 0 19px 8px; }
 .ledger :focus-visible { outline-color: #87572f; }
 .empty-room { padding: clamp(28px, 9vw, 110px) 30px; border: 1px solid var(--line); min-height: 370px; background: linear-gradient(90deg, #171a15, #171a15bc 48%, #171a153d), #32271a url("/workspace-study.webp") center / cover; }
 .empty-room p { color: var(--soft); max-width: 38ch; margin-block: 12px 20px; line-height: 1.7; }
@@ -142,6 +163,7 @@ fieldset { min-width: 0; border: 1px solid #5f5749; border-radius: 4px; padding:
 .settings-people fieldset { display: grid; gap: 6px; }
 legend { font-size: .87rem; font-weight: 700; color: var(--gold); }
 #assignment-folders { margin-top: 10px; }
+#assignment-engines { display: grid; gap: 6px; margin-block-start: 10px; }
 .checkbox span { overflow-wrap: anywhere; }
 .skip { position: fixed; z-index: 10; top: 8px; left: 12px; padding: 10px; background: var(--paper); color: var(--ink); transform: translateY(-200%); }
 .skip:focus { transform: none; }

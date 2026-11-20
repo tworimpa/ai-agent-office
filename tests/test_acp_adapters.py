@@ -17,13 +17,23 @@ PROMPT = "한글\n & |$(hello) inspect the workspace"
 ANSWER = "VERDICT: APPROVED"
 
 
-def run_fixture(tmp_path, monkeypatch, engine="cline", scenario="success", edit=False, strict=False, inbox=None):
+def run_fixture(tmp_path, monkeypatch, engine="cline", scenario="success", edit=False, strict=False, inbox=None,
+                prompt_only=False):
     adapter = CLIAdapter(engine, timeout=0.5 if scenario == "timeout" else 10)
     command = adapter.command(PROMPT, allow_edits=edit)
     monkeypatch.setattr(adapter, "command", lambda *args, **kwargs: [
         sys.executable, __file__, engine, scenario, str(int(edit)), *command[1:],
     ])
-    return adapter.execute(PROMPT, workspace=tmp_path, allow_edits=edit, strict_completion=strict, inbox=inbox)
+    return adapter.execute(PROMPT, workspace=tmp_path, allow_edits=edit, strict_completion=strict, inbox=inbox,
+                           prompt_only=prompt_only)
+
+
+@pytest.mark.parametrize("engine", ["gemini", "cline"])
+def test_meeting_uses_supplied_evidence_without_tools(tmp_path, monkeypatch, engine):
+    reply = run_fixture(tmp_path, monkeypatch, engine, "meeting", strict=True, prompt_only=True)
+    assert (reply.returncode, reply.message) == (0, ANSWER)
+    tool = run_fixture(tmp_path, monkeypatch, engine, "meeting_tool", strict=True, prompt_only=True)
+    assert tool.returncode and not (tmp_path / "approved").exists()
 
 
 @pytest.mark.parametrize("engine", ["gemini", "cline"])
@@ -304,6 +314,12 @@ def serve():
     assert req["params"]["prompt"][0]["text"].startswith(PROMPT + "\n")
     if scenario.startswith("inbox_"):
         return serve_inbox(engine, scenario, req, receive, send, update)
+    if scenario.startswith("meeting"):
+        assert "Do not use tools" in req["params"]["prompt"][0]["text"]
+        if scenario == "meeting":
+            update("agent_message_chunk", content={"type": "text", "text": ANSWER + "\nAGENT_OFFICE_FINAL"})
+            send(id=req["id"], result={"stopReason": "end_turn"})
+            return
     if scenario == "bad_json":
         print(ANSWER, flush=True)
         return
@@ -334,6 +350,8 @@ def serve():
         decision = json.loads(sys.stdin.readline())
         if decision["result"]["outcome"].get("optionId") != "allow_once":
             return
+        if scenario == "meeting_tool":
+            Path("approved").touch()
         if scenario != "incomplete_tool":
             update("tool_call_update", toolCallId="op", status="failed" if scenario == "tool_error" else "completed",
                    rawOutput=[{"success": scenario != "nested_error"}])

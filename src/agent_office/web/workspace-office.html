@@ -112,6 +112,19 @@
             </div>
           </div>
           <p id="ledger-note">조정자에게 요청을 보내 작업을 시작할 수 있습니다.</p>
+          <section id="meeting" class="meeting" aria-labelledby="meeting-heading" hidden>
+            <div class="meeting-heading">
+              <h3 id="meeting-heading" tabindex="-1">기획 회의</h3>
+              <p id="meeting-phase" role="status"></p>
+            </div>
+            <div id="meeting-record"></div>
+            <form id="meeting-decision" method="post" aria-labelledby="decision-heading" hidden>
+              <h4 id="decision-heading">계획 확인</h4>
+              <div id="meeting-inputs"></div>
+              <button id="approve-plan" type="submit" class="primary">이 계획으로 시작</button>
+            </form>
+            <p id="meeting-note" role="status"></p>
+          </section>
           <div id="ledger-result" hidden></div>
           <p id="detail-status" role="status"></p>
           <p id="stop-note" role="status"></p>
@@ -130,6 +143,7 @@
       <form method="dialog"><button type="submit" class="close-button" aria-label="대화 닫기">×</button></form>
     </header>
     <div id="chat-log" class="chat-log" aria-label="대화 기록" tabindex="0"></div>
+    <button type="button" id="chat-meeting" class="secondary" hidden>기획 회의 열기</button>
     <p id="chat-request-note" class="form-note" role="status"></p>
     <form id="chat-form" class="chat-form">
       <label for="message" id="chat-label">요청할 작업</label>
@@ -142,6 +156,13 @@
           <option value="true">조정자가 결정</option>
           <option value="false">나에게 질문</option>
         </select>
+        <fieldset id="assignment-engines" hidden>
+          <legend>이번 작업의 엔진</legend>
+          <label for="assignment-developer-engine">담당자 엔진</label>
+          <select id="assignment-developer-engine" name="developer_engine"></select>
+          <label for="assignment-reviewer-engine">검토자 엔진</label>
+          <select id="assignment-reviewer-engine" name="reviewer_engine"></select>
+        </fieldset>
         <fieldset id="assignment-folders" hidden></fieldset>
         <fieldset id="assignment-test-scope" hidden>
           <legend>테스트 범위</legend>
@@ -152,6 +173,7 @@
         </fieldset>
       </details>
       <label class="checkbox" id="edit-option"><input type="checkbox" id="allow-edits"> 파일 수정 허용</label>
+      <label class="checkbox" id="review-option"><input type="checkbox" id="review-plan" name="review_plan"> 계획을 보고 시작</label>
       <p id="chat-note" class="form-note" role="status"></p>
       <button type="submit" id="send" class="primary">보내기</button>
     </form>

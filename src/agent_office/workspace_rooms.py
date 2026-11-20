@@ -8,6 +8,7 @@ import threading
 from hashlib import sha256
 
 from . import role_skills
+from . import meeting_store
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .models import OfficeError, validate_id
 from .office_state import _latest_stages
@@ -80,12 +81,17 @@ def _choose(rows, capability, preferred, *, excluded=None):
     return None
 
 
-def _assign_roles(settings, engines, allow_edits):
+def _assign_roles(settings, engines, allow_edits, meeting=False, overrides=None):
     roles = {role: dict(settings[role]) for role in ROLES}
     for role, capability in (("developer", "edit" if allow_edits else "read"), ("reviewer", "review")):
-        if role == "reviewer" and not allow_edits:
+        if role == "reviewer" and not allow_edits and not meeting:
             break
-        engine = _choose(engines, capability, roles[role]["engine"])
+        if overrides and role in overrides:
+            engine = overrides[role]
+            if not any(row["engine"] == engine and _eligible(row, capability) for row in engines):
+                raise ValueError(f"이 호스트에서 선택한 {engine} 엔진의 실행 상태를 확인하세요.")
+        else:
+            engine = _choose(engines, capability, roles[role]["engine"])
         if engine is None:
             if any(row["probe_status"] == "pending" for row in engines):
                 raise ValueError("호스트의 엔진 연결을 확인 중입니다. 잠시 후 같은 요청을 다시 보내세요.")
@@ -226,12 +232,23 @@ class WorkspaceRooms:
                 pending = sum(requests[row["id"], role, False] for role in ROLES)
                 run.update(assignment=json.loads(assignment) if assignment else None, pending_count=pending,
                            lines=_lines(row, requests, stages[row["id"]]))
+                if (run["assignment"] or {}).get("meeting"):
+                    meeting = meeting_store.summary(db, row["id"])
+                    run["meeting_status"] = meeting["status"]
+                    if meeting["status"] == "planning":
+                        run["lines"].update(coordinator="스펙과 검증 계획을 조율하고 있습니다.",
+                                            developer="구현 범위와 의존성을 검토하고 있습니다.",
+                                            reviewer="완료 기준과 검증 방법을 검토하고 있습니다.")
+                    elif meeting["status"] == "awaiting_review":
+                        run["lines"]["coordinator"] = "계획에 대한 사용자 결정을 기다리고 있습니다."
+                        run["pending_count"] += 1
                 runs.append(run)
             last = rows[-1] if more else None
             next_cursor = ("a-" if last["active"] else "h-") + last["id"] if last else None
             page = {"runs": runs, "next_cursor": next_cursor}
             if cursor is None:
-                page.update(workspace=workspace, settings=self._settings(db, workspace_id), engines=engines)
+                page.update(workspace=workspace, settings=self._settings(db, workspace_id), engines=engines,
+                            meeting_supported=True)
         return page
 
     def inbox(self, workspace_id):
@@ -240,8 +257,16 @@ class WorkspaceRooms:
 
     def assign(self, workspace_id, data):
         required = {"id", "message", "allow_edits", "delegation"}
-        if not required <= data.keys() or data.keys() - required - {"indices", "test_files"}:
+        if not required <= data.keys() or data.keys() - required - {"indices", "test_files", "meeting", "review_plan", "role_engines"}:
             raise ValueError("조정자에게 보낼 요청을 확인하세요.")
+        meeting = data.get("meeting", False)
+        review_plan = data.get("review_plan", False)
+        if type(meeting) is not bool or type(review_plan) is not bool or (review_plan and not meeting):
+            raise ValueError("회의와 계획 검토 방식을 확인하세요.")
+        overrides = data.get("role_engines", {})
+        if (not isinstance(overrides, dict) or overrides.keys() - set(ROLES)
+                or any(not isinstance(engine, str) or engine not in SUPPORTED_ENGINES for engine in overrides.values())):
+            raise ValueError("작업별 담당자 엔진을 확인하세요.")
         run_id = validate_id(data["id"])
         task, allow_edits, override = data["message"], data["allow_edits"], data["delegation"]
         validate_task(task)
@@ -264,7 +289,7 @@ class WorkspaceRooms:
             if allow_edits and find_spec("pytest") is None:
                 raise ValueError("작업실 실행 환경에 pytest가 설치되어 있지 않습니다.")
             engines = self.engines.snapshot()["engines"]
-            roles = _assign_roles(settings, engines, allow_edits)
+            roles = _assign_roles(settings, engines, allow_edits, meeting, overrides)
             delegated = settings["delegation"] if override is None else override
             revision = read_workspace_revision(repo)
             if test_files:
@@ -283,6 +308,8 @@ class WorkspaceRooms:
                           "note": _assignment_note(settings, roles, allow_edits, delegated, choices)}
             if test_files:
                 assignment["test_files"] = test_files
+            if meeting:
+                assignment.update(meeting=True, review_plan=review_plan)
             return self.runner.start(run_id, workspace_id, repo, folders, task, allow_edits, indices=indices,
                                      request_digest=digest, developer_engine=roles["developer"]["engine"],
                                      reviewer_engine=roles["reviewer"]["engine"], use_inbox=True,
