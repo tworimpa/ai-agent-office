@@ -1064,18 +1064,11 @@ export function mountWorkspaceOffice(win = window) {
         workspaces = list;
       }
       if (!workspaceId && runId) {
-        try {
-          const {run} = await api(runPath(runId));
-          if (!current()) return;
-          if (run?.id === runId && validId(run.workspace_id)) {
-            workspaceId = run.workspace_id;
-            detail = run;
-          }
-        } catch (error) {
-          if (!current()) return;
-          if (error.status !== 404) throw error;
-          runId = null;
-        }
+        const {run} = await api(runPath(runId));
+        if (!current()) return;
+        if (run?.id !== runId || !validId(run.workspace_id)) throw new Error('실행의 작업공간을 확인할 수 없습니다.');
+        workspaceId = run.workspace_id;
+        detail = run;
       }
       online = true;
       if (!workspaceId) workspaceId = workspaces[0]?.id ?? null;
@@ -1112,7 +1105,9 @@ export function mountWorkspaceOffice(win = window) {
       roomOnline = false;
       const hostName = directory.find(item => item.id === hostId)?.name ?? (hostId === 'local' ? '이 컴퓨터' : hostId);
       const target = workspaces.find(item => item.id === workspaceId)?.name ?? workspaceId;
-      roomLoadError = `${hostName}${target ? ' · ' + target : ''}에 연결할 수 없습니다. 작업실이 실행 중인지 확인하고 다시 시도하세요.`;
+      roomLoadError = !workspaceId && runId ?
+        `${hostName}에서 저장된 실행 ${runId}을 불러올 수 없습니다. 작업실 연결과 실행 기록을 확인하고 다시 시도하세요.` :
+        `${hostName}${target ? ' · ' + target : ''}에 연결할 수 없습니다. 작업실이 실행 중인지 확인하고 다시 시도하세요.`;
       chatDetailsOnline = false;
       inboxDetailsOnline = false;
       render();
@@ -1790,6 +1785,13 @@ export function mountWorkspaceOffice(win = window) {
     const token = viewEpoch();
     const active = () => sameContext(context) && token === viewEpoch() &&
       (thread ? runId === row.run_id : get(chat ? 'conversation' : 'requests').open);
+    // Dismissing the conversation after pressing Send still submits the explicit answer
+    // to that same run. Permission decisions must retain their original review surface.
+    const sameAnswer = () => action === 'answer' && sameContext(context) && runId === row.run_id;
+    const feedback = value => {
+      if (active()) say(note, value);
+      else if (sameAnswer()) say('thread-note', value);
+    };
     if (!active() || !canWrite() || !trustedRun(row.run_id) || !(thread || chat ? chatDetailsOnline : inboxDetailsOnline) || deciding.has(key)) return;
     const body = {action};
     if (action === 'answer') {
@@ -1802,22 +1804,22 @@ export function mountWorkspaceOffice(win = window) {
     try {
       const path = runPath(row.run_id) + '/inbox';
       const {requests} = await api(path);
-      if (!active() || !canWrite() || !trustedRun(row.run_id)) return;
+      if ((!active() && !sameAnswer()) || !canWrite() || !trustedRun(row.run_id)) return;
       const current = requests.find(item => item.id === row.id && item.run_id === row.run_id);
       if (!current || ['kind', 'role', 'engine', 'prompt'].some(field => current[field] !== row[field])) {
-        say(note, '요청이 변경되었습니다. 갱신된 요청을 확인하세요.');
+        feedback('요청이 변경되었습니다. 갱신된 요청을 확인하세요.');
         return;
       }
       if (current.status !== 'pending') {
-        say(note, '이미 처리된 요청입니다. 최신 기록을 확인하세요.');
+        feedback('이미 처리된 요청입니다. 최신 기록을 확인하세요.');
         return;
       }
       const {request: receipt} = await api(path + '/' + row.id + '/decision', body);
       if (receipt?.id !== row.id || receipt.run_id !== row.run_id || receipt.status === 'pending') throw new Error();
       editors.delete(draftKey);
-      if (active()) say(note, '결정을 기록했습니다.');
+      feedback('결정을 기록했습니다.');
     } catch (error) {
-      if (active()) say(note, error.status === 400 ? error.message :
+      feedback(error.status === 400 ? error.message :
         '결정 접수를 확인하지 못했습니다. 최신 요청을 다시 확인합니다.');
     } finally {
       deciding.delete(key);

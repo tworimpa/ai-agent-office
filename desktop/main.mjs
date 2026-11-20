@@ -35,17 +35,18 @@ function bundledPython() {
   return resolve(app.getAppPath(), '..', '.venv', win ? 'Scripts/python.exe' : 'bin/python')
 }
 
-function readProfile() {
+function readProfile(requireConnection) {
   try {
     const saved = JSON.parse(readFileSync(profilePath, 'utf8'))
     if (!saved || Array.isArray(saved) || typeof saved !== 'object' ||
+        (requireConnection && !saved.connection) ||
         (saved.connection && !['attached', 'local'].includes(saved.connection.mode)) ||
         (saved.recent !== undefined && (!saved.recent || typeof saved.recent !== 'object' || Array.isArray(saved.recent)))) {
       throw new Error()
     }
     return { recent: {}, ...saved, remotes: validateRemotes(saved.remotes ?? []) }
   } catch (error) {
-    if (error.code === 'ENOENT') return { remotes: [], recent: {} }
+    if (error.code === 'ENOENT' && !requireConnection) return { remotes: [], recent: {} }
     throw new Error(`저장된 연결 설정을 읽을 수 없습니다. ${profilePath} 파일을 복구한 뒤 다시 시도하세요.`)
   }
 }
@@ -244,7 +245,7 @@ function registerActions() {
       }
     },
     start: async remotes => { await startLocal(remotes); await showOffice() },
-    retry: restore,
+    retry: () => restore(true),
     open: showOffice,
     stop: stopLocal,
     tools: () => selected ? readTools(selected.origin) : null,
@@ -268,12 +269,11 @@ function registerActions() {
   }
 }
 
-async function restore() {
+async function restore(requireConnection) {
+  profileUnreadable = true
   try {
-    if (profileUnreadable) {
-      profile = readProfile()
-      profileUnreadable = false
-    }
+    profile = readProfile(requireConnection)
+    profileUnreadable = false
     const saved = profile.connection
     if (saved?.mode === 'attached') {
       if (!saved.journalId) throw new Error('저널 ID를 제공하지 않는 작업실입니다. 기존 작업실 연결에서 주소를 확인하고 연결하세요.')
@@ -296,7 +296,6 @@ async function initialize() {
   mkdirSync(directory, { recursive: true, mode: 0o700 })
   profilePath = join(directory, 'connection.json')
   profile = { remotes: [], recent: {} }
-  profileUnreadable = true
   studio = new LocalStudio(join(directory, 'local-studio'), bundledPython())
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
   session.defaultSession.setPermissionCheckHandler(() => false)
@@ -315,7 +314,7 @@ async function initialize() {
   ]))
 
   try {
-    await restore()
+    await restore(false)
     if (selected) return
   } catch { /* The setup window displays the failed target and retry action. */ }
   showSetup()

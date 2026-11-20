@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, realpath, rename, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -17,7 +17,7 @@ const python = join(dirname(exe), 'resources', 'runtime', windows ? 'python.exe'
 const root = await mkdtemp(join(tmpdir(), 'agent-office-desktop-'))
 const profile = join(root, 'profile')
 const fixtureDir = join(root, 'mock-bin')
-const repo = join(root, '작업공간')
+const repo = join(root, nativePicker ? 'desktop-project' : '작업공간')
 const views = []
 const peerProfile = join(root, 'peer')
 const resultFile = join(root, 'result.json')
@@ -120,8 +120,16 @@ async function register(window, local) {
     }
     await window.locator('#empty-register').focus()
     await window.keyboard.press('Enter')
-    await window.waitForFunction(name => document.querySelector('#workspace-name').value === name, basename(repo),
-      { timeout: nativePicker ? 120000 : 15000 })
+    try {
+      await window.waitForFunction(name => document.querySelector('#workspace-name').value === name, basename(repo),
+        { timeout: nativePicker ? 120000 : 15000 })
+    } catch (error) {
+      throw new Error('Folder selection did not register the fixture: ' + JSON.stringify({
+        name: await window.locator('#workspace-name').inputValue(),
+        paths: await window.locator('#workspace-paths').inputValue(),
+        note: await window.locator('#register-note').textContent(),
+      }), { cause: error })
+    }
     await capture(window, '03-register')
   } else {
     await window.locator('#empty-register').click()
@@ -137,6 +145,16 @@ async function read(origin, path) {
   const response = await fetch(origin + path, { signal: AbortSignal.timeout(5000) })
   assert.equal(response.status, 200, path)
   return response.json()
+}
+
+async function decideRequest(window, button, runId) {
+  const decision = window.waitForResponse(response => {
+    const path = new URL(response.url()).pathname
+    return path.startsWith('/api/runs/' + runId + '/inbox/') && path.endsWith('/decision') &&
+      response.request().method() === 'POST'
+  })
+  await button.click()
+  assert.ok((await decision).ok())
 }
 
 async function finishedRun(origin, id) {
@@ -239,7 +257,7 @@ try {
     await chat.locator('#send').click()
     assert.ok((await sent).ok())
     await chat.locator('.request-item textarea').fill('네, 테스트도 설명해 주세요.')
-    await chat.getByRole('button', { name: '답변 보내기' }).click()
+    await decideRequest(window, chat.getByRole('button', { name: '답변 보내기' }), simple.id)
     await window.keyboard.press('Escape')
     const automatic = await finishedRun(local.origin, simple.id)
     assert.equal(automatic.state, 'PLAN_ONLY', JSON.stringify(automatic))
@@ -271,6 +289,11 @@ try {
     '파일 수정은 현재 작업 트리 안에서 승인된 샌드박스를 유지하며 실행하세요. 다른 파일, 커밋, 외부 연결, 추가 권한 요청은 하지 마세요.',
     '검토자는 위 질문의 대상이 아닙니다. 현재 스레드에서 직접 변경된 파일과 작업실 테스트 결과를 읽고 독립적인 검토 판정을 내려 주세요.',
   ].join('\n') : 'note.txt의 문장 형식과 마지막 줄바꿈을 결정한 뒤 지정 문장을 추가하고 테스트해 주세요.')
+  if (!live) {
+    await window.locator('#receipt-new').click()
+    assert.equal(await window.locator('#message').inputValue(), '')
+    assert.equal(await window.locator('#assignment-receipt').isVisible(), false)
+  }
   await window.getByRole('button', { name: '대화 닫기' }).click()
   if (!live) {
     const planAction = window.locator('#summary-action').filter({ hasText: '계획 확인하기' })
@@ -306,18 +329,22 @@ try {
   const draft = window.locator('#office-thread .request-item textarea')
   assert.equal(await draft.evaluate(el => el === document.activeElement), true)
   await draft.fill('네. 대기 중인 추가 지시를 적용해 주세요.')
-  await window.locator('#office-thread').getByRole('button', { name: '답변 보내기' }).click()
+  await decideRequest(window, window.locator('#office-thread').getByRole('button', { name: '답변 보내기' }), run.id)
   if (!live) {
     const approved = await approvePlan(window, 3, false)
     assert.equal(approved.revisions.at(-1).source, 'direction')
     const permission = window.locator('#summary-action').filter({ hasText: '권한 요청 확인' })
     await permission.focus()
     await window.keyboard.press('Enter')
-    const item = window.locator('#requests .request-item').filter({ hasText: /note\.txt/ })
+    const pending = (await read(local.origin, '/api/runs/' + run.id + '/inbox')).requests
+      .find(row => row.kind === 'permission' && row.status === 'pending')
+    assert.ok(pending)
+    const item = window.locator(`#requests [data-request="${run.id}:${pending.id}"]`)
     await item.waitFor()
+    assert.ok(await item.evaluate(el => el.contains(document.activeElement)))
     const target = (await read(local.origin, '/api/runs/' + run.id)).run.workspace
     assert.equal((await readFile(join(target, 'note.txt'), 'utf8')).trim(), 'original')
-    await item.getByRole('button', { name: '이번 요청만 승인' }).click()
+    await decideRequest(window, item.getByRole('button', { name: '이번 요청만 승인' }), run.id)
     await window.keyboard.press('Escape')
   }
   const final = await finishedRun(local.origin, run.id)
@@ -367,6 +394,32 @@ try {
   window = await launch()
   await window.getByRole('heading', { name: '설치판 검증' }).waitFor()
   assert.equal(new URL(window.url()).origin, peer.origin)
+  await close()
+  const config = join(profile, 'connection.json')
+  const saved = JSON.parse(await readFile(config, 'utf8'))
+  const db = join(profile, 'local-studio', 'tasks.sqlite3')
+  assert.ok(await standalone.stop(local.bootId))
+  await rename(db, db + '.backup')
+  saved.connection = { mode: 'local', origin: local.origin }
+  await writeFile(config, JSON.stringify(saved))
+  window = await launch()
+  await window.getByRole('alert').filter({ hasText: '저장된 로컬 저널 ID' }).waitFor()
+  await rename(config, config + '.backup')
+  await window.locator('#retry').click()
+  await window.getByRole('alert').filter({ hasText: 'connection.json' }).waitFor()
+  assert.equal(await window.locator('#start-options').isVisible(), false)
+  await assert.rejects(access(db), { code: 'ENOENT' })
+  saved.connection.journalId = local.journalId
+  await writeFile(config, JSON.stringify(saved))
+  await window.locator('#retry').click()
+  await window.getByRole('alert').filter({ hasText: local.journalId }).waitFor()
+  await assert.rejects(access(db), { code: 'ENOENT' })
+  await rename(db + '.backup', db)
+  const repaired = nextWindow()
+  await window.locator('#retry').click()
+  window = await repaired
+  await window.waitForURL(url => url.searchParams.get('run') === run.id)
+  assert.equal((await standalone.running()).journalId, local.journalId)
   await writeFile(resultFile, JSON.stringify({
     provider: live ? 'codex' : 'fixture', platform: process.platform, exe, attached: peer, local,
     folderPicker: nativePicker ? 'operating-system' : 'dialog-result-fixture', views,

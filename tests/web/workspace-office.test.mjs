@@ -260,6 +260,27 @@ test('meeting review retains a draft through polling and sends the product choic
   assert.equal(new URLSearchParams(window.location.search).get('run'), runId);
 });
 
+test('a missing legacy run link keeps the saved host and run until that exact run can be restored', async t => {
+  const prefix = '/api/hosts/' + remote;
+  const query = '?host=' + remote + '&run=' + runId;
+  let restored = false;
+  const {get, calls, window} = mount(t, path => {
+    if (path === prefix + '/runs/' + runId) return restored ? {run} :
+      Response.json({error: {message: '실행을 찾을 수 없습니다.'}}, {status: 404});
+    if (path === prefix + '/rooms/' + workspace.id) return room([run]);
+  }, {query});
+  await until(() => !get('empty-retry').hidden);
+  assert.equal(window.location.search, query);
+  assert.match(get('empty-note').textContent, /원격 연구실/);
+  assert.ok(get('empty-note').textContent.includes(runId));
+  assert.equal(calls.some(call => call.path.includes('/rooms/')), false);
+  restored = true;
+  get('empty-retry').click();
+  await until(() => get('summary-title').textContent === run.task);
+  assert.equal(new URLSearchParams(window.location.search).get('workspace'), workspace.id);
+  assert.equal(new URLSearchParams(window.location.search).get('run'), runId);
+});
+
 test('legacy remote execution links find the workspace and retain the last progress during a disconnect', async t => {
   let disconnected = false;
   const target = '/api/hosts/' + remote;
@@ -519,6 +540,37 @@ test('developer chat reads the latest decision state before sending an explicit 
   button().click();
   await until(() => get('chat-request-note').textContent.includes('요청이 변경되었습니다.'));
   assert.equal(calls.some(call => call.path.endsWith('/decision')), false);
+});
+
+test('closing a portrait after explicitly sending an answer keeps the verified decision bound to its run', async t => {
+  const question = {id: 'a'.repeat(32), kind:'question', run_id:runId, role:'developer', engine:'codex',
+    prompt:'테스트 범위는?', status:'pending'};
+  let unblock, waiting = false, recorded;
+  const {get, person} = mount(t, async (path, body) => {
+    if (path === base) return room([run]);
+    if (path === runPath) return {run};
+    if (path === runPath + '/inbox') {
+      if (waiting) await new Promise(resolve => { unblock = resolve; });
+      return {requests:[question]};
+    }
+    if (path === runPath + '/inbox/' + question.id + '/decision') {
+      recorded = body;
+      return {request:{...question, status:'decided'}};
+    }
+  });
+  await until(() => get('room-title').textContent === workspace.name);
+  person('developer').click();
+  const answer = () => get('chat-log').querySelector('[data-control="answer"]');
+  await until(() => answer() && !answer().disabled);
+  get('chat-log').querySelector('textarea').value = '전체 테스트';
+  waiting = true;
+  answer().click();
+  await until(() => !!unblock);
+  get('conversation').close();
+  waiting = false;
+  unblock();
+  await until(() => recorded);
+  assert.deepEqual(recorded, {action:'answer',answer:'전체 테스트'});
 });
 
 test('stopping an active remote run shows a stop request until termination is confirmed', async t => {

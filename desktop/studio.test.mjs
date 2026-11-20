@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { checkStudio, localStudioOrigin, studioPage, validateRemotes } from './studio.mjs'
+import { checkStudio, LocalStudio, localStudioOrigin, studioPage, validateRemotes } from './studio.mjs'
 
 const origin = 'http://127.0.0.1:8766'
 const journal = '1'.repeat(32)
@@ -39,4 +39,18 @@ test('remote config permits only SSH aliases and existing journal port and ID fo
     [{ ...remote, port: '8766' }], [remote, { ...remote, alias: 'another' }]]) {
     assert.throws(() => validateRemotes(input), /SSH 별칭/)
   }
+})
+
+test('concurrent callers check their saved journal after a shared startup completes', async () => {
+  const studio = new LocalStudio('', '')
+  let launches = 0
+  studio.launch = async (_remotes, expected) => {
+    launches++
+    assert.equal(expected, journal)
+    return { journalId: journal }
+  }
+  const owner = studio.start([], journal)
+  await assert.rejects(studio.start([], '2'.repeat(32)), /저장된 로컬 저널과 다릅니다/)
+  assert.equal((await owner).journalId, journal)
+  assert.equal(launches, 1)
 })

@@ -106,7 +106,14 @@ get('local').addEventListener('submit', event => {
     await call('start', entries)
   })
 })
-get('retry').addEventListener('click', () => perform('저장된 작업실을 다시 여는 중…', async () => render(await call('retry'), true)))
+get('retry').addEventListener('click', () => perform('저장된 작업실을 다시 여는 중…', async () => {
+  try {
+    await render(await call('retry'), true)
+  } catch (exception) {
+    await render(await call('state'))
+    throw exception
+  }
+}))
 get('open').addEventListener('click', () => perform('사무실을 여는 중…', () => call('open')))
 get('stop').addEventListener('click', () => perform('로컬 작업실 종료를 확인하는 중…', async () => {
   if (await call('stop')) await render(await call('state'))
