@@ -361,6 +361,28 @@ class CodexSession:
         receipts[rpc_id] = None
         await self.send({"id": rpc_id, "result": result})
 
+    async def finish_commands(self, active, denied):
+        # Unified exec can publish turn/completed while a previously started
+        # process is exiting. Never advance the thread until its final receipt.
+        if any(kind != "commandExecution" for kind in active.values()):
+            raise _CodexProtocolError("Codex did not complete the expected turn")
+        async with asyncio.timeout(10):
+            while active:
+                record = await self.event()
+                params = _object(record.get("params"))
+                item = _object(params.get("item"))
+                key = _identifier(item.get("id"))
+                if ("id" in record or record.get("method") != "item/completed" or
+                        params.get("threadId") != self.thread or params.get("turnId") != self.turn or
+                        key not in active or item.get("type") != "commandExecution"):
+                    raise _CodexProtocolError("unexpected late Codex command receipt")
+                if key in denied:
+                    if item.get("status") != "declined":
+                        raise _CodexProtocolError("Codex did not confirm command refusal")
+                elif item.get("status") != "completed" or type(item.get("exitCode")) is not int or item["exitCode"] != 0:
+                    raise _CodexProtocolError("late Codex command did not succeed")
+                del active[key]
+
     async def complete_turn(self):
         self.phase = "turn/completed"
         files, receipts, active, finished = {}, {}, {}, set()
@@ -393,8 +415,10 @@ class CodexSession:
                 if turn.get("id") == self.turn and turn.get("status") == "failed":
                     raise _provider_failure(turn.get("error"))
                 if (turn.get("id") != self.turn or turn.get("status") != "completed"
-                        or turn.get("error") is not None or receipts or files or active or not answer):
+                        or turn.get("error") is not None or receipts or files or not answer):
                     raise _CodexProtocolError("Codex did not complete the expected turn")
+                if active:
+                    await self.finish_commands(active, denied_commands)
                 return answer
             if method not in ("item/started", "item/completed", "item/fileChange/patchUpdated"):
                 raise _notification_failure(msg)
