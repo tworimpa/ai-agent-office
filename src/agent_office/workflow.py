@@ -162,6 +162,10 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             output = (completed.stdout + "\n" + completed.stderr)[-6000:]
             passed = completed.returncode == 0
             returncode = completed.returncode
+            if meeting:
+                witness = {"cwd": state["workspace"], "argv": argv, "exit_code": returncode}
+                output = ("Studio test invocation:\n" + json.dumps(witness, ensure_ascii=False)
+                          + "\nCaptured test output:\n" + output)
         except subprocess.TimeoutExpired as exc:
             passed = False
             timed_out = True

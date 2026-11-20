@@ -124,6 +124,9 @@ def test_room_auto_executes_verifies_and_preserves_meeting_journal(tmp_path, mon
             ("developer", "claude", "개발 의견"), ("reviewer", "antigravity", "검토 의견")]
         assert [item["status"] for item in meeting["verification"]] == ["passed", "not_verified"]
         assert "1 passed" in run["test_output"] and "APPROVED" in run["review_output"]
+        invocation = json.loads(run["test_output"].splitlines()[1])
+        assert invocation["cwd"] == run["workspace"] and invocation["exit_code"] == 0
+        assert invocation["argv"][-1] == "web/test_value.py"
         assert "web/value.txt" in run["changes"] and folders[0].joinpath("value.txt").read_text() == "old"
         assert trace.read_text().splitlines() == ["claude MEETING_DEVELOPER", "agy MEETING_REVIEWER", "claude edit", "agy review"]
     with studio(db) as reopened:
