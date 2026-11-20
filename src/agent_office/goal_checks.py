@@ -56,7 +56,25 @@ def recipe(argv):
 def _unprivileged():
     if os.name == "nt":
         return not windows_service_session() and not ctypes.windll.shell32.IsUserAnAdmin()
-    return os.geteuid() != 0 and not os.environ.get("INVOCATION_ID")
+    if os.geteuid() == 0 or os.environ.get("INVOCATION_ID"):
+        return False
+    try:
+        return _no_linux_capabilities(Path("/proc/self/status").read_text(encoding="ascii", errors="replace"))
+    except OSError:
+        return False
+
+
+def _no_linux_capabilities(status):
+    required = {"CapEff", "CapPrm", "CapAmb", "CapInh"}
+    values = {}
+    for line in status.splitlines():
+        name, _, raw = line.partition(":")
+        if name in required:
+            try:
+                values[name] = int(raw.strip(), 16)
+            except ValueError:
+                return False
+    return values.keys() == required and not any(values.values())
 
 
 def _command(workspace, check, report):

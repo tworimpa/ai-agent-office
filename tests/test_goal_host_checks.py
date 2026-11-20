@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent_office.dialogue import operator_wait
-from agent_office.goal_checks import _command, _unprivileged, run_check
+from agent_office.goal_checks import _command, _no_linux_capabilities, _unprivileged, run_check
 from agent_office.goal_host_checks import definition
 from test_studio_http import project
 
@@ -46,3 +46,11 @@ def test_goal_decision_wait_preserves_only_remaining_provider_time():
     with pytest.raises(TimeoutError):
         asyncio.run(conversation(SimpleNamespace()))
     assert answered == ["developer"]
+
+
+def test_nonroot_process_requires_empty_linux_capability_sets():
+    empty = "CapPrm: 0\nCapEff: 0\nCapAmb: 0\nCapInh: 0\nCapBnd: ffffffff\n"
+    assert _no_linux_capabilities(empty)
+    for field in ("CapPrm", "CapEff", "CapAmb", "CapInh"):
+        assert not _no_linux_capabilities(empty.replace(field + ": 0", field + ": 400"))
+    assert not _no_linux_capabilities("CapEff: 0")
