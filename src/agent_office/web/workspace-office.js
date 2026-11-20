@@ -1,3 +1,6 @@
+import {firstProseParagraph, renderDiff, renderMarkdown, renderSource} from './office-content.js';
+import {planFlow} from './office-flow.js';
+
 const roleLabels = {developer: '담당자', reviewer: '검토자'};
 const engines = {codex: 'Codex', antigravity: 'Antigravity', claude: 'Claude Code', gemini: 'Gemini CLI', cline: 'Cline CLI'};
 const states = {
@@ -36,6 +39,91 @@ const stamp = ts => {
   return new Intl.DateTimeFormat('ko-KR', {month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit'}).format(new Date(ts));
 };
 const scope = host => host === 'local' ? '/api' : '/api/hosts/' + host;
+const viewNames = {simple: '간단히', collaboration: '협업 과정', technical: '기술 상세'};
+const outcomes = {
+  PLAN_ONLY: '조회 결과를 정리했습니다.',
+  DEVELOPER_FAILED: '담당자 실행에 실패했습니다.',
+  TEST_FAILED: '테스트 단계에서 실패했습니다.',
+  REVIEW_FAILED: '검토자 실행에 실패했습니다.',
+  CHANGES_REQUESTED: '검토자가 수정을 요청했습니다.',
+  REVIEW_UNDECIDED: '검토 판정을 확정할 수 없어 사용자 판단이 필요합니다.',
+  MEETING_FAILED: '계획을 확정하지 못했습니다.',
+  INTERRUPTED: '실행이 중단되어 복구 상태를 확인해야 합니다.',
+  CANCELED: '실행이 중지되었습니다.',
+};
+
+function resultFacts(run) {
+  if (run.kind === 'parallel') {
+    const children = run.subtasks ?? [];
+    const states = new Map();
+    for (const child of children) {
+      const label = stateName(child.state);
+      states.set(label, (states.get(label) ?? 0) + 1);
+    }
+    const groups = [...states].map(([label, count]) => label + ' ' + count + '건').join(', ');
+    return ['변경 파일 미확인', '테스트는 하위 작업별 확인', '검토는 하위 작업별 확인',
+      groups ? '하위 작업 ' + groups : '하위 작업 상태 미확인'];
+  }
+  const lookup = run.state === 'PLAN_ONLY' || run.allow_edits === false;
+  const early = lookup || ['MEETING_FAILED', 'DEVELOPER_FAILED'].includes(run.outcome);
+  const review = {APPROVED: '승인 · 최종 사용자 확인 필요', CHANGES_REQUESTED: '수정 요청',
+    REVIEW_UNDECIDED: '판정 미확인 · 사용자 판단 필요', REVIEW_FAILED: '실패'}[run.outcome];
+  const test = run.outcome === 'TEST_FAILED' ? '실패' : review || run.state === 'REVIEWING' ? '통과' :
+    run.state === 'TESTING' ? '실행 중' : early && !run.test_output ? '미실행' : '미확인';
+  let files = '미확인';
+  if (typeof run.changes === 'string') {
+    const lines = run.changes.split(/\r?\n/).filter(Boolean);
+    if (lines.length && lines.every(line => /^(?:[ MADRCUT?!]{2}) .+/.test(line) && !line.includes('...[truncated]'))) {
+      files = lines.length + '개';
+    } else if (!lines.length && !activeStates.has(run.state) && run.kind !== 'parallel' && !run.diff) {
+      files = '기록된 변경 없음';
+    }
+  }
+  const facts = ['변경 파일 ' + files, '테스트 ' + (pytestCounts(run.test_output, test) || test),
+    '검토 ' + (review ?? (run.state === 'REVIEWING' ? '진행 중' : (early || run.outcome === 'TEST_FAILED') && !run.review_output ? '미실행' : '미확인'))];
+  const checks = run.meeting?.verification;
+  if (checks?.length) {
+    const groups = new Map();
+    for (const [i, row] of checks.entries()) {
+      const criterion = run.meeting.plan?.criteria?.[i];
+      const label = row.status === 'not_verified' && criterion && !criterion.test_files?.length ?
+        '수동 확인 필요' : ({passed: '통과', failed: '실패', not_verified: '미검증'}[row.status] ?? '미확인');
+      groups.set(label, (groups.get(label) ?? 0) + 1);
+    }
+    facts.push('완료 기준 ' + [...groups].map(([label, count]) => label + ' ' + count + '건').join(', '));
+  }
+  return facts;
+}
+
+function pytestCounts(output, result) {
+  if (!output || !['통과', '실패'].includes(result)) return '';
+  const lines = output.trim().split(/\r?\n/);
+  if (lines[0] === 'Studio test invocation:') {
+    try {
+      const {exit_code: code, argv} = JSON.parse(lines[1]);
+      if (!Array.isArray(argv) || !argv.includes('pytest') || !Number.isInteger(code) ||
+          (code === 0) !== (result === '통과') || lines[2] !== 'Captured test output:') return '';
+    } catch { return ''; }
+  }
+  const last = lines.at(-1).replace(/^=+\s*|\s*=+$/g, '');
+  const summary = last.match(/^(.+) in \d+(?:\.\d+)?s(?: \([\d:]+\))?$/);
+  if (!summary) return '';
+  const labels = {passed: '통과', failed: '실패', errors: '오류', error: '오류', skipped: '건너뜀',
+    xfailed: '예상된 실패', xpassed: '예상 밖 통과', deselected: '선택 제외'};
+  const counts = [], seen = new Set();
+  for (const field of summary[1].split(', ')) {
+    const part = field.match(/^(\d+) ([a-z]+)$/);
+    if (!part || seen.has(part[2]) || !Number.isSafeInteger(Number(part[1]))) return '';
+    seen.add(part[2]);
+    if (['warning', 'warnings'].includes(part[2])) continue;
+    if (!Object.hasOwn(labels, part[2])) return '';
+    counts.push(part[1] + '개 ' + labels[part[2]]);
+  }
+  if (seen.has('failed') || seen.has('error') || seen.has('errors')) {
+    if (result !== '실패') return '';
+  } else if (result === '실패') return '';
+  return counts.join(', ');
+}
 
 function address(host, workspace, run, base = '/') {
   const query = new URLSearchParams();
@@ -87,11 +175,18 @@ export function mountWorkspaceOffice(win = window) {
   let chatRole = null, chatAttempt = null, chatRows = [], directionRows = [], chatDetailsOnline = false, inboxDetailsOnline = false;
   let chatState = null, settingsBusy = false, registrationBusy = false, deciding = new Set();
   let meetingDecision = null, meetingReadOK = false;
+  let view = 'simple', jump = null, threadRun = null, directionsOnline = false;
+  const viewPreference = 'agent-office.conversation-view';
+  try {
+    const saved = win.localStorage.getItem(viewPreference);
+    if (Object.hasOwn(viewNames, saved)) view = saved;
+  } catch { /* View selection also works when local storage is unavailable. */ }
   let inboxFocus;
   const stopping = new Set();
   let dialogEpoch = 0, inboxEpoch = 0, detailRead = 0, chatRead = 0, inboxRead = 0, skills = [], skillsCursor = null;
   const recovery = new Map();
   const editors = new Map();
+  const answerDetails = new Map();
   const roomPath = () => '/rooms/' + workspaceId;
   const runPath = id => '/runs/' + id;
   const roomRuns = () => room ? [...room.runs, ...olderRuns] : [];
@@ -151,6 +246,7 @@ export function mountWorkspaceOffice(win = window) {
   }
 
   function navigation(host, workspace, run, replace = false) {
+    resetThread();
     const changingRoom = host !== hostId || workspace !== workspaceId;
     if (host !== hostId) {
       online = false;
@@ -179,6 +275,18 @@ export function mountWorkspaceOffice(win = window) {
     win.history[replace ? 'replaceState' : 'pushState'](null, '', address(hostId, workspaceId, runId));
     render();
     return refresh();
+  }
+
+  function resetThread() {
+    answerDetails.clear();
+    chatRows = [];
+    directionRows = [];
+    threadRun = null;
+    chatDetailsOnline = directionsOnline = false;
+    if (jump) view = jump.view;
+    jump = null;
+    say('thread-note', '');
+    say('thread-read-note', '');
   }
 
   function navClick(event, host, workspace, run) {
@@ -321,31 +429,141 @@ export function mountWorkspaceOffice(win = window) {
 
   function renderLedger() {
     const run = selected();
-    renderMeeting(detail);
     get('detail-link').hidden = !run;
     get('detail-link').href = address(hostId, null, run?.id, '/studio') + '#detail';
     get('stop-run').hidden = !stoppable(run?.state);
     get('stop-run').disabled = !canWrite() || stopping.has(run?.id);
     say('ledger-label', run ? runLabel(run) : '작업 기록');
     say('ledger-heading', run?.task ?? '선택한 작업이 없습니다');
-    const date = stamp(run?.created_at);
-    say('ledger-note', run ? [date, run.assignment?.delegation === true && '기술 질문 위임', run.pending_count && '응답 대기 ' + run.pending_count + '건'].filter(Boolean).join(' · ') :
-      '조정자에게 요청을 보내 작업을 시작할 수 있습니다.');
-    const testFiles = detail?.assignment?.test_files;
-    const evidence = detail ? [
-      ['개발 결과', detail.developer_output], ['테스트 파일', Array.isArray(testFiles) && testFiles.join('\n')],
-      ['테스트 결과', detail.test_output], ['검토 결과', detail.review_output],
-      ['변경 파일', detail.changes], ['변경 내용', detail.diff], ['진단', detail.diagnostic],
-    ].filter(([, value]) => value) : [];
-    get('ledger-result').hidden = !evidence.length;
-    update('ledger-result', evidence, node => {
-      node.replaceChildren(...evidence.map(([name, value]) => {
-        const summary = make('details', '', 'evidence');
-        summary.append(make('summary', name), make('p', value));
-        return summary;
-      }));
-      if (node.firstElementChild) node.firstElementChild.open = true;
+    say('ledger-note', run ? stamp(run.created_at) : '조정자에게 요청을 보내 작업을 시작할 수 있습니다.');
+    get('office-thread').hidden = !run;
+    renderViewTools('room', run);
+    if (run) renderThread('office-thread', null);
+    renderMeeting(detail);
+    renderEvidence();
+  }
+
+  function changeView(next, persist) {
+    view = next;
+    if (persist) {
+      try { win.localStorage.setItem(viewPreference, next); } catch { /* Tab-local fallback. */ }
+    }
+    renderRoom();
+    if (chatRole) renderChatLog();
+    requestControls();
+  }
+
+  function renderViewTools(place, run) {
+    const id = place + '-view-controls';
+    get(id).hidden = !run;
+    if (!run) return;
+    update(id, [hostId, run.id, Boolean(run.meeting), view, !!jump], node => {
+      const picker = make('div', '', 'view-picker');
+      picker.setAttribute('role', 'group');
+      picker.setAttribute('aria-label', '대화 보기');
+      for (const [key, label] of Object.entries(viewNames)) {
+        const button = make('button', label, 'secondary');
+        button.type = 'button';
+        button.dataset.view = key;
+        button.setAttribute('aria-pressed', String(key === view));
+        button.addEventListener('click', () => {
+          jump = null;
+          changeView(key, true);
+          node.querySelector('[data-view="' + key + '"]').focus({preventScroll: true});
+        });
+        picker.append(button);
+      }
+      const links = make('div', '', 'evidence-links');
+      if (jump) {
+        const back = make('button', '대화로 돌아가기', 'secondary view-return');
+        back.type = 'button';
+        back.dataset.back = '';
+        back.addEventListener('click', returnToThread);
+        links.append(back);
+      } else if (view === 'simple') {
+        for (const [key, label] of Object.entries({changes: '변경 보기', tests: '테스트 보기', meeting: '회의 보기'})) {
+          if (key === 'meeting' && !run.meeting) continue;
+          const button = make('button', label, 'secondary');
+          button.type = 'button';
+          button.dataset.jump = key;
+          button.disabled = !detail;
+          button.addEventListener('click', () => openEvidence(place, key));
+          links.append(button);
+        }
+      }
+      const active = node.contains(doc.activeElement) && doc.activeElement.dataset;
+      node.replaceChildren(picker, links);
+      if (active) {
+        const restored = [...node.querySelectorAll('button')].find(button =>
+          ['view', 'jump', 'back'].some(key => active[key] !== undefined && active[key] === button.dataset[key]));
+        restored?.focus({preventScroll: true});
+      }
     });
+    for (const button of get(id).querySelectorAll('[data-jump]')) button.disabled = !detail;
+  }
+
+  function scrollContainers(place) {
+    return [doc.scrollingElement ?? doc.documentElement, ...(place === 'chat' ? [get('conversation'), get('chat-log')] : [get('office-thread')])];
+  }
+
+  function openEvidence(place, key) {
+    jump = {place, key, view, scroll: scrollContainers(place).map(node => node.scrollTop)};
+    changeView(key === 'meeting' ? 'collaboration' : 'technical', false);
+    const target = key === 'meeting' ? get('meeting-heading') : get('evidence-' + key);
+    if (key !== 'meeting') target.open = true;
+    if (key === 'changes' && !target.querySelector('.office-diff details[open]')) {
+      const first = target.querySelector('.office-diff details');
+      if (first) first.open = true;
+    }
+    (target.querySelector('summary') ?? target).focus();
+  }
+
+  function returnToThread() {
+    if (!jump) return;
+    const previous = jump;
+    jump = null;
+    changeView(previous.view, false);
+    const root = get(previous.place + '-view-controls');
+    (root.querySelector('[data-jump="' + previous.key + '"]') ?? root.querySelector('[aria-pressed="true"]'))?.focus({preventScroll: true});
+    scrollContainers(previous.place).forEach((node, index) => { node.scrollTop = previous.scroll[index]; });
+  }
+
+  function renderEvidence() {
+    const node = get('ledger-result');
+    node.hidden = view !== 'technical' || !detail;
+    if (node.hidden) return;
+    const run = detail;
+    const files = run.assignment?.test_files ?? [];
+    const sections = [
+      ['changes', '변경 파일과 diff', [run.changes, run.diff], () => renderDiff(doc, {changes: run.changes ?? '', diff: run.diff ?? '', key: run.id + '-diff'})],
+      ['tests', '테스트 결과', [files, run.test_output, run.state, run.outcome], () => {
+        const body = make('div');
+        if (files.length) meetingList(body, '지정한 테스트 파일', files);
+        body.append(make('p', resultFacts(run)[1]));
+        if (run.test_output) body.append(renderSource(doc, run.test_output, run.id + '-tests'));
+        return body;
+      }],
+      ...[['developer', '개발 결과', run.developer_output], ['review', '검토 결과', run.review_output], ['diagnostic', '진단', run.diagnostic]]
+        .filter(([, , value]) => value)
+        .map(([key, label, value]) => [key, label, value, () => renderMarkdown(doc, value, {source: true, key: run.id + '-' + key})]),
+    ];
+    const context = [hostId, workspaceId, run.id].join(':');
+    if (node.dataset.run !== context) {
+      node.replaceChildren();
+      node.dataset.run = context;
+    }
+    for (const item of [...node.children]) if (!sections.some(([key]) => item.id === 'evidence-' + key)) item.remove();
+    for (const [key, label, data, body] of sections) {
+      let item = get('evidence-' + key);
+      if (!item) {
+        item = make('details', '', 'evidence');
+        item.id = 'evidence-' + key;
+        item.append(make('summary', label), make('div'));
+        node.append(item);
+        snapshots.delete(item.id);
+      }
+      update(item.id, data, () => replaceContent(item.lastElementChild, [body()]));
+    }
   }
 
   function meetingList(parent, heading, rows, ordered = false) {
@@ -355,16 +573,16 @@ export function mountWorkspaceOffice(win = window) {
     parent.append(make('h5', heading), list);
   }
 
-  function planRecord(plan) {
+  const planRecords = new Map();
+  let planRun;
+  function planRecord(plan, revision, slot) {
+    const signature = JSON.stringify(plan);
+    if (planRecords.get(slot)?.signature === signature) return planRecords.get(slot).body;
     const body = make('div', '', 'meeting-plan');
     if (!plan) return body;
     body.append(make('h5', '목표 결과'), make('p', plan.outcome));
     meetingList(body, '작업 범위', plan.scope);
-    meetingList(body, '작업 순서와 담당', plan.tasks.map(task => [
-      task.id, meetingRoles[task.owner] ?? task.owner, task.description,
-      task.depends_on.length ? '선행 작업 ' + task.depends_on.join(', ') : '',
-      task.folders?.length ? '작업 폴더 ' + task.folders.join(', ') : '',
-    ].filter(Boolean).join(' · ')), true);
+    body.append(planFlow(doc, plan, revision));
     meetingList(body, '완료 기준과 검증 방법', plan.criteria.map(row =>
       [row.criterion, row.verification, row.test_files?.join(', ')].filter(Boolean).join(' · ')));
     meetingList(body, '계획 근거', plan.rationale);
@@ -372,6 +590,7 @@ export function mountWorkspaceOffice(win = window) {
       body.append(make('h5', '참고한 저장소 근거'), make('p', '기준 커밋 ' + plan.evidence.revision));
       meetingList(body, '파일', plan.evidence.paths);
     }
+    planRecords.set(slot, {signature, body});
     return body;
   }
 
@@ -384,8 +603,17 @@ export function mountWorkspaceOffice(win = window) {
 
   function renderMeeting(run) {
     const meeting = run?.meeting;
-    get('meeting').hidden = !meeting;
-    get('chat-meeting').hidden = !meeting;
+    const waiting = meeting?.status === 'awaiting_review' && !!meeting.plan && stoppable(run.state);
+    const showRecord = view === 'collaboration';
+    get('meeting').hidden = !meeting || (!showRecord && !waiting);
+    get('meeting-record').hidden = !showRecord;
+    get('chat-meeting').hidden = !meeting || view !== 'technical';
+    get('meeting-decision').hidden = !waiting;
+    const key = hostId + ':' + runId;
+    if (planRun !== key) {
+      planRecords.clear();
+      planRun = key;
+    }
     if (!meeting) return;
     const phase = meetingStates[meeting.status] ?? '상태 미확인';
     say('meeting-phase', [phase, meeting.revision > 0 && '계획 ' + meeting.revision + '판'].filter(Boolean).join(' · '));
@@ -397,17 +625,19 @@ export function mountWorkspaceOffice(win = window) {
         say('meeting-note', '계획 결정을 기록했습니다.');
       }
     }
-    update('meeting-record', [hostId, run.id, meeting], node => {
+    if (showRecord) update('meeting-record', [hostId, run.id, meeting], node => {
+      const focus = node.contains(doc.activeElement) ? doc.activeElement : null;
+      const focusedRevision = focus?.closest('details[data-revision]')?.dataset.revision;
       const body = doc.createDocumentFragment();
       if (meeting.error) body.append(make('p', meeting.error));
-      for (const entry of meeting.contributions) {
+      for (const [index, entry] of meeting.contributions.entries()) {
         const name = run.assignment?.roles?.[entry.role]?.name ?? meetingRoles[entry.role] ?? entry.role;
         const label = [name, engines[entry.engine] ?? entry.engine, entry.revision && '계획 ' + entry.revision + '판', stamp(entry.created_at)].filter(Boolean).join(' · ');
         const row = make('article', '', 'contribution');
-        row.append(make('small', label), make('p', entry.text));
+        row.append(make('small', label), renderMarkdown(doc, entry.text, {key: run.id + '-contribution-' + index}));
         body.append(row);
       }
-      if (meeting.plan) body.append(planRecord(meeting.plan));
+      if (meeting.plan) body.append(planRecord(meeting.plan, meeting.revision, 'current-' + meeting.revision));
       meetingList(body, '병렬 작업 실행 기록', meeting.work?.map(entry =>
         ['계획 ' + entry.revision + '판', entry.task_id, engines[entry.engine] ?? entry.engine,
           stamp(entry.created_at), entry.result].filter(Boolean).join(' · ')), true);
@@ -427,7 +657,7 @@ export function mountWorkspaceOffice(win = window) {
         if (version.approved_by) item.append(make('p', '확정 · ' + (meetingRoles[version.approved_by] ?? version.approved_by)));
         if (version.reason) item.append(make('p', version.reason));
         if (version.direction_id) item.append(make('small', '추가 지시 ' + version.direction_id));
-        item.append(planRecord(version.plan));
+        item.append(planRecord(version.plan, version.revision, 'history-' + version.revision));
         version.plan.questions.forEach((question, index) => {
           const answer = version.answers?.['q' + (index + 1)];
           item.append(make('p', question.question + ' · ' + (answer || question.options.join(' / '))));
@@ -435,13 +665,16 @@ export function mountWorkspaceOffice(win = window) {
         verificationRecord(item, version.verification);
         body.append(item);
       }
-      const expanded = new Set([...node.querySelectorAll('details[open]')].map(item => item.dataset.revision));
-      node.replaceChildren(body);
-      for (const item of node.querySelectorAll('details')) item.open = expanded.has(item.dataset.revision);
+      const expanded = new Set([...node.querySelectorAll('details[data-revision][open]')].map(item => item.dataset.revision));
+      replaceContent(node, [body]);
+      for (const item of node.querySelectorAll('details[data-revision]')) item.open = expanded.has(item.dataset.revision);
+      if (focus?.isConnected) focus.focus({preventScroll: true});
+      else if (focusedRevision && doc.activeElement === doc.body) node.querySelector('details[data-revision="' + focusedRevision + '"] > summary')?.focus({preventScroll: true});
     });
-    const waiting = meeting.status === 'awaiting_review' && !!meeting.plan && stoppable(run.state);
     get('meeting-decision').hidden = !waiting;
     if (!waiting) return;
+    get('decision-summary').hidden = showRecord;
+    say('decision-summary', [meeting.plan.outcome, meeting.plan.scope?.join(', ')].filter(Boolean).join(' · '));
     update('meeting-inputs', [hostId, workspaceId, run.id, meeting.revision], node => {
       node.replaceChildren(...decisionInputs(meeting));
       say('meeting-note', '');
@@ -598,8 +831,7 @@ export function mountWorkspaceOffice(win = window) {
   });
 
   get('chat-meeting').addEventListener('click', () => {
-    get('conversation').close();
-    get('meeting-heading').focus();
+    openEvidence('chat', 'meeting');
   });
 
   function renderConnection() {
@@ -615,6 +847,7 @@ export function mountWorkspaceOffice(win = window) {
     renderNavigation();
     renderRoom();
     chatControls();
+    requestControls();
   }
 
   async function fetchRun(token, expected) {
@@ -707,7 +940,7 @@ export function mountWorkspaceOffice(win = window) {
       if (!current()) return;
       await Promise.all([
         detailRequest,
-        get('conversation').open ? loadChat() : null,
+        loadChat(),
         get('requests').open ? loadRequests() : null,
       ]);
     } catch {
@@ -766,10 +999,16 @@ export function mountWorkspaceOffice(win = window) {
 
   function showChat(role) {
     if (!room) return;
+    if (jump) {
+      view = jump.view;
+      jump = null;
+      renderRoom();
+    }
     if (role !== 'coordinator') {
       const run = visibleRun(role);
       if (run?.id !== runId && run?.id) {
         closeDialogs();
+        resetThread();
         ++epoch;
         runId = run.id;
         detail = null;
@@ -784,9 +1023,6 @@ export function mountWorkspaceOffice(win = window) {
     const current = selected();
     chatAttempt = role === 'coordinator' ? null : current?.attempts;
     chatState = null;
-    chatRows = [];
-    directionRows = [];
-    chatDetailsOnline = false;
     const key = sessionKey(role);
     const saved = readRecovery(key)?.body;
     const editor = editors.get(key);
@@ -818,17 +1054,18 @@ export function mountWorkspaceOffice(win = window) {
     get('message').value = saved?.message ?? editor ?? '';
     say('chat-note', saved ? '이전 접수 결과를 확인하지 못했습니다. 같은 요청을 다시 보낼 수 있습니다.' : '');
     say('chat-request-note', '');
+    get('chat-evidence').append(get('evidence-panel'));
     renderChatLog();
     chatControls();
     openDialog(get('conversation'), get('message').disabled ? get('chat-log') : get('message'));
     loadChat(token);
   }
 
-  function message(owner, name, value, meta) {
+  function message(owner, name, value, meta, key = name + '-' + (meta ?? '')) {
     const node = make('article', '', 'message');
     node.dataset.owner = owner;
     node.append(make('small', name));
-    if (value) node.append(make('p', value));
+    if (value) node.append(renderMarkdown(doc, value, {key: runId + '-' + key, source: view === 'technical'}));
     if (meta) node.append(make('small', meta));
     return node;
   }
@@ -851,67 +1088,110 @@ export function mountWorkspaceOffice(win = window) {
   }
 
   function renderChatLog() {
-    const run = selected();
-    const row = room?.runs.find(item => item.id === runId);
-    const role = chatRole;
-    const assignment = run?.assignment ?? row?.assignment;
-    const profile = role !== 'coordinator' && (assignment?.roles?.[role] ?? room?.settings[role]);
-    const name = profile?.name ?? roleLabels[role];
-    const line = row?.lines?.[role];
-    const contributions = (run?.meeting?.contributions ?? []).filter(entry => role === 'coordinator' || entry.role === role);
-    const output = role === 'developer' ? detail?.developer_output : detail?.review_output;
-    const relevant = chatRows.filter(item => item.role === role || role === 'coordinator');
-    const directions = directionRows.filter(item => item.role === role || role === 'coordinator');
-    update('chat-log', [runId, role, run?.task, assignment, name, line, output, relevant, directions, contributions], node => {
-      const messages = [];
-      if (run?.task) {
-        messages.push(message('user', '나', run.task, stamp(run.created_at)));
-        const roles = assignment?.roles;
-        if (role === 'coordinator' && roles) {
-          const applied = ['담당 · ' + roles.developer.name + ' (' + engineName(roles.developer.engine) + ')'];
-          if (run.allow_edits || assignment.meeting) applied.push('검토 · ' + roles.reviewer.name + ' (' + engineName(roles.reviewer.engine) + ')');
-          applied.push(assignment.delegation ? '기술 질문 위임' : '사용자에게 기술 질문');
-          messages.push(message('agent', '조정자', assignment.note, applied.join(' / ')));
+    renderViewTools('chat', selected());
+    renderThread('chat-log', chatRole);
+  }
+
+  function fullAnswer(id, run, role, text) {
+    const key = [hostId, workspaceId, run.id, role].join(':');
+    let entry = answerDetails.get(id);
+    if (entry?.key !== key) {
+      const node = make('details', '', 'content-fold');
+      node.dataset.disclosureKey = key + '-answer';
+      node.append(make('summary', '답변 더 보기'), make('div'));
+      entry = {node, key, text: '', rendered: null};
+      entry.populate = () => {
+        if (node.open && entry.rendered !== entry.text) {
+          replaceContent(node.lastElementChild, [renderMarkdown(doc, entry.text, {key, source: true})]);
+          entry.rendered = entry.text;
         }
+      };
+      node.addEventListener('toggle', entry.populate);
+      answerDetails.set(id, entry);
+    }
+    entry.text = text;
+    entry.populate();
+    return entry.node;
+  }
+
+  function renderThread(id, role) {
+    const run = selected();
+    const simple = view === 'simple';
+    const assignment = run?.assignment;
+    const rows = threadRun === runId ? chatRows : [];
+    const directions = threadRun === runId ? directionRows : [];
+    const relevant = rows.filter(item => item.status === 'pending' || !role || role === 'coordinator' || item.role === role);
+    update(id, [hostId, workspaceId, run, role, view, relevant, directions], node => {
+      const previousFocus = node.contains(doc.activeElement) ? doc.activeElement : null;
+      const messages = [], events = [];
+      if (!run) {
+        replaceContent(node, [message('agent', '조정자', '어떤 작업을 맡길까요?')]);
+        return;
       }
-      if (role === 'coordinator') {
-        if (!run) messages.push(message('agent', '조정자', '어떤 작업을 맡길까요?'));
-      } else if (line || output) {
-        messages.push(message('agent', name, output || line));
-      }
-      const events = [];
-      for (const entry of contributions) {
-        const author = assignment?.roles?.[entry.role]?.name ?? meetingRoles[entry.role] ?? entry.role;
-        events.push([entry.created_at, message('agent', '기획 회의 · ' + author, entry.text, stamp(entry.created_at))]);
+      messages.push(message('user', '나', run.task, stamp(run.created_at)));
+      if (assignment?.note && (!simple || role === 'coordinator' && activeStates.has(run.state))) {
+        messages.push(message('agent', '조정자', assignment.note));
       }
       for (const item of relevant) {
-        const requestLabel = requestLabels[item.kind];
-        if (!requestLabel) continue;
+        const label = requestLabels[item.kind];
         if (item.status === 'pending') {
-          events.push([item.created_at, requestItem(item, epoch, 'chat')]);
+          events.push([item.created_at, requestItem(item, epoch, id === 'chat-log' ? 'chat' : 'thread')]);
           continue;
         }
-        events.push([item.created_at, message('agent', requestLabel + ' · ' + (roleLabels[item.role] ?? '에이전트'), item.prompt, stamp(item.created_at))]);
+        if (simple && item.source === 'delegate') continue;
+        events.push([item.created_at, message('agent', label ?? '요청', item.prompt, stamp(item.created_at), item.id)]);
         if (item.decision) {
-          const owner = item.source === 'delegate' ? '조정자 대리 결정' : '나';
-          const receipt = message(item.source === 'delegate' ? 'agent' : 'user', owner, item.answer, decisionStatus(item));
+          const delegated = item.source === 'delegate';
+          const receipt = message(delegated ? 'agent' : 'user', delegated ? '조정자 대리 결정' : '나', item.answer, decisionStatus(item), item.id + '-answer');
           const evidence = decisionEvidence(item);
           if (evidence) receipt.append(evidence);
           events.push([item.decided_at, receipt]);
         } else if (item.status === 'expired') {
-          events.push([item.expired_at, message('agent', requestLabel, '', decisionStatus(item))]);
+          events.push([item.expired_at, message('agent', label, '', decisionStatus(item))]);
         }
       }
       for (const item of directions) {
         events.push([item.created_at, message('user', '나 → ' + (roleLabels[item.role] ?? '에이전트'), item.message,
-          [deliveryLabels[item.delivery] ?? '전달 상태 확인 필요', item.attempt && item.attempt + '번째 시도', stamp(item.created_at)].filter(Boolean).join(' · '))]);
+          [deliveryLabels[item.delivery] ?? '전달 상태 확인 필요', item.attempt && item.attempt + '번째 시도', stamp(item.created_at)].filter(Boolean).join(' · '), item.id)]);
       }
-      events.sort((a, b) => String(a[0] ?? '').localeCompare(String(b[0] ?? '')));
+      events.sort((a, b) => (Date.parse(a[0]) || 0) - (Date.parse(b[0]) || 0));
       messages.push(...events.map(([, event]) => event));
-      if (!messages.length) messages.push(make('p', '이 에이전트의 대화 기록이 없습니다.', 'field-help'));
-      const pinned = node.scrollHeight - node.scrollTop - node.clientHeight < 25;
-      const keptFocus = replaceRequests(node, messages);
-      if (pinned && !keptFocus) node.scrollTop = node.scrollHeight;
+
+      const failed = ['FAILED', 'RECOVERY_REQUIRED'].includes(run.state);
+      const reviewStage = run.state === 'REVIEWING' || ['CHANGES_REQUESTED', 'REVIEW_FAILED', 'REVIEW_UNDECIDED'].includes(run.outcome);
+      const ownerRole = run.kind === 'parallel' || failed && (run.diagnostic || run.meeting?.error || run.outcome === 'TEST_FAILED') ? 'coordinator' :
+        reviewStage || role === 'reviewer' && !activeStates.has(run.state) ? 'reviewer' : 'developer';
+      const name = assignment?.roles?.[ownerRole]?.name ?? meetingRoles[ownerRole];
+      const phase = run.meeting?.status;
+      const state = ['planning', 'awaiting_review'].includes(phase) ? meetingStates[phase] : runLabel(run);
+      const status = message('agent', name + ' · ' + state);
+      const testFailure = run.outcome === 'TEST_FAILED' && run.test_output?.split(/\r?\n/).find(line => /^FAILED |^ERROR |^E\s{3}\S/.test(line));
+      const explanation = failed ? run.diagnostic || run.meeting?.error || testFailure || (run.outcome === 'TEST_FAILED' ? run.test_output :
+        ownerRole === 'reviewer' ? run.review_output : run.developer_output) :
+        activeStates.has(run.state) ? run.lines?.[ownerRole] : ownerRole === 'reviewer' ? run.review_output : run.developer_output;
+      const prose = ownerRole === 'reviewer' ? explanation?.replace(/^\s*VERDICT: (?:CHANGES_REQUESTED|APPROVED)\s*$/gm, '') : explanation;
+      const body = simple ? firstProseParagraph(prose ?? '') : explanation;
+      if (body) status.append(renderMarkdown(doc, body, {key: run.id + '-conclusion'}));
+      else if (failed && prose?.trim()) status.append(make('p', String(testFailure || prose).trim().split(/\r?\n/)[0].slice(0, 320)));
+      else if (run.kind === 'parallel' && failed) status.append(make('p', '하위 작업의 실행 상태를 확인해 주세요.'));
+      else if (failed || !explanation && !activeStates.has(run.state) && run.outcome !== 'APPROVED') {
+        status.append(make('p', outcomes[run.outcome] ?? (failed ? '실패 원인 미확인' : '결과 설명 미확인')));
+      }
+      const facts = make('ul', '', 'result-facts');
+      for (const fact of resultFacts(run)) facts.append(make('li', fact));
+      status.append(facts);
+      if (simple && explanation?.trim() && explanation.trim() !== body?.trim()) {
+        status.append(fullAnswer(id, run, ownerRole, explanation));
+      }
+      messages.push(status);
+      if (!simple && view === 'collaboration' && role && role !== 'coordinator' && role !== ownerRole && run.lines?.[role]) {
+        messages.push(message('agent', assignment?.roles?.[role]?.name ?? roleLabels[role], run.lines[role]));
+      }
+      const top = node.scrollTop;
+      const pinned = node.scrollHeight - top - node.clientHeight < 25;
+      const focus = replaceRequests(node, messages);
+      if (previousFocus?.isConnected && doc.activeElement !== previousFocus) previousFocus.focus({preventScroll: true});
+      node.scrollTop = id === 'chat-log' && pinned && !focus ? node.scrollHeight : top;
     });
   }
 
@@ -925,7 +1205,7 @@ export function mountWorkspaceOffice(win = window) {
     const staleAttempt = interactive && run.attempts !== chatAttempt;
     const open = assignment || interactive && !staleAttempt && chatAttempt > 0 && (run.state === followupStates[role] || recoverable);
     const locked = !!chatState || recoverable;
-    const enabled = canWrite() && (assignment || chatDetailsOnline);
+    const enabled = canWrite() && (assignment || directionsOnline && chatDetailsOnline);
     get('message').disabled = !open || !enabled;
     get('message').readOnly = locked;
     get('run-delegation').disabled = locked;
@@ -937,6 +1217,7 @@ export function mountWorkspaceOffice(win = window) {
     get('test-files').disabled = locked || !editAssignment;
     for (const box of get('assignment-folders').querySelectorAll('input')) box.disabled = locked;
     get('send').hidden = !open;
+    get('chat-form').hidden = !assignment && !open && !!run && !activeStates.has(run.state);
     get('send').disabled = !enabled || !!chatState;
     say('send', recoverable && !chatState ? '같은 요청 다시 보내기' : assignment ? '작업 맡기기' : '추가 지시 보내기');
     if (!open && !chatState) {
@@ -949,24 +1230,33 @@ export function mountWorkspaceOffice(win = window) {
     requestControls();
   }
 
-  async function loadChat(token = dialogEpoch) {
-    const id = runId;
+  async function loadChat() {
+    const id = runId, context = epoch;
     const read = ++chatRead;
-    if (!trustedRun(id) || selected()?.kind === 'parallel' || !get('conversation').open) {
-      chatDetailsOnline = false;
-      chatControls();
-      return;
-    }
+    if (!trustedRun(id) || selected()?.kind === 'parallel') return;
     const prefix = runPath(id);
-    try {
-      const [{requests}, {directions}] = await Promise.all([api(prefix + '/inbox'), api(prefix + '/directions')]);
-      if (closed || dialogEpoch !== token || id !== runId || read !== chatRead || !get('conversation').open) return;
-      chatRows = requests.filter(row => row.run_id === id);
-      directionRows = directions;
-      chatDetailsOnline = true;
+    const [inbox, history] = await Promise.allSettled([api(prefix + '/inbox'), api(prefix + '/directions')]);
+    if (!sameContext(context) || id !== runId || read !== chatRead) return;
+    if (threadRun !== id) {
+      chatRows = [];
+      directionRows = [];
+    }
+    threadRun = id;
+    chatDetailsOnline = inbox.status === 'fulfilled' && Array.isArray(inbox.value.requests);
+    directionsOnline = history.status === 'fulfilled' && Array.isArray(history.value.directions);
+    if (chatDetailsOnline) chatRows = inbox.value.requests.filter(row => row.run_id === id);
+    if (directionsOnline) directionRows = history.value.directions.filter(row => !row.run_id || row.run_id === id);
+    const missing = [];
+    if (!chatDetailsOnline) missing.push('질문과 권한 요청');
+    if (!directionsOnline) missing.push('추가 지시');
+    const warning = missing.length ? missing.join(', ') + '의 최신 기록을 확인할 수 없습니다.' : '';
+    say('thread-read-note', warning);
+    if (get('conversation').open && chatRole) {
+      if (warning) say('chat-request-note', warning);
+      else if (get('chat-request-note').textContent.endsWith('최신 기록을 확인할 수 없습니다.')) say('chat-request-note', '');
       const key = sessionKey(chatRole);
       const saved = readRecovery(key)?.body;
-      if (saved && chatRole !== 'coordinator' && directions.some(item =>
+      if (directionsOnline && saved && chatRole !== 'coordinator' && directionRows.some(item =>
         item.id === saved.id && item.attempt === saved.attempt && item.role === saved.role)) {
         saveRecovery(key, null);
         editors.delete(key);
@@ -974,12 +1264,10 @@ export function mountWorkspaceOffice(win = window) {
         say('chat-note', '추가 지시의 접수를 확인했습니다.');
       }
       renderChatLog();
-    } catch {
-      if (closed || dialogEpoch !== token || id !== runId || read !== chatRead || !get('conversation').open) return;
-      chatDetailsOnline = false;
-      say('chat-note', '이 작업의 최신 대화 내역을 확인할 수 없습니다.');
     }
+    renderRoom();
     chatControls();
+    requestControls();
   }
 
   function chatBody(role) {
@@ -1039,11 +1327,10 @@ export function mountWorkspaceOffice(win = window) {
       get('message').value = '';
       if (assignment) {
         // Keep the coordinator conversation open once the just-assigned execution is selected.
+        resetThread();
         runId = entry.id;
         detail = entry;
         say('stop-note', '');
-        chatRows = [];
-        directionRows = [];
         win.history.pushState(null, '', address(hostId, workspaceId, runId));
         say('chat-note', '작업을 배정했습니다.');
         renderChatLog();
@@ -1073,12 +1360,17 @@ export function mountWorkspaceOffice(win = window) {
     if (get('conversation').open) return;
     ++dialogEpoch;
     chatRole = null;
-    chatDetailsOnline = false;
+    get('room-evidence').append(get('evidence-panel'));
+    if (jump?.place === 'chat') {
+      view = jump.view;
+      jump = null;
+    }
+    renderRoom();
   });
   for (const role of ['coordinator', ...Object.keys(roleLabels)]) seat(role).addEventListener('click', () => showChat(role));
 
   function requestControls() {
-    for (const [id, available] of [['chat-log', chatDetailsOnline], ['request-log', inboxDetailsOnline]]) {
+    for (const [id, available] of [['office-thread', chatDetailsOnline], ['chat-log', chatDetailsOnline], ['request-log', inboxDetailsOnline]]) {
       for (const row of get(id).querySelectorAll('.request-item')) {
         for (const input of row.querySelectorAll('button, textarea')) input.disabled = !canWrite() || !available || deciding.has(row.dataset.request);
       }
@@ -1091,7 +1383,7 @@ export function mountWorkspaceOffice(win = window) {
     const control = previous?.dataset.control;
     const selection = [previous?.selectionStart, previous?.selectionEnd];
     const expanded = new Set([...root.querySelectorAll('[data-evidence][open]')].map(item => item.dataset.evidence));
-    root.replaceChildren(...rows);
+    replaceContent(root, rows);
     for (const item of root.querySelectorAll('[data-evidence]')) item.open = expanded.has(item.dataset.evidence);
     if (!requestKey) return false;
     const row = rows.find(item => item.dataset.request === requestKey);
@@ -1105,15 +1397,51 @@ export function mountWorkspaceOffice(win = window) {
     return false;
   }
 
+  function replaceContent(root, children) {
+    const folds = new Map([...root.querySelectorAll('[data-disclosure-key]')].map(node => [node.dataset.disclosureKey, node.open]));
+    const wraps = new Set([...root.querySelectorAll('[data-wrap-key][aria-pressed="true"]')].map(node => node.dataset.wrapKey));
+    const previous = doc.activeElement;
+    const focusKey = root.contains(previous) && previous.closest('[data-disclosure-key]')?.dataset.disclosureKey;
+    const control = focusKey && previous.tagName === 'BUTTON' ? previous.textContent : null;
+    const sourceKey = root.contains(previous) && previous.closest('.content-source')?.querySelector('[data-wrap-key]')?.dataset.wrapKey;
+    const scroll = new Map([...root.querySelectorAll('.content-source')].map(box => {
+      const pre = box.querySelector('pre');
+      return [box.querySelector('[data-wrap-key]').dataset.wrapKey, [pre.scrollLeft, pre.scrollTop]];
+    }));
+    root.replaceChildren(...children);
+    for (const node of root.querySelectorAll('[data-disclosure-key]')) {
+      if (folds.has(node.dataset.disclosureKey)) node.open = folds.get(node.dataset.disclosureKey);
+    }
+    for (const node of root.querySelectorAll('[data-wrap-key]')) {
+      if (wraps.has(node.dataset.wrapKey) && node.getAttribute('aria-pressed') === 'false') node.click();
+      const box = node.closest('.content-source');
+      const position = scroll.get(node.dataset.wrapKey);
+      if (position) {
+        const pre = box.querySelector('pre');
+        [pre.scrollLeft, pre.scrollTop] = position;
+      }
+      if (sourceKey === node.dataset.wrapKey && previous.tagName === 'BUTTON') {
+        [...box.querySelectorAll('button')].find(button => button.textContent === previous.textContent)?.focus({preventScroll: true});
+      }
+    }
+    if (focusKey) {
+      const fold = [...root.querySelectorAll('[data-disclosure-key]')].find(node => node.dataset.disclosureKey === focusKey);
+      const next = control ? [...(fold?.querySelectorAll('button') ?? [])].find(node => node.textContent === control) : fold?.querySelector('summary');
+      next?.focus({preventScroll: true});
+    }
+  }
+
   function requestItem(row, context, view = 'inbox') {
     const key = row.run_id + ':' + row.id;
+    const draftKey = ['request', hostId, workspaceId, key].join(':');
     const title = requestLabels[row.kind] ?? '요청 종류 확인 필요';
     const node = make('article', '', 'request-item');
     node.dataset.request = key;
     node.tabIndex = -1;
     const run = roomRuns().find(item => item.id === row.run_id);
     const meta = [roleLabels[row.role], run?.task, stamp(row.created_at)].filter(Boolean);
-    node.append(make('h3', title), make('small', meta.join(' · ')), make('p', row.prompt));
+    node.append(make('h3', title), make('small', meta.join(' · ')), make(row.kind === 'permission' ? 'pre' : 'p', row.prompt));
+    if (row.kind === 'permission') node.append(make('small', '승인 범위 · 이 작업의 이번 요청 1회'));
     if (row.delegation_reason) node.append(make('small', row.delegation_reason));
     else if (row.delegation_in_progress) node.append(make('small', '전문가가 근거를 확인하고 있습니다.'));
     if (row.status !== 'pending') {
@@ -1130,8 +1458,14 @@ export function mountWorkspaceOffice(win = window) {
       textarea.id = view + '-answer-' + row.run_id + '-' + row.id;
       textarea.rows = 2;
       textarea.dataset.control = 'draft';
-      textarea.value = editors.get('request:' + key) ?? '';
-      textarea.addEventListener('input', () => editors.set('request:' + key, textarea.value));
+      textarea.dataset.draftKey = draftKey;
+      textarea.value = editors.get(draftKey) ?? '';
+      textarea.addEventListener('input', () => {
+        editors.set(draftKey, textarea.value);
+        for (const other of doc.querySelectorAll('.request-item textarea[data-control="draft"]')) {
+          if (other !== textarea && other.dataset.draftKey === draftKey) other.value = textarea.value;
+        }
+      });
       const label = make('label', '답변');
       label.htmlFor = textarea.id;
       const send = make('button', '답변 보내기', 'primary');
@@ -1139,12 +1473,12 @@ export function mountWorkspaceOffice(win = window) {
       send.dataset.control = 'answer';
       send.addEventListener('click', () => submitDecision(row, 'answer', textarea.value, context, view));
       node.append(label, textarea, send);
-    } else if (view === 'chat') {
+    } else if (view !== 'inbox') {
       const button = make('button', '요청함에서 확인', 'secondary');
       button.type = 'button';
       button.dataset.control = 'inbox';
       button.addEventListener('click', () => {
-        get('conversation').close();
+        if (get('conversation').open) get('conversation').close();
         showRequests(key);
       });
       node.append(button);
@@ -1197,7 +1531,7 @@ export function mountWorkspaceOffice(win = window) {
             if (!sameContext(context) || !trustedRun(row.id)) return;
             get('requests').close();
             if (runId !== row.id) await navigation(hostId, workspaceId, row.id);
-            if (!closed && runId === row.id && !get('meeting').hidden) get('meeting-heading').focus();
+            if (!closed && runId === row.id && detail?.meeting) openEvidence('room', 'meeting');
           });
           item.append(make('h3', '계획 확인'), make('p', row.task), open);
           return item;
@@ -1220,12 +1554,15 @@ export function mountWorkspaceOffice(win = window) {
 
   async function submitDecision(row, action, answer, context, view) {
     const key = row.run_id + ':' + row.id;
+    const draftKey = ['request', hostId, workspaceId, key].join(':');
     const chat = view === 'chat';
-    const viewEpoch = () => chat ? dialogEpoch : inboxEpoch;
-    const note = chat ? 'chat-request-note' : 'request-note';
+    const thread = view === 'thread';
+    const viewEpoch = () => thread ? epoch : chat ? dialogEpoch : inboxEpoch;
+    const note = thread ? 'thread-note' : chat ? 'chat-request-note' : 'request-note';
     const token = viewEpoch();
-    const active = () => sameContext(context) && token === viewEpoch() && get(chat ? 'conversation' : 'requests').open;
-    if (!active() || !canWrite() || !trustedRun(row.run_id) || !(chat ? chatDetailsOnline : inboxDetailsOnline) || deciding.has(key)) return;
+    const active = () => sameContext(context) && token === viewEpoch() &&
+      (thread ? runId === row.run_id : get(chat ? 'conversation' : 'requests').open);
+    if (!active() || !canWrite() || !trustedRun(row.run_id) || !(thread || chat ? chatDetailsOnline : inboxDetailsOnline) || deciding.has(key)) return;
     const body = {action};
     if (action === 'answer') {
       body.answer = answer.trim();
@@ -1249,7 +1586,7 @@ export function mountWorkspaceOffice(win = window) {
       }
       const {request: receipt} = await api(path + '/' + row.id + '/decision', body);
       if (receipt?.id !== row.id || receipt.run_id !== row.run_id || receipt.status === 'pending') throw new Error();
-      editors.delete('request:' + key);
+      editors.delete(draftKey);
       if (active()) say(note, '결정을 기록했습니다.');
     } catch (error) {
       if (active()) say(note, error.status === 400 ? error.message :

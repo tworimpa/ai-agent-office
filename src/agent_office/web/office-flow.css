@@ -1,0 +1,32 @@
+.plan-flow { min-width: 0; }
+.plan-flow ol { padding-inline-start: 1.7em; }
+.plan-flow li { overflow-wrap: anywhere; }
+.plan-flow li + li { margin-block-start: .5em; }
+.plan-flow small { display: block; }
+.plan-flow button {
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: .35rem;
+  color: inherit;
+  padding: .35em .7em;
+}
+.plan-flow-chart {
+  margin-block-start: .6rem;
+  overflow: auto;
+  max-width: 100%;
+  border: 1px solid #c3b297;
+  border-radius: .45rem;
+  background: #f8f1e4;
+  color: #322d23;
+}
+.plan-flow-chart p { padding: .65rem; }
+.plan-flow-chart svg {
+  display: block;
+  margin-inline: auto;
+  --_line: #675848;
+  --_arrow: #675848;
+  --_node-fill: #fffaf2;
+  --_node-stroke: #897153;
+  --_text: #30281e;
+}
+.plan-flow-chart text { font-family: var(--sans, system-ui), sans-serif; }

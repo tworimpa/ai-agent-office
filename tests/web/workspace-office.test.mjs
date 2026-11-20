@@ -34,12 +34,13 @@ async function until(predicate) {
   assert.ok(predicate(), '작업실 응답 대기 시간 초과');
 }
 
-function mount(t, route, {query = '', storage = {}} = {}) {
+function mount(t, route, {query = '', storage = {}, preferences = {}} = {}) {
   const dom = new JSDOM(html, {url: 'http://127.0.0.1:8766/' + query, pretendToBeVisual: true});
   const {window} = dom;
   const get = id => window.document.getElementById(id);
   const person = role => window.document.querySelector('.seat[data-person="' + role + '"]');
   for (const [key, value] of Object.entries(storage)) window.sessionStorage.setItem(key, value);
+  for (const [key, value] of Object.entries(preferences)) window.localStorage.setItem(key, value);
   if (!window.HTMLDialogElement.prototype.showModal) {
     window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
     window.HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new window.Event('close')); };
@@ -110,7 +111,8 @@ test('coordinator assignment uses room defaults and sends a linked follow-up wit
   mode = 'PLAN_ONLY';
   get('refresh').click();
   await until(() => get('chat-log').textContent.includes('전달됨') && get('ledger-label').textContent === '조회 완료');
-  assert.equal(get('ledger-result').textContent.includes('조회 결과'), true);
+  assert.match(get('chat-log').textContent, /조회 결과/);
+  assert.equal(get('ledger-result').hidden, true);
   assert.equal(calls.filter(call => call.path === base + '/assignments').length, 1);
 });
 
@@ -169,7 +171,8 @@ test('a lost assignment receipt preserves the exact request ID, choices and mess
   await until(() => second.get('chat-note').textContent === '작업을 배정했습니다.');
   assert.equal(second.get('message').readOnly, false);
   assert.equal(second.window.sessionStorage.length, 0);
-  await until(() => second.get('ledger-result').textContent.includes(posted.test_files[0]));
+  second.get('chat-view-controls').querySelector('[data-jump="tests"]').click();
+  await until(() => second.get('evidence-tests')?.textContent.includes(posted.test_files[0]));
   assert.equal(attempts, 3);
 });
 
@@ -184,7 +187,7 @@ test('meeting review retains a draft through polling and sends the product choic
   };
   const version = {revision: 1, plan, source: 'coordinator', reason: '첫 회의', verification: [], answers: {}};
   let meeting = {run_id: runId, status: 'planning', revision: 0, contributions: [
-    {role: 'developer', engine: 'codex', text: '<img src=x> 경로 확인', created_at: run.created_at}],
+    {role: 'developer', engine: 'codex', text: '<img src=x> 경로 확인\n\n~~~py\nprint(1)\n~~~', created_at: run.created_at}],
     revisions: [], choices: [], answers: {}, plan: null, verification: []};
   const prefix = '/api/hosts/' + remote;
   let posted, detailReads = 0;
@@ -204,7 +207,9 @@ test('meeting review retains a draft through polling and sends the product choic
       return {meeting};
     }
   }, {query: '?host=' + remote + '&workspace=' + workspace.id + '&run=' + runId});
-  await until(() => !get('meeting').hidden);
+  await until(() => get('room-view-controls').querySelector('[data-jump="meeting"]'));
+  assert.equal(get('meeting').hidden, true);
+  get('room-view-controls').querySelector('[data-jump="meeting"]').click();
   assert.match(get('meeting-phase').textContent, /논의 중/);
   assert.equal(get('meeting-decision').hidden, true);
   assert.match(get('meeting-record').textContent, /<img src=x>/);
@@ -212,13 +217,23 @@ test('meeting review retains a draft through polling and sends the product choic
   assert.equal(person('coordinator').querySelector('.seat-line').textContent, lines.coordinator);
   assert.equal(person('developer').querySelector('.seat-line').textContent, meeting.contributions[0].text);
   person('developer').click();
-  assert.match(get('chat-log').textContent, /기획 회의 · 서진/);
-  get('chat-meeting').click();
+  assert.ok(get('conversation').contains(get('meeting-record')));
+  get('chat-view-controls').querySelector('[data-view="simple"]').click();
+  get('chat-view-controls').querySelector('[data-jump="meeting"]').click();
   assert.equal(window.document.activeElement, get('meeting-heading'));
-  meeting = {...meeting, status: 'awaiting_review', revision: 1, revisions: [version], plan,
+  const contribution = () => get('meeting-record').querySelector('.contribution details');
+  const wrap = () => contribution().querySelector('[data-wrap-key]');
+  contribution().open = true;
+  wrap().click();
+  wrap().focus();
+  meeting = {...meeting, contributions:[...meeting.contributions, {role:'reviewer', engine:'codex', text:'검토 의견'}],
+    status: 'awaiting_review', revision: 1, revisions: [version], plan,
     choices: [{id: 'q1', ...plan.questions[0]}], verification: [{criterion: '재현 검증', status: 'not_verified', evidence: ''}]};
   get('refresh').click();
   await until(() => !get('meeting-decision').hidden && !get('approve-plan').disabled);
+  assert.equal(contribution().open, true);
+  assert.equal(wrap().getAttribute('aria-pressed'), 'true');
+  assert.equal(window.document.activeElement, wrap());
   submit('meeting-decision');
   assert.equal(posted, undefined);
   const editor = get('meeting-outcome');
@@ -549,6 +564,7 @@ test('portrait chat exposes the evidence and delivery state of completed decisio
   });
   await until(() => get('room-title').textContent === workspace.name);
   person('developer').click();
+  get('chat-view-controls').querySelector('[data-view="collaboration"]').click();
   await until(() => get('chat-log').textContent.includes('대리 결정 근거'));
   const log = get('chat-log');
   assert.match(log.textContent, /조정자 대리 결정/);
@@ -703,4 +719,137 @@ test('an in-flight history page never populates a different host’s workspace',
   assert.equal(get('history-older').hidden, true);
   assert.equal(get('run-list').querySelectorAll('a').length, 1);
   assert.ok(!get('run-list').textContent.includes(foreignPage.task));
+});
+
+test('simple conversation orders directions, attributes the conclusion, and opens evidence without losing the reading position', async t => {
+  let result = {...run, state: 'READY_FOR_HUMAN_REVIEW', outcome: 'APPROVED',
+    developer_output: '담당자가 설정을 수정했습니다.\n\n## 상세 근거\n\n~~~py\nprint(3)\n~~~\n\n코드 뒤의 설명',
+    test_output: '3 passed in 0.24s', review_output: 'VERDICT: APPROVED', changes: ' M src/main.py',
+    diff: 'diff --git a/src/main.py b/src/main.py\n--- a/src/main.py\n+++ b/src/main.py\n@@ -1 +1 @@\n-old\n+new\n'};
+  const directions = [
+    {id: '2', role: 'developer', message: '두 번째 지시', created_at: '2026-11-19T03:00:00Z', delivery: 'queued'},
+    {id: '1', role: 'developer', message: '첫 번째 지시', created_at: '2026-11-19T02:00:00Z', delivery: 'delivered'},
+  ];
+  const route = path => {
+    if (path === base) return room([result]);
+    if (path === runPath) return {run: result};
+    if (path === runPath + '/directions') return {directions};
+  };
+  const {get, window, calls} = mount(t, route);
+  const thread = get('office-thread'), picker = get('room-view-controls');
+  await until(() => thread.textContent.includes('두 번째 지시'));
+  assert.match(thread.textContent, /원인 확인.*첫 번째 지시.*두 번째 지시.*서진.*담당자가 설정을 수정했습니다\./s);
+  assert.match(thread.textContent, /변경 파일 1개.*테스트 3개 통과.*최종 사용자 확인 필요/);
+  assert.doesNotMatch(thread.textContent, /내부 출력|VERDICT|상세 근거/);
+  assert.equal(get('ledger-result').hidden, true);
+  const answer = [...thread.querySelectorAll('details')].find(item => item.firstElementChild.textContent === '답변 더 보기');
+  answer.open = true;
+  await until(() => answer.textContent.includes('코드 뒤의 설명'));
+  const code = answer.querySelector('details');
+  assert.equal(code.open, false);
+  code.open = true;
+  const source = () => picker.querySelector('[data-jump="changes"]');
+  source().focus();
+  thread.scrollTop = 31;
+  source().click();
+  const changes = get('evidence-changes');
+  const firstFile = () => changes.querySelector('.office-diff details');
+  assert.ok(changes.open && firstFile().open);
+  firstFile().querySelector('[data-wrap-key]').click();
+  firstFile().querySelector('summary').focus();
+  result = {...result, diff: result.diff.replace('+new', '+adjusted')};
+  get('refresh').click();
+  await until(() => changes.textContent.includes('+adjusted'));
+  assert.ok(firstFile().open);
+  assert.equal(firstFile().querySelector('[data-wrap-key]').getAttribute('aria-pressed'), 'true');
+  assert.equal(window.document.activeElement, firstFile().querySelector('summary'));
+  picker.querySelector('[data-back]').click();
+  assert.ok(thread.contains(answer) && answer.open && code.open);
+  assert.equal(window.document.activeElement, source());
+  assert.equal(thread.scrollTop, 31);
+  picker.querySelector('[data-view="collaboration"]').click();
+  const preferences = Object.fromEntries(Object.entries(window.localStorage));
+  const reload = mount(t, route, {preferences});
+  await until(() => reload.get('room-view-controls').querySelector('[data-view="collaboration"]')?.getAttribute('aria-pressed') === 'true');
+  assert.equal(calls.concat(reload.calls).some(call => call.body), false);
+});
+
+test('each view exposes pending requests and permission scope, retaining a draft submitted from the room', async t => {
+  const requests = ['permission', 'question', 'product_decision'].map((kind, i) => ({
+    run_id: run.id, id: String(i + 1).repeat(32), kind, role: 'reviewer', engine: 'codex', status: 'pending',
+    prompt: i === 0 ? '작업 폴더 C:/work 안 파일 수정' : '질문 ' + i}));
+  const {get, window, person, calls} = mount(t, (path, body) => {
+    if (path === base) return room();
+    if (path === runPath) return {run};
+    if (path === runPath + '/inbox') return {requests};
+    if (path === base + '/inbox') return {requests};
+    if (path === runPath + '/inbox/' + requests[1].id + '/decision') {
+      assert.deepEqual(body, {action:'answer', answer:'요청함에서 수정'});
+      requests[1] = {...requests[1], status:'decided', decision:'answer', answer:body.answer};
+      return {request:requests[1]};
+    }
+  });
+  const thread = get('office-thread'), picker = get('room-view-controls');
+  const draft = () => thread.querySelector('textarea');
+  await until(() => draft() && !draft().disabled);
+  draft().value = '현재 설정 유지';
+  draft().dispatchEvent(new window.Event('input', {bubbles:true}));
+  for (const view of ['technical','collaboration','simple']) {
+    picker.querySelector('[data-view="' + view + '"]').click();
+    assert.match(thread.textContent, /권한 승인 요청.*C:\/work.*이번 요청 1회.*기술 질문.*제품 동작 결정/s);
+    assert.equal(draft().value, '현재 설정 유지');
+    assert.equal(draft().disabled, false);
+    assert.ok(thread.querySelector('[data-control="inbox"]'));
+  }
+  person('developer').click();
+  const chatDraft = get('chat-log').querySelector('textarea');
+  assert.equal(chatDraft.value, '현재 설정 유지');
+  chatDraft.value = '대화에서 수정';
+  chatDraft.dispatchEvent(new window.Event('input', {bubbles:true}));
+  get('conversation').close();
+  assert.equal(draft().value, '대화에서 수정');
+  get('inbox').click();
+  await until(() => get('request-log').querySelector('textarea'));
+  const inboxDraft = get('request-log').querySelector('textarea');
+  assert.equal(inboxDraft.value, '대화에서 수정');
+  inboxDraft.value = '요청함에서 수정';
+  inboxDraft.dispatchEvent(new window.Event('input', {bubbles:true}));
+  get('requests').close();
+  assert.equal(draft().value, '요청함에서 수정');
+  thread.querySelector('[data-control="answer"]').click();
+  await until(() => thread.textContent.includes('결정 접수됨'));
+  assert.equal(calls.filter(call => call.body).length, 1);
+});
+
+test('evidence facts distinguish failed, unverified, read-only and manual outcomes', async t => {
+  let result = {...run, outcome: 'TEST_FAILED', state: 'FAILED', changes:'(Git preview unavailable)',
+    test_output: 'FAILED tests/test_demo.py::example - AssertionError\n1 failed, 2 passed in 0.12s'};
+  const {get} = mount(t, path => {
+    if (path === base) return room([result]);
+    if (path === runPath) return {run:result};
+  });
+  const thread = get('office-thread');
+  await until(() => thread.textContent.includes('테스트 1개 실패, 2개 통과'));
+  assert.match(thread.textContent, /AssertionError.*변경 파일 미확인.*검토 미실행/s);
+  result = {...result, state:'PLAN_ONLY', outcome:'PLAN_ONLY', allow_edits:false, test_output:'', changes:'',
+    meeting:{status:'approved', plan:{criteria:[{criterion:'화면 검토'}]}, revision:1, contributions:[],
+      verification:[{criterion:'화면 검토',status:'not_verified',evidence:''}]}};
+  get('refresh').click();
+  await until(() => thread.textContent.includes('수동 확인 필요 1건'));
+  assert.match(thread.textContent, /테스트 미실행.*검토 미실행/);
+  result = {...run, state:'RECOVERY_REQUIRED', outcome:'INTERRUPTED', test_output:'개발자 설명: 75 passed in 0.1s', changes:' M x\n...[truncated]'};
+  get('refresh').click();
+  await until(() => thread.textContent.includes('복구 필요'));
+  assert.match(thread.textContent, /변경 파일 미확인.*테스트 미확인.*검토 미확인/);
+  assert.doesNotMatch(thread.textContent, /75개/);
+  result = {...run, state:'FAILED', outcome:'CHANGES_REQUESTED', review_output:'VERDICT: CHANGES_REQUESTED\n\n다시 시작하면 데이터가 사라집니다.'};
+  get('refresh').click();
+  await until(() => thread.textContent.includes('데이터가 사라집니다.'));
+  assert.doesNotMatch(thread.textContent, /VERDICT/);
+  result = {...run, kind:'parallel', state:'FAILED', outcome:'DEVELOPER_FAILED', subtasks:[
+    {state:'READY_FOR_HUMAN_REVIEW', outcome:'APPROVED'}, {state:'FAILED', outcome:'DEVELOPER_FAILED'}]};
+  get('refresh').click();
+  await until(() => thread.textContent.includes('하위 작업별 확인'));
+  assert.match(thread.textContent, /하위 작업 검토 결과 확인 1건, 실패 1건/);
+  assert.doesNotMatch(thread.textContent, /테스트 (통과|미실행)|검토 미실행/);
 });

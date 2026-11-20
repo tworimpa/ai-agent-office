@@ -6,6 +6,8 @@
   <meta name="theme-color" content="#171c18">
   <title>AI Agent Office · 작업실</title>
   <link rel="stylesheet" href="/workspace-office.css">
+  <link rel="stylesheet" href="/office-content.css">
+  <link rel="stylesheet" href="/office-flow.css">
   <script type="module" src="/workspace-office.js"></script>
 </head>
 <body>
@@ -112,6 +114,12 @@
             </div>
           </div>
           <p id="ledger-note">조정자에게 요청을 보내 작업을 시작할 수 있습니다.</p>
+          <div id="room-view-controls"></div>
+          <div id="office-thread" class="office-thread" aria-label="작업 대화" tabindex="-1"></div>
+          <p id="thread-read-note" class="form-note" role="status"></p>
+          <p id="thread-note" class="form-note" role="status"></p>
+          <div id="room-evidence">
+          <div id="evidence-panel">
           <section id="meeting" class="meeting" aria-labelledby="meeting-heading" hidden>
             <div class="meeting-heading">
               <h3 id="meeting-heading" tabindex="-1">기획 회의</h3>
@@ -120,12 +128,15 @@
             <div id="meeting-record"></div>
             <form id="meeting-decision" method="post" aria-labelledby="decision-heading" hidden>
               <h4 id="decision-heading">계획 확인</h4>
+              <p id="decision-summary"></p>
               <div id="meeting-inputs"></div>
               <button id="approve-plan" type="submit" class="primary">이 계획으로 시작</button>
             </form>
             <p id="meeting-note" role="status"></p>
           </section>
           <div id="ledger-result" hidden></div>
+          </div>
+          </div>
           <p id="detail-status" role="status"></p>
           <p id="stop-note" role="status"></p>
         </section>
@@ -142,7 +153,9 @@
       </div>
       <form method="dialog"><button type="submit" class="close-button" aria-label="대화 닫기">×</button></form>
     </header>
+    <div id="chat-view-controls"></div>
     <div id="chat-log" class="chat-log" aria-label="대화 기록" tabindex="0"></div>
+    <div id="chat-evidence"></div>
     <button type="button" id="chat-meeting" class="secondary" hidden>기획 회의 열기</button>
     <p id="chat-request-note" class="form-note" role="status"></p>
     <form id="chat-form" class="chat-form">
