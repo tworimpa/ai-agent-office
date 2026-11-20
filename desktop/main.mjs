@@ -58,10 +58,10 @@ function choose(next, mode) {
   return sessionSummary()
 }
 
-function sessionSummary() {
+function sessionSummary(liveRemotes) {
   return {
     address: profile.address || 'http://127.0.0.1:8766',
-    remotes: profile.remotes,
+    remotes: liveRemotes ?? profile.remotes,
     selected,
     startupError,
   }
@@ -69,12 +69,12 @@ function sessionSummary() {
 
 async function startLocal(remotes) {
   const requested = validateRemotes(remotes)
-  const current = await studio.running()
-  if (current && JSON.stringify(profile.remotes) !== JSON.stringify(requested)) {
+  const runtime = await studio.start(requested)
+  const effective = runtime.remotes ?? profile.remotes
+  if (JSON.stringify(effective) !== JSON.stringify(requested)) {
     throw new Error('원격 작업실 설정을 적용하려면 실행 중인 로컬 작업실을 먼저 종료하세요.')
   }
-  const runtime = await studio.start(requested)
-  profile.remotes = requested
+  profile.remotes = effective
   return choose(runtime, 'local')
 }
 
@@ -107,7 +107,8 @@ async function showOffice() {
   await checkStudio(connection.origin, connection.journalId)
   if (selected !== connection) return
 
-  if (officeWindow && officeWindow.officeOrigin === connection.origin) {
+  if (officeWindow && connection.journalId && officeWindow.officeJournal === connection.journalId &&
+      officeWindow.officeOrigin === connection.origin) {
     officeWindow.show()
     officeWindow.focus()
     setupWindow?.close()
@@ -125,11 +126,12 @@ async function showOffice() {
   })
   officeWindow = window
   window.officeOrigin = connection.origin
-  const key = connection.journalId || connection.origin
+  window.officeJournal = connection.journalId
+  const key = connection.journalId
   const allowed = url => studioPage(url, connection.origin) !== null
   const remember = (_event, url) => {
     const page = studioPage(url, connection.origin)
-    if (page && profile.recent[key] !== page) {
+    if (key && page && profile.recent[key] !== page) {
       profile.recent[key] = page
       saveProfile()
     }
@@ -140,7 +142,7 @@ async function showOffice() {
     if (isMainFrame) remember(event, url)
   })
   window.on('closed', () => { if (officeWindow === window) officeWindow = null })
-  const page = studioPage(profile.recent[key] || '/', connection.origin) || '/'
+  const page = studioPage((key && profile.recent[key]) || '/', connection.origin) || '/'
   try {
     await window.loadURL(connection.origin + page)
   } catch {
@@ -181,7 +183,7 @@ async function stopLocal() {
 
 function registerActions() {
   const actions = {
-    state: sessionSummary,
+    state: async () => sessionSummary((await studio.running())?.remotes),
     connect: async address => {
       if (typeof address !== 'string' || address.length > 192) throw new Error('Studio 주소를 확인하세요.')
       const next = await checkStudio(address)
@@ -234,7 +236,10 @@ async function initialize() {
 
   const saved = profile.connection
   try {
-    if (saved?.mode === 'attached') choose(await checkStudio(saved.origin, saved.journalId), 'attached')
+    if (saved?.mode === 'attached') {
+      if (saved.journalId) choose(await checkStudio(saved.origin, saved.journalId), 'attached')
+      else startupError = '이 작업실 버전은 저널을 식별할 수 없습니다. 주소를 확인하고 다시 연결하세요.'
+    }
     if (saved?.mode === 'local') await startLocal(profile.remotes)
     if (selected) {
       await showOffice()

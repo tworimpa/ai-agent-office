@@ -9,6 +9,7 @@ import sqlite3
 from uuid import uuid4
 
 from .models import OfficeError
+from .ownership import RunGuard
 from .studio_server import StudioHandler, StudioServer
 from .studio_ssh import RemoteHost
 
@@ -27,27 +28,30 @@ def serve(directory: Path, remotes: tuple[RemoteHost, ...]):
     boot_id = uuid4().hex
     stop_path = directory / f"stop-{boot_id}"
     pending = directory / f".runtime-{boot_id}.tmp"
-    with StudioServer(directory / "tasks.sqlite3", 0, remotes=remotes) as server:
-        server.RequestHandlerClass = DesktopHandler
-        server.desktop_receipt = {
-            "boot_id": boot_id,
-            "journal_id": server.journal_id,
-            "port": server.server_address[1],
-        }
-        published = False
+    db_path = directory / "tasks.sqlite3"
+    with RunGuard.desktop(db_path):
         try:
-            with pending.open("x", encoding="utf-8") as stream:
-                json.dump(server.desktop_receipt, stream)
-            pending.replace(receipt_path)
-            published = True
-            server.timeout = 0.25
-            while not stop_path.is_file():
-                server.handle_request()
+            with StudioServer(db_path, 0, remotes=remotes) as server:
+                server.RequestHandlerClass = DesktopHandler
+                server.desktop_receipt = {
+                    "boot_id": boot_id,
+                    "journal_id": server.journal_id,
+                    "port": server.server_address[1],
+                    "remotes": [
+                        {"alias": host.alias, "port": host.port, "journalId": host.journal_id}
+                        for host in remotes
+                    ],
+                }
+                with pending.open("x", encoding="utf-8") as stream:
+                    json.dump(server.desktop_receipt, stream)
+                pending.replace(receipt_path)
+                server.timeout = 0.25
+                while not stop_path.is_file():
+                    server.handle_request()
         finally:
             pending.unlink(missing_ok=True)
-            if published:
-                receipt_path.unlink(missing_ok=True)
-                stop_path.unlink(missing_ok=True)
+        receipt_path.unlink(missing_ok=True)
+    stop_path.unlink(missing_ok=True)
 
 
 def main(argv=None):

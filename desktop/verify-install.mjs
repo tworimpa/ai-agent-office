@@ -34,14 +34,21 @@ function shellQuote(value) {
 await mkdir(fixtureDir)
 await mkdir(repo)
 await writeFile(join(repo, 'note.txt'), 'original\n')
-await writeFile(join(repo, 'test_local.py'), [
+await writeFile(join(repo, 'read_note.py'), [
   'from pathlib import Path',
+  'def text():',
+  '    return Path("note.txt").read_text(encoding="utf-8")',
+  '',
+].join('\n'))
+await mkdir(join(repo, 'tests'))
+await writeFile(join(repo, 'tests', 'test_local.py'), [
+  'from read_note import text',
   'def test_assignment_kept_note():',
-  '    assert Path("note.txt").read_text(encoding="utf-8") == "desktop verified\\n"',
+  '    assert text() == "desktop verified\\n"',
   '',
 ].join('\n'))
 git('init', '-q')
-git('add', 'note.txt', 'test_local.py')
+git('add', 'note.txt', 'read_note.py', 'tests/test_local.py')
 git('-c', 'user.name=Office Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'initial')
 await writeFile(join(fixtureDir, windows ? 'codex.cmd' : 'codex'),
   windows ? `@"${python}" "${fixture}" %*\r\n`
@@ -53,7 +60,8 @@ const attached = new LocalStudio(peerProfile, python)
 const standalone = new LocalStudio(join(profile, 'local-studio'), python)
 
 async function launch() {
-  app = await electron.launch({ executablePath: exe, args: [`--user-data-dir=${profile}`], env, timeout: 30000 })
+  app = await electron.launch({ executablePath: exe, args: [`--user-data-dir=${profile}`], env,
+    chromiumSandbox: true, timeout: 30000 })
   const window = await app.firstWindow({ timeout: 30000 })
   window.context().setDefaultTimeout(live ? 150000 : 20000)
   return window
@@ -139,7 +147,7 @@ try {
   await window.locator('.seat[data-person="coordinator"]').click()
   await window.locator('#allow-edits').check()
   await window.locator('#assignment-options summary').click()
-  await window.locator('#test-files').fill('test_local.py')
+  await window.locator('#test-files').fill('tests/test_local.py')
   await window.locator('#message').fill(live ? [
     '이 실행의 개발 담당은 note.txt 한 파일의 기존 한 줄을 바꿉니다. 개발자의 첫 응답은 아래 기술 질문 두 줄로 보내고 답을 기다리세요.',
     'AGENT_OFFICE_QUESTION',

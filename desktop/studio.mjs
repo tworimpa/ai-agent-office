@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { closeSync, openSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -114,16 +114,28 @@ export function validateRemotes(remotes) {
   })
 }
 
+async function receipt(directory) {
+  try {
+    return JSON.parse(await readFile(join(directory, 'runtime.json'), 'utf8'))
+  } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
+}
+
 async function liveRuntime(directory) {
-  const value = await readFile(join(directory, 'runtime.json'), 'utf8')
-    .then(JSON.parse)
-    .catch(() => null)
+  const value = await receipt(directory).catch(() => null)
   if (!value || !ID.test(value.boot_id) || !ID.test(value.journal_id) ||
       !Number.isInteger(value.port) || value.port < 1 || value.port > 65535) return null
   const origin = `http://127.0.0.1:${value.port}`
   const live = await api(origin, '/api/desktop-runtime').catch(() => null)
   if (!live || live.boot_id !== value.boot_id || live.journal_id !== value.journal_id || live.port !== value.port) return null
-  return { origin, journalId: live.journal_id, bootId: live.boot_id }
+  try {
+    const remotes = live.remotes === undefined ? null : validateRemotes(live.remotes)
+    return { origin, journalId: live.journal_id, bootId: live.boot_id, remotes }
+  } catch {
+    return null
+  }
 }
 
 export class LocalStudio {
@@ -131,6 +143,7 @@ export class LocalStudio {
     this.directory = directory
     this.python = python
     this.starting = null
+    this.stopping = null
   }
 
   running() {
@@ -143,6 +156,7 @@ export class LocalStudio {
   }
 
   async launch(remotes) {
+    if (this.stopping) await this.stopping
     await mkdir(this.directory, { recursive: true, mode: 0o700 })
     const active = await this.running()
     if (active) return active
@@ -186,17 +200,30 @@ export class LocalStudio {
     throw new Error('로컬 작업실 시작에 시간이 걸립니다. 잠시 후 다시 연결하거나 startup.log를 확인하세요.')
   }
 
-  async stop(bootId) {
+  stop(bootId) {
+    this.stopping ??= this.shutdown(bootId).finally(() => { this.stopping = null })
+    return this.stopping
+  }
+
+  async shutdown(bootId) {
     const active = await this.running()
     if (!active || active.bootId !== bootId) return false
+    const stop = join(this.directory, `stop-${active.bootId}`)
     try {
-      await writeFile(join(this.directory, `stop-${active.bootId}`), '', { flag: 'wx', mode: 0o600 })
+      await writeFile(stop, '', { flag: 'wx', mode: 0o600 })
     } catch (error) {
       if (error.code !== 'EEXIST') throw error
     }
     for (const deadline = Date.now() + 15000; Date.now() < deadline;) {
-      const current = await this.running()
-      if (!current || current.bootId !== bootId) return true
+      const current = await receipt(this.directory)
+      if (!current || current.boot_id !== bootId) {
+        try {
+          await access(stop)
+        } catch (error) {
+          if (error.code === 'ENOENT') return true
+          throw error
+        }
+      }
       await delay(150)
     }
     throw new Error('로컬 작업실이 종료 중입니다. 잠시 후 상태를 다시 확인하세요.')
