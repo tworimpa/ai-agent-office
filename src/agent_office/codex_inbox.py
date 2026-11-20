@@ -225,6 +225,11 @@ class CodexSession:
         return await self.wait_decision(self.inbox.ask(kind, prompt, self.thread))
 
     async def wait_decision(self, awaitable):
+        from .dialogue import operator_wait
+        with operator_wait(self.inbox, self.timer):
+            return await self._live_decision(awaitable)
+
+    async def _live_decision(self, awaitable):
         # Reject withdrawal, patch mutation, server exit or turn completion
         # while the browser is open. No new turn may inherit an old request.
         previous_phase, self.phase = self.phase, "operator decision"

@@ -81,6 +81,14 @@
           <div id="summary-other" hidden></div>
         </section>
 
+        <section id="goal-report" class="goal-report" aria-labelledby="goal-title" hidden>
+          <h2 id="goal-title">목표 보고서</h2>
+          <p id="goal-progress"></p>
+          <p id="goal-next"></p>
+          <p id="goal-activity"></p>
+          <div id="goal-record"></div>
+          <p id="goal-note" role="status"></p>
+        </section>
         <div class="room-scene" aria-label="작업실에 있는 에이전트">
           <div class="scene-seats">
             <button type="button" class="seat" data-person="coordinator" aria-haspopup="dialog">
@@ -206,8 +214,16 @@
                     autocorrect="off" autocapitalize="none" spellcheck="false"></textarea>
           <p id="test-files-help" class="field-help">저장소 기준 경로를 한 줄에 하나씩 입력하세요. 예: <code>tests/test_cli.py</code>. 비우면 전체 테스트를 실행합니다.</p>
         </fieldset>
+        <fieldset id="assignment-goal-criteria" hidden>
+          <legend>목표 완료 기준</legend>
+          <label for="goal-criteria">확인할 결과(선택)</label>
+          <textarea id="goal-criteria" rows="3" aria-describedby="goal-criteria-help"></textarea>
+          <p id="goal-criteria-help" class="field-help">결과를 한 줄에 하나씩 최대 20개 입력하세요. 비워 두면 처음 맡긴 요청을 완료 기준으로 기록합니다.</p>
+        </fieldset>
       </details>
       <label class="checkbox" id="edit-option"><input type="checkbox" id="allow-edits"> 파일 수정 허용</label>
+      <label class="checkbox" id="goal-option" hidden><input type="checkbox" id="overnight-goal"> 밤샘 목표로 맡기기</label>
+      <p id="goal-option-help" class="field-help" hidden>작업실의 검증 설정에 따라 최초 실패와 시도별 변경을 기록하고 검토할 후보를 남깁니다.</p>
       <label class="checkbox" id="review-option"><input type="checkbox" id="review-plan" name="review_plan"> 계획을 보고 시작</label>
       <button type="submit" id="send" class="primary">보내기</button>
     </form>
@@ -252,6 +268,22 @@
       <p id="settings-note" class="form-note" role="status"></p>
       <button type="submit" id="save-settings" class="primary">설정 저장</button>
     </form>
+    <details id="goal-policy" hidden>
+      <summary>밤샘 목표 검증 설정</summary>
+      <form method="post" id="goal-policy-form" class="settings-form">
+        <p class="field-help">저장하면 이 작업실의 파일 수정 작업에서 밤샘 목표가 기본으로 선택됩니다. 배정할 때 개별 작업의 선택을 해제할 수 있습니다.</p>
+        <label for="goal-seconds">실제 작업 시간 한도(초)</label>
+        <input id="goal-seconds" type="number" required min="1" max="604800">
+        <label for="goal-attempts">최대 시도 횟수</label>
+        <input id="goal-attempts" type="number" required min="1" max="32">
+        <p class="field-help" id="goal-argv-help">명령과 인수를 한 줄에 하나씩 입력하세요. 호스트에 등록한 검사는 host-check, 등록 이름, SHA-256을 차례로 입력합니다.</p>
+        <button id="goal-office-preset" type="button" class="secondary">Agent Office 검증 구성 불러오기</button>
+        <div id="goal-check-fields"></div>
+        <button id="goal-add-check" type="button" class="secondary">검증 추가</button>
+        <button id="goal-save-policy" type="submit" class="primary">검증 설정 저장</button>
+      </form>
+      <p id="goal-policy-note" role="status"></p>
+    </details>
   </dialog>
 
   <dialog id="register-dialog" class="dialog" aria-labelledby="register-title">

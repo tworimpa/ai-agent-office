@@ -9,6 +9,7 @@ import threading
 from typing import BinaryIO
 
 from .models import validate_id
+from .overnight_goals import criteria_for, goal_route
 from .office_wire import check_office_reply, office_offset
 from .improvement_wire import check_improvement_reply, improvement_route
 from .version_wire import check_version_reply, version_route
@@ -69,6 +70,10 @@ def is_peer_route(method: str, route: str) -> bool:
         return method == "GET"
     if route.startswith("/rooms/"):
         return room_route(method, route) is not None
+    if re.fullmatch(r"/goal-checks/[a-f0-9]{32}", route):
+        return True
+    if goal_route(method, route) is not None:
+        return True
     pattern = (r"/runs/[0-9a-f]{32}(?:/inbox|/directions)?" if method == "GET"
                else r"/runs/[0-9a-f]{32}/(?:stop|delegation/stop|inbox/[0-9a-f]{32}/decision|directions|meeting/decision)")
     return re.fullmatch(pattern, route) is not None
@@ -136,6 +141,11 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
     if status >= 400:
         return
 
+    if route.startswith("/goal-checks/"):
+        from .goal_peer import check_reply
+        check_reply(status, data, route.rsplit("/",1)[-1], payload)
+        return
+
     deployment = deployment_route(method, route)
     if deployment is not None:
         check_deployment_reply(status, data, deployment)
@@ -165,6 +175,30 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
         return
     if route.endswith("/delegation/stop"):
         if status != 200 or data.get("run_id") != route.split("/")[2] or data.get("active") is not False:
+            raise RemoteUnavailable()
+        return
+    goal = goal_route(method, route)
+    if goal:
+        target, action, attempt = goal
+        if status != 200:
+            raise RemoteUnavailable()
+        if action is None:
+            result = data.get("goal")
+            if "goal" not in data or result is not None and (
+                    not isinstance(result, dict) or result.get("id") != target or result.get("run_id") != target
+                    or not isinstance(result.get("events"), list) or not isinstance(result.get("candidates"), list)
+                    or not isinstance(result.get("checks"), list) or not isinstance(result.get("request"), str)):
+                raise RemoteUnavailable()
+        elif data.get("run_id") != target:
+            raise RemoteUnavailable()
+        elif action == "candidate" and (data.get("attempt") != attempt or not isinstance(data.get("diff"), str)):
+            raise RemoteUnavailable()
+        elif action == "compare" and ((data.get("from_attempt"), data.get("to_attempt")) != attempt
+                or data.get("format") not in {"files", "patches"} or not isinstance(data.get("diff"), str)):
+            raise RemoteUnavailable()
+        elif action == "adopt" and any(data.get(key) != payload.get(key) for key in ("id", "attempt", "digest")):
+            raise RemoteUnavailable()
+        elif action == "recover" and not isinstance(data.get("recovery"), dict):
             raise RemoteUnavailable()
         return
     if route.startswith("/rooms/"):
@@ -259,10 +293,19 @@ def _check_assignment(row, required=False):
     assignment = row.get("assignment")
     if assignment is None and not required:
         return
-    if (not isinstance(assignment, dict) or set(assignment) - {"test_files", "meeting", "review_plan"} != {"roles", "note", "delegation"}
+    goal_fields = {"goal_policy", "goal_criteria", "reproduce_required", "planning_mode"}
+    if (not isinstance(assignment, dict) or set(assignment) - {"test_files", "meeting", "review_plan"} - goal_fields != {"roles", "note", "delegation"}
             or type(assignment["delegation"]) is not bool or not isinstance(assignment["note"], str)
             or not 1 <= len(assignment["note"]) <= 520 or row.get("use_inbox") is not True):
         raise RemoteUnavailable()
+    if goal_fields.intersection(assignment):
+        from .goal_verification import validate_policy
+        if (not goal_fields <= assignment.keys() or row.get("allow_edits") is not True
+                or type(assignment["reproduce_required"]) is not bool or
+                assignment["planning_mode"] != ("meeting" if assignment.get("meeting") else "direct")):
+            raise RemoteUnavailable()
+        validate_policy(assignment["goal_policy"])
+        criteria_for(row["task"], assignment["goal_criteria"])
     if "test_files" in assignment:
         if row.get("allow_edits") is not True:
             raise RemoteUnavailable()
@@ -283,6 +326,11 @@ def _check_assignment(row, required=False):
 
 def _check_room_reply(status, data, headers, journal, method, route, payload):
     workspace_id, view, cursor = room_route(method, route)
+    if view == "goal-policy":
+        from .goal_verification import validate_policy
+        if status != 200 or validate_policy(data.get("policy")) != (payload if method == "POST" else data["policy"]):
+            raise RemoteUnavailable()
+        return
     if view == "inbox":
         _check_inbox_reply(status, data, method, "/inbox", payload)
         return
@@ -299,7 +347,8 @@ def _check_room_reply(status, data, headers, journal, method, route, payload):
                 role not in ROLES or row["assignment"]["roles"][role]["engine"] != engine
                 for role, engine in overrides.items()):
             raise RemoteUnavailable()
-        if (bool(row["assignment"].get("meeting")) != bool(payload.get("meeting")) or
+        if (bool(row["assignment"].get("goal_policy")) != bool(payload.get("goal")) or
+                (not payload.get("goal") and bool(row["assignment"].get("meeting")) != bool(payload.get("meeting"))) or
                 bool(row["assignment"].get("review_plan")) != bool(payload.get("review_plan"))):
             raise RemoteUnavailable()
         if row["assignment"].get("test_files") != payload.get("test_files"):

@@ -40,6 +40,14 @@ def make_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify-engine", help="Call a provider on a disposable fixture and record the result")
     verify.add_argument("engine", choices=SUPPORTED_ENGINES)
     verify.add_argument("capability", choices=("read", "edit", "review"))
+    peer = sub.add_parser("peer-check", help="Offer one verification of a locally reviewed commit and recipe")
+    peer.add_argument("--workspace-id", required=True)
+    peer.add_argument("--base", required=True)
+    peer.add_argument("--commit", required=True)
+    peer.add_argument("--stage", required=True, choices=("quick", "full", "journey"))
+    peer.add_argument("--timeout", required=True, type=int)
+    peer.add_argument("--wait-seconds", default=28800, type=int)
+    peer.add_argument("argv", nargs=argparse.REMAINDER)
 
     diag = sub.add_parser("doctor", help="Inspect Git, Python and installed agent CLIs")
     diag.add_argument("--require", nargs="*", choices=SUPPORTED_ENGINES,
@@ -84,7 +92,7 @@ def make_parser() -> argparse.ArgumentParser:
 
 def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage=None, defer_final=None,
                 inbox_factory=None, base_revision=None, delegated_questions=(), technical_choice_guidance="",
-                studio_preview=None, room_meeting=False):
+                studio_preview=None, room_meeting=False, goal_assignment=None):
     repo = args.repo.expanduser().resolve()
     worktree = plan_worktree(repo, run_id)
     recorder = RunRecorder(store, run_id)
@@ -95,8 +103,16 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
         store.create_run(TaskSpec(task_id, str(repo), args.task, args.developer, args.reviewer, args.max_attempts),
                          run_id, worktree, OwnerInfo(platform.node(), uuid.uuid4().hex))
     try:
-        worktree = create_worktree(repo, planned=worktree, **({"revision": base_revision} if base_revision else {}))
-        recorder.record(operation_key=f"{run_id}:workspace", event_type="WORKSPACE_READY", payload={"phase": "workspace"})
+        resume = goal = None
+        if goal_assignment:
+            from .goal_recovery import resume_state
+            resume = resume_state(store.connection, run_id)
+        if not resume:
+            worktree = create_worktree(repo, planned=worktree, **({"revision": base_revision} if base_revision else {}))
+            recorder.record(operation_key=f"{run_id}:workspace", event_type="WORKSPACE_READY", payload={"phase": "workspace"})
+        if goal_assignment:
+            from .goal_verification import GoalVerification
+            goal = GoalVerification(store, run_id, worktree.path, base_revision, folders or ["."], goal_assignment)
         adapters = {
             engine: CLIAdapter(engine, timeout=args.timeout)
             for engine in SUPPORTED_ENGINES
@@ -110,7 +126,7 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
         graph = build_graph(adapters, recorder=recorder, save_stage=save_stage, inbox_factory=inbox_factory,
                             delegated_questions=delegated_questions, skill_guidance=guidance,
                             technical_choice_guidance=technical_choice_guidance, studio_preview=studio_preview,
-                            meeting=meeting)
+                            meeting=meeting, goal=goal, resume_stage=resume["next_stage"] if resume else None)
         initial = {
             "task": args.task,
             "workspace": str(worktree.path),
@@ -128,7 +144,12 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
             from .workspace import map_folders
             mapped = map_folders(worktree.path, folders)
             initial["selected_folders"] = [str(path) for path in mapped]
-        result = graph.invoke(initial, config={"configurable": {"thread_id": run_id}})
+        if resume:
+            initial.update({key: val for key, val in resume.items() if key != "next_stage"})
+        config = {"configurable": {"thread_id": run_id}}
+        if goal:
+            config["recursion_limit"] = 8 + 4 * args.max_attempts
+        result = graph.invoke(initial, config=config)
         state, outcome = {
             "PLAN_ONLY": ("PLAN_ONLY", "PLAN_ONLY"),
             "READY_FOR_HUMAN_REVIEW": ("READY_FOR_HUMAN_REVIEW", "APPROVED"),
@@ -196,6 +217,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "events" and not 0 <= args.after_seq <= MAX_SQLITE_INT:
             raise ValueError("Invalid cursor")
         db_path = resolve_db_path(args.db)
+        if args.command == "peer-check":
+            from .goal_peer import prepare
+            argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+            check = {"stage":args.stage, "host":"local", "argv":argv, "timeout_seconds":args.timeout}
+            return 0 if prepare(db_path, args.workspace_id, args.base, args.commit, check, args.wait_seconds) else 1
         if args.command == "improve":
             from .improvement_cli import run_command
             return run_command(args, db_path)

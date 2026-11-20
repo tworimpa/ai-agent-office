@@ -76,16 +76,19 @@ class RoomMeeting:
         def record(task_id, result):
             self.write(meeting_store.record_work, current["revision"], task_id, self.developer, result)
 
-        def open_inbox():
+        def open_inbox(task_id=None):
             # Keep each child's session approvals separate. Only the primary
             # developer consumes directions addressed to the overall role.
-            return InboxChannel(self.path, self.run_id, "developer", self.developer)
+            return InboxChannel(self.path, self.run_id, "developer", self.developer, goal_task_id=task_id)
 
         try:
+            from .goal_recovery import is_goal
+            with TaskStore(self.path, existing=True, readonly=True) as store:
+                independent = is_goal(store.connection, self.run_id)
             self.applied_work = execute_parallel(
                 current["plan"], self.workspace, self.adapters, self.developer,
                 task=self.task + "\n" + role_guidance + "\nAccepted plan and decisions:\n" + self.context(),
-                record=record, open_inbox=open_inbox)
+                record=record, open_inbox=open_inbox, independent=independent)
         except (OSError, ValueError) as exc:
             raise MeetingFailure("병렬 하위 작업을 완료하지 못했습니다. 회의의 하위 작업 기록을 확인하세요.") from exc
 
@@ -140,8 +143,21 @@ class RoomMeeting:
                         results.append("passed")
         except (OSError, ValueError, ElementTree.ParseError):
             pass
+        self._record_files(version, files)
+
+    def record_goal_cases(self, cases, stage):
+        files = {}
+        for identifier, status in cases.items():
+            path = identifier.split("::", 1)[0]
+            files.setdefault(path, []).append(status)
+        if files:
+            self._record_files(self.snapshot(), files, covered_only=True)
+
+    def _record_files(self, version, files, *, covered_only=False):
         for criterion in version["plan"]["criteria"]:
             paths = criterion.get("test_files", [])
+            if covered_only and not any(path in files for path in paths):
+                continue
             statuses = [status for path in paths for status in files.get(path, [])]
             if "failed" in statuses:
                 status, reason = "failed", "지정한 테스트에서 실패가 기록됐습니다."

@@ -96,6 +96,19 @@ h1 { font: 700 clamp(1.7rem, 4vw, 3rem)/1.25 var(--serif); overflow-wrap: anywhe
 .seat-line { color: #f4e4ce; font-size: .82rem; line-height: 1.5; }
 .seat-arrow { flex: none; margin-inline-start: auto; color: var(--gold); font-size: 1.4rem; }
 .ledger { margin-top: 24px; padding: clamp(16px, 3vw, 25px); border-radius: 4px; background: #f0e4ce; color: var(--ink); border: 1px solid #bba078; }
+.goal-report { min-width: 0; margin-block: 1rem; border: 1px solid var(--line); border-inline-start: 3px solid var(--gold); background: var(--rail); padding: clamp(14px, 2vw, 24px); overflow-wrap: anywhere; }
+.goal-report h2 { font: 700 1.35rem var(--serif); }
+.goal-report h3 { font-size: 1rem; color: var(--gold); }
+.goal-report p { margin-block: .4rem; }
+#goal-activity { color: var(--soft); font-size: .85rem; }
+#goal-record { display: grid; gap: .8rem; }
+#goal-record > section, #goal-record > details { border-top: 1px solid var(--line); padding-top: .65rem; }
+#goal-record summary, #goal-policy > summary { cursor: pointer; padding-block: .4rem; }
+#goal-record pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: .65rem; background: var(--frame); max-height: 18rem; overflow: auto; }
+#goal-record ol { max-height: 24rem; overflow: auto; padding-inline-start: 1.6rem; }
+#goal-policy { margin: 1rem; }
+#goal-check-fields { display: grid; gap: .65rem; }
+#goal-check-fields fieldset { min-width: 0; display: grid; gap: .4rem; }
 .ledger-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; }
 .ledger-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .ledger-stop { min-height: 40px; padding: 7px 10px; border: 1px solid #aa7459; border-radius: 4px; background: #fbede1; color: #703622; font-size: .84rem; }

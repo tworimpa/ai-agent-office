@@ -1,5 +1,6 @@
 import {firstProseParagraph, renderDiff, renderMarkdown, renderSource} from './office-content.js';
 import {planFlow} from './office-flow.js';
+import {mountGoals} from './workspace-goal.js';
 
 const roleLabels = {developer: '담당자', reviewer: '검토자'};
 const engines = {codex: 'Codex', antigravity: 'Antigravity', claude: 'Claude Code', gemini: 'Gemini CLI', cline: 'Cline CLI'};
@@ -254,6 +255,10 @@ export function mountWorkspaceOffice(win = window) {
   }
 
   const api = (path, body) => request(scope(hostId) + path, body);
+  const goals = mountGoals({win, get, make, api, refresh, onPolicySaved: () => { room.goal_default = true; }, context: () => ({
+    hostId, workspaceId, runId, epoch, supported: room?.goal_supported === true,
+    writable: canWrite(), pending: selected()?.pending_count, meetingPhase: selected()?.meeting?.status ?? selected()?.meeting_status,
+  }), openInbox: () => get('inbox').click(), openMeeting: () => openEvidence('room', 'meeting')});
 
   function sessionKey(role) {
     const target = role === 'coordinator' ? 'new' : runId + ':' + chatAttempt;
@@ -310,6 +315,7 @@ export function mountWorkspaceOffice(win = window) {
   }
 
   function resetThread() {
+    goals.reset();
     answerDetails.clear();
     chatRows = [];
     directionRows = [];
@@ -541,6 +547,7 @@ export function mountWorkspaceOffice(win = window) {
       return;
     }
     say('room-title', room.workspace.name);
+    if (!roomOnline) goals.stale();
     const count = room.runs.reduce((total, run) => total + (run.pending_count ?? 0), 0);
     get('inbox-count').hidden = count < 1;
     say('inbox-count', String(count));
@@ -1022,6 +1029,8 @@ export function mountWorkspaceOffice(win = window) {
         return;
       }
       detail = run;
+      if (room?.goal_supported === true) await goals.load(expected);
+      if (!sameContext(token) || expected !== runId || read !== detailRead) return;
       meetingReadOK = true;
       say('detail-status', '');
       renderChatConnection();
@@ -1199,7 +1208,7 @@ export function mountWorkspaceOffice(win = window) {
     get('assignment-options').hidden = !assignment;
     get('edit-option').hidden = !assignment;
     get('review-option').hidden = !assignment || !supportsMeetings();
-    get('assignment-options').open = Boolean(saved?.delegation != null || saved?.indices || saved?.test_files || saved?.role_engines);
+    get('assignment-options').open = Boolean(saved?.delegation != null || saved?.indices || saved?.test_files || saved?.role_engines || saved?.goal_criteria);
     get('assignment-engines').hidden = !assignment || !supportsMeetings();
     if (assignment && supportsMeetings()) {
       for (const role of Object.keys(roleLabels)) {
@@ -1211,6 +1220,8 @@ export function mountWorkspaceOffice(win = window) {
     get('run-delegation').options[0].textContent = '작업실 기본값 · ' + (room.settings.delegation ? '조정자가 결정' : '나에게 질문');
     get('run-delegation').value = saved?.delegation == null ? '' : String(saved.delegation);
     get('allow-edits').checked = saved?.allow_edits ?? false;
+    get('overnight-goal').checked = saved ? saved.goal === true : room.goal_default === true;
+    get('goal-criteria').value = saved?.goal_criteria?.join('\n') ?? '';
     get('review-plan').checked = saved?.review_plan === true;
     get('test-files').value = saved?.test_files?.join('\n') ?? '';
     if (assignment) folderChoices(saved?.indices);
@@ -1426,6 +1437,12 @@ export function mountWorkspaceOffice(win = window) {
     get('review-plan').disabled = locked;
     for (const picker of get('assignment-engines').querySelectorAll('select')) picker.disabled = locked;
     const editAssignment = assignment && get('allow-edits').checked;
+    const canAssignGoal = editAssignment && room?.goal_supported === true;
+    get('goal-option').hidden = !canAssignGoal;
+    get('overnight-goal').disabled = locked || !canAssignGoal;
+    get('goal-option-help').hidden = !canAssignGoal || !get('overnight-goal').checked;
+    get('assignment-goal-criteria').hidden = get('goal-option-help').hidden;
+    get('goal-criteria').disabled = locked || get('assignment-goal-criteria').hidden;
     get('assignment-test-scope').hidden = !editAssignment;
     get('test-files').disabled = locked || !editAssignment;
     for (const box of get('assignment-folders').querySelectorAll('input')) box.disabled = locked;
@@ -1494,6 +1511,14 @@ export function mountWorkspaceOffice(win = window) {
     if (role !== 'coordinator') return {id, role, attempt: chatAttempt, message: value};
     const mode = get('run-delegation').value;
     const body = {id, message: value, allow_edits: get('allow-edits').checked, delegation: mode === '' ? null : mode === 'true'};
+    if (body.allow_edits && room?.goal_supported === true && get('overnight-goal').checked) {
+      body.goal = true;
+      const criteria = get('goal-criteria').value.split('\n').map(value=>value.trim()).filter(Boolean);
+      if (criteria.length > 20 || criteria.some(value=>codeBytes(value)>8192)) {
+        throw new Error('완료 기준은 한 줄당 8,192바이트 이내로 최대 20개 입력하세요.');
+      }
+      if (criteria.length) body.goal_criteria = criteria;
+    }
     if (supportsMeetings()) {
       body.meeting = true;
       if (get('review-plan').checked) body.review_plan = true;
@@ -1514,6 +1539,7 @@ export function mountWorkspaceOffice(win = window) {
   }
 
   get('allow-edits').addEventListener('change', chatControls);
+  get('overnight-goal').addEventListener('change', chatControls);
   get('chat-form').addEventListener('submit', async event => {
     event.preventDefault();
     const role = chatRole;
@@ -1902,6 +1928,7 @@ export function mountWorkspaceOffice(win = window) {
     renderSkills(Object.fromEntries(Object.keys(roleLabels).map(role => [role, room.settings[role].skills])));
     say('settings-note', '');
     openDialog(get('room-settings'), get('room-delegation'));
+    goals.settings();
     loadSkills();
   });
 

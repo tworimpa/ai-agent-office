@@ -217,12 +217,17 @@ class Inbox:
 
 class InboxChannel:
     """One instance per live CLI conversation, including when a workflow retries."""
-    def __init__(self, db_path, run_id, role, engine):
+    def __init__(self, db_path, run_id, role, engine, *, goal_task_id=None):
         self.path = Path(db_path)
         self.run_id = validate_id(run_id)
         self.role = role
         self.engine = engine
         self.holder = uuid.uuid4().hex
+        self.goal_task_id = goal_task_id
+        if goal_task_id is not None:
+            with TaskStore(self.path, existing=True) as store:
+                store.connection.execute("INSERT INTO studio_goal_workers VALUES (?,?,?,?,NULL)",
+                                         (self.holder, self.run_id, goal_task_id, now()))
         self.guard = RunGuard(self.path, self.holder)
         self.session_hash = None
         self.closed = False
@@ -267,6 +272,9 @@ class InboxChannel:
                             PRODUCT_DECISION if kind == PRODUCT_DECISION else None, prompt, now()))
                 plan = (away_ledger.begin_question(db, _request(db, self.run_id, request_id))
                         if kind == "question" else None)
+                if plan is None:
+                    from .goal_recovery import note_wait
+                    note_wait(db, request_id)
             consultation = (asyncio.create_task(self._consult(store, request_id, plan)) if plan else None)
             try:
                 while True:
@@ -451,6 +459,10 @@ class InboxChannel:
                 finally:
                     self.guard.__exit__(None, None, None)
         finally:
+            if self.goal_task_id is not None:
+                with TaskStore(self.path, existing=True) as store:
+                    store.connection.execute("UPDATE studio_goal_workers SET ended_at=? WHERE holder=?",
+                                             (now(), self.holder))
             directions = getattr(self, "directions", None)
             if directions is not None:
                 directions.close()

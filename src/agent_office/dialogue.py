@@ -1,4 +1,24 @@
 """Agent Office's explicit turn convention for technical and product questions."""
+import asyncio
+from contextlib import contextmanager
+
+
+@contextmanager
+def operator_wait(inbox, timer):
+    """A goal worker keeps its remaining provider time while a decision is outstanding."""
+    if getattr(inbox, "goal_task_id", None) is None:
+        yield
+        return
+    loop = asyncio.get_running_loop()
+    remaining = timer.when() - loop.time()
+    if remaining <= 0:
+        raise TimeoutError("Worker's active time has expired")
+    timer.reschedule(None)
+    try:
+        yield
+    finally:
+        if not timer.expired():
+            timer.reschedule(loop.time() + remaining)
 
 FINAL_MARKER = "AGENT_OFFICE_FINAL"
 QUESTION_MARKER = "AGENT_OFFICE_QUESTION"
