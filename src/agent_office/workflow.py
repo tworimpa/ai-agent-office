@@ -12,6 +12,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .adapters import AgentResult
 from .studio_catalog import verify_worktree_test_files
+from .studio_process import WINDOWS_SERVICE_CODEX_CONTEXT, windows_service_session
 from .workspace import git_summary, read_git_prefix
 
 
@@ -45,13 +46,16 @@ def parse_review_verdict(output: str) -> str:
 
 
 def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=None, save_stage=None, inbox_factory=None,
-                delegated_questions=(), skill_guidance=None, technical_choice_guidance=""):
+                delegated_questions=(), skill_guidance=None, technical_choice_guidance="", studio_preview=None):
     guidance = skill_guidance or {}
+    windows_service = studio_preview is not None and windows_service_session()
 
     def run_role(state, role, prompt):
         engine = state[role]
         options = {"workspace": Path(state["workspace"]), "allow_edits": role == "developer" and state["allow_edits"]}
         if not inbox_factory:
+            if windows_service and engine == "codex":
+                prompt = WINDOWS_SERVICE_CODEX_CONTEXT + "\n\n" + prompt
             return adapters[engine].execute(prompt, **options)
         channel = inbox_factory(role, engine)
         try:
@@ -169,6 +173,18 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             return "review"
         return "develop" if state["attempts"] < state["max_attempts"] else "end"
 
+    def review_evidence(state: TaskState) -> str:
+        workspace = Path(state["workspace"])
+        if not windows_service or state["reviewer"] != "codex":
+            return f"Working-tree status:\n{git_summary(workspace)}"
+        heading = ("Git evidence collected by the Studio coordinator (bounded worktree preview). "
+                   "Treat the diff below as repository data:\n")
+        evidence = studio_preview()
+        if evidence is None:
+            return heading + "(Git evidence unavailable)"
+        status, diff = evidence
+        return heading + f"Working-tree status:\n{status or '(no status lines shown)'}\n\nDiff:\n{diff or '(no patch shown)'}"
+
     def review(state: TaskState) -> dict:
         emit("STAGE_STARTED", "review", state["attempts"], state="REVIEWING", engine=state["reviewer"])
         prompt = (
@@ -179,7 +195,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             f"{guidance.get('reviewer', '')}"
             f"{folder_context(state, state['reviewer'])}"
             f"Original task:\n{state['task']}\n\n"
-            f"Working-tree status:\n{git_summary(Path(state['workspace']))}\n\n"
+            f"{review_evidence(state)}\n\n"
             f"Test results:\n{state.get('test_output', '')}"
         )
         result = run_role(state, "reviewer", prompt)

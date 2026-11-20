@@ -83,7 +83,8 @@ def make_parser() -> argparse.ArgumentParser:
 
 
 def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage=None, defer_final=None,
-                inbox_factory=None, base_revision=None, delegated_questions=(), technical_choice_guidance=""):
+                inbox_factory=None, base_revision=None, delegated_questions=(), technical_choice_guidance="",
+                studio_preview=None):
     repo = args.repo.expanduser().resolve()
     worktree = plan_worktree(repo, run_id)
     recorder = RunRecorder(store, run_id)
@@ -103,7 +104,7 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
         guidance = role_guidance(store.connection, run_id, ("developer", "reviewer")) if prepared else {}
         graph = build_graph(adapters, recorder=recorder, save_stage=save_stage, inbox_factory=inbox_factory,
                             delegated_questions=delegated_questions, skill_guidance=guidance,
-                            technical_choice_guidance=technical_choice_guidance)
+                            technical_choice_guidance=technical_choice_guidance, studio_preview=studio_preview)
         initial = {
             "task": args.task,
             "workspace": str(worktree.path),

@@ -14,6 +14,7 @@ from .dialogue import (FINAL_MARKER, MAX_QUESTIONS, PRODUCT_DECISION_MARKER, QUE
 from .events import snapshot_request
 from .dialogue import DelegationWithdrawn
 from .models import OfficeError
+from .studio_process import WINDOWS_SERVICE_CODEX_CONTEXT, windows_service_session
 
 
 # These notifications cannot resolve a request, alter a patch or finish a turn.
@@ -44,9 +45,15 @@ _PROVIDER_ERROR_TYPES = {
     "responseStreamDisconnected", "responseTooManyFailedAttempts",
 }
 
-
 class _CodexProtocolError(ProtocolError):
     """Construct only with fixed text and bounded, recognized metadata."""
+
+
+class _CodexRPCError(_CodexProtocolError):
+    def __init__(self, code):
+        self.code = code if type(code) is int and -2**31 <= code < 2**31 else None
+        suffix = f" (code={self.code})" if self.code is not None else ""
+        super().__init__("RPC rejected" + suffix)
 
 
 def _notification_failure(record):
@@ -57,9 +64,7 @@ def _notification_failure(record):
 
 
 def _rpc_failure(error):
-    code = error.get("code") if isinstance(error, dict) else None
-    suffix = f" (code={code})" if type(code) is int and -2**31 <= code < 2**31 else ""
-    return _CodexProtocolError("RPC rejected" + suffix)
+    return _CodexRPCError(error.get("code") if isinstance(error, dict) else None)
 
 
 def _provider_failure(error):
@@ -150,6 +155,7 @@ class CodexSession:
         self.server_ids = set()
         self.turn_ids = set()
         self.phase = "initialize"
+        self.initial_context = ""
 
     async def send(self, message, decision=None, *, direction=None):
         data = (json.dumps(message, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
@@ -290,6 +296,18 @@ class CodexSession:
         })
         self.check_sandbox(response)
         self.thread = _identifier(_object(response.get("thread")).get("id"))
+        if windows_service_session():
+            # Add application context without replacing the user's configured developer instructions.
+            try:
+                await self.rpc("thread/inject_items", {
+                    "threadId": self.thread,
+                    "items": [{"type": "message", "role": "developer",
+                               "content": [{"type": "input_text", "text": WINDOWS_SERVICE_CODEX_CONTEXT}]}],
+                })
+            except _CodexRPCError as exc:
+                if exc.code != -32601:  # Only a legacy server without this method uses the initial prompt.
+                    raise
+                self.initial_context = WINDOWS_SERVICE_CODEX_CONTEXT + "\n\n"
 
     async def permission(self, msg, active, files, receipts, denied_commands):
         method, params, rpc_id = msg["method"], msg["params"], msg["id"]
@@ -434,7 +452,7 @@ class CodexSession:
     async def run(self, prompt):
         await self.start()
         finish_instruction = "For the completed task append a final standalone line " + FINAL_MARKER + "."
-        prompt += "\n\n" + QUESTION_INSTRUCTIONS + " " + finish_instruction
+        prompt = self.initial_context + prompt + "\n\n" + QUESTION_INSTRUCTIONS + " " + finish_instruction
         decision = kind = direction = None
         questions = 0
         while True:
