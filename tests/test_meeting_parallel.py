@@ -137,6 +137,56 @@ def test_imports_both_independent_worktrees_and_hands_off_dependencies(setup):
     assert git(repo, "worktree", "list", "--porcelain") == prior
 
 
+def test_goal_finishes_disjoint_work_while_product_choice_waits(setup):
+    from agent_office import goal_recovery, overnight_goals
+    from agent_office.dialogue import PRODUCT_DECISION
+    from agent_office.store import TaskStore
+
+    repo, plan = setup
+    path, run_id = repo.parent / "goal.sqlite3", uuid4().hex
+    with closing(LocalRunner(path)):
+        pass
+    seed(path, run_id)
+    with TaskStore(path) as store:
+        overnight_goals.ensure_schema(store.connection)
+        overnight_goals.register(store.connection, run_id, "workspace", "fixture", plan["evidence"]["revision"],
+                                 ["."], {"goal_criteria":["check"], "goal_policy":{}})
+    inbox, receipt = Inbox(path), threading.Event()
+    def record(ident, result):
+        if ident == "B" and "주 작업 트리에 반영" in result:
+            receipt.set()
+    class WorkerWithChoice:
+        def execute(self, prompt, *, workspace, allow_edits, strict_completion, inbox):
+            job = json.loads(prompt.splitlines()[-1])["assigned"]
+            if job["id"] == "A":
+                row = asyncio.run(asyncio.wait_for(inbox.ask(PRODUCT_DECISION, "표시 모드를 선택하세요.", "first"), 12))
+                with inbox.sending(row["id"]):
+                    answer = row["answer"]
+                inbox.delivered(row["id"])
+            else:
+                answer = "done"
+            (workspace / job["folders"][0] / "new.py").write_text(answer, encoding="utf-8")
+            return AgentResult(0, "완료")
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        job = pool.submit(execute_parallel, plan, repo, {"cline":WorkerWithChoice()}, "cline", task="요청",
+                          record=record, independent=True,
+                          open_inbox=lambda task_id: InboxChannel(path, run_id, "developer", "cline", goal_task_id=task_id))
+        assert receipt.wait(12) and not job.done()
+        assert (repo / "second/new.py").read_text() == "done"
+        assert not (repo / "first/new.py").exists()
+        for _ in range(100):
+            if decisions := inbox.pending():
+                break
+            time.sleep(.02)
+        decision, = decisions
+        assert decision["kind"] == PRODUCT_DECISION
+        with TaskStore(path) as store:
+            assert goal_recovery.timing(store.connection, run_id)["waiting_for_user"]
+        inbox.decide(run_id, decision["id"], {"action":"answer", "answer":"dark"})
+        assert '"remaining"' in job.result(timeout=12)
+    assert (repo / "first/new.py").read_text() == "dark"
+
+
 def test_worker_merges_into_linked_parent_without_changing_tracked_executable_mode(setup):
     source, plan = setup
     exe = source / "second/script.py"

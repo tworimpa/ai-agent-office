@@ -17,12 +17,12 @@ import uuid
 
 from . import role_skills as skills
 from . import team_runs
-from . import meeting_store
+from . import meeting_store, goal_recovery
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .events import snapshot_request
 from .models import ACTIVE, OfficeError, OwnerInfo, TaskSpec, validate_id
 from .ownership import RunGuard, RunBusyError, recover_run
-from .store import TaskStore, encode
+from .store import TaskStore, encode, now
 from .studio_catalog import normalize_test_files
 from .studio_diff import changes_in
 from .studio_directions import DirectionChannel, Directions
@@ -81,6 +81,8 @@ def finish_drained(store, run_id, *, worker_succeeded, preview_finished):
         expire_requests(store.connection, run_id)
         if store.get_run(run_id).state not in ACTIVE:
             return
+        if goal_recovery.is_goal(store.connection, run_id):
+            store.connection.execute("INSERT OR REPLACE INTO studio_goal_drains VALUES(?,?)", (run_id, now()))
         row = store.connection.execute(
             "SELECT stop_requested, proposed_state, proposed_outcome, preview FROM studio_runs WHERE id=?", (run_id,)
         ).fetchone()
@@ -96,9 +98,9 @@ def finish_drained(store, run_id, *, worker_succeeded, preview_finished):
             "UPDATE studio_runs SET changes=?,diff=?,preview=NULL,proposed_state=NULL,proposed_outcome=NULL WHERE id=?",
             (changes, diff, run_id),
         )
-        if state in {"CANCELED", "RECOVERY_REQUIRED"} and meeting_store.summary(store.connection, run_id):
+        if (state == "CANCELED" or state == "RECOVERY_REQUIRED" and not goal_recovery.is_goal(store.connection, run_id)) and meeting_store.summary(store.connection, run_id):
             meeting_store.stop(store.connection, run_id)
-        store._record(run_id, operation_key=f"{run_id}:studio:final",
+        store._record(run_id, operation_key=f"{run_id}:studio:final:{store.get_run(run_id).next_seq}",
                       event_type="RECOVERY_REQUIRED" if state == "RECOVERY_REQUIRED" else "RUN_FINISHED",
                       state=state, outcome=outcome, payload={"phase": "run"})
 
@@ -128,6 +130,7 @@ class LocalRunner:
                 self.directions = Directions(self.path)
                 team_runs.ensure_schema(store.connection)
                 meeting_store.ensure_schema(store.connection)
+                goal_recovery.ensure_schema(store.connection)
                 skills.ensure_schema(store.connection)
                 stale = store.connection.execute(
                     "SELECT r.run_id FROM runs r JOIN studio_runs s ON s.id=r.run_id "
@@ -152,7 +155,8 @@ class LocalRunner:
             run = recover_run(store, run_id, host_name=platform.node(), studio_owner=True)
             with store._write():
                 expire_requests(store.connection, run_id)
-                if run.state == "RECOVERY_REQUIRED" and meeting_store.summary(store.connection, run_id):
+                if (run.state == "RECOVERY_REQUIRED" and not goal_recovery.is_goal(store.connection, run_id)
+                        and meeting_store.summary(store.connection, run_id)):
                     meeting_store.stop(store.connection, run_id)
             if run.state != "RECOVERY_REQUIRED":
                 return True
@@ -251,7 +255,8 @@ class LocalRunner:
             def add_run(child_id, goal, scope, developer, reviewer, request_hash):
                 if policy and (not use_inbox or not all(in_scope(rule["path"], scope) for rule in policy["rules"])):
                     raise ValueError("요청함을 켜고 각 작업 폴더 또는 저장소 루트의 근거 파일을 지정하세요.")
-                spec = TaskSpec(uuid.uuid4().hex, str(repo), goal, developer, reviewer, 2)
+                attempts = (room_assignment or {}).get("goal_policy", {}).get("max_attempts", 2)
+                spec = TaskSpec(uuid.uuid4().hex, str(repo), goal, developer, reviewer, attempts)
                 store._create_run(spec, child_id, plan_worktree(repo, child_id),
                                   OwnerInfo(platform.node(), uuid.uuid4().hex))
                 db = store.connection
@@ -290,6 +295,9 @@ class LocalRunner:
                         if room_assignment is not None:
                             store.connection.execute("INSERT INTO studio_room_assignments VALUES(?,?,?)",
                                                      (run_id, encode(room_assignment), room_revision))
+                            if "goal_policy" in room_assignment:
+                                from .overnight_goals import register
+                                register(store.connection, run_id, workspace_id, task, room_revision, folders, room_assignment)
                             register_choices(store.connection, run_id, room_revision, room_choices)
                             if room_assignment.get("meeting"):
                                 meeting_store.register(store.connection, run_id, review_plan=room_assignment["review_plan"])
@@ -498,6 +506,12 @@ class LocalRunner:
 
 
 def worker(db_path, run_id):
+    # An orphaned Linux worker can outlive an abruptly killed supervisor.
+    with RunGuard.worker(db_path, run_id):
+        return _worker(db_path, run_id)
+
+
+def _worker(db_path, run_id):
     # Gated by the supervisor: no Git or vendor subprocess before ownership is attached.
     raw_task = json.loads(sys.stdin.buffer.read())
     os.environ["PYTHONIOENCODING"] = "utf-8"  # Fixed pytest command writes UTF-8 to captured pipes.
@@ -516,7 +530,8 @@ def worker(db_path, run_id):
                                         (run_id,)).fetchone()
         source = team or room
         revision = source[0] if source else get_revision(db_path, run_id)
-        selected_tests = json.loads(room["assignment_json"]).get("test_files") if room else None
+        assignment = json.loads(room["assignment_json"]) if room else {}
+        selected_tests = assignment.get("test_files")
         test_files = normalize_test_files(selected_tests) if selected_tests is not None else []
         pytest_module = "agent_office.desktop_pytest" if os.environ.get("AGENT_OFFICE_DESKTOP_LOCAL") == "1" else "pytest"
         test_command = [sys.executable, "-m", pytest_module, "-q"]
@@ -538,7 +553,8 @@ def worker(db_path, run_id):
                                      (state, outcome, run_id))
 
         def inbox_factory(role, engine):
-            channel = InboxChannel(db_path, run_id, role, engine)
+            channel = InboxChannel(db_path, run_id, role, engine,
+                                   goal_task_id=role if room and json.loads(room["assignment_json"]).get("goal_policy") else None)
             if room:
                 channel.directions = DirectionChannel(db_path, run_id, role, engine)
             return channel
@@ -556,7 +572,8 @@ def worker(db_path, run_id):
                         delegated_questions=tuple(RULES[rule["topic"]] for rule in policy["rules"]) if policy else (),
                         technical_choice_guidance=CHOICE_INSTRUCTIONS if room and get_choices(db_path, run_id) else "",
                         inbox_factory=inbox_factory if interactive else None, studio_preview=studio_preview,
-                        room_meeting=bool(room and json.loads(room["assignment_json"]).get("meeting")))
+                        room_meeting=bool(assignment.get("meeting")),
+                        goal_assignment=assignment if assignment.get("goal_policy") and args.allow_edits else None)
         except MeetingFailure as exc:
             with store._write():
                 meeting_store.fail(store.connection, run_id, str(exc))

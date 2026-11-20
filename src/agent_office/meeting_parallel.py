@@ -1,5 +1,5 @@
 """Run a disjoint first group of approved tasks and import its checked changes together."""
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import combinations
 import json
 import os
@@ -19,13 +19,20 @@ from .team_runs import MAX_ACTIVE
 MAX_CHANGE = 1024 * 1024
 
 
-def _frontier(plan):
+def _frontier(plan, *, all_independent=False):
     eligible = []
     for item in plan["tasks"]:
         scopes = [PurePosixPath(scope.casefold()) for scope in item.get("folders", [])]
         if item["owner"] != "developer" or item["depends_on"] or not scopes or PurePosixPath(".") in scopes:
             continue
         eligible.append((item, scopes))
+    if all_independent:
+        group, used = [], []
+        for item, scopes in eligible:
+            if not any(a.is_relative_to(b) or b.is_relative_to(a) for a in scopes for b in used):
+                group.append(item)
+                used.extend(scopes)
+        return group if len(group) >= 2 else []
     for size in range(min(MAX_ACTIVE, len(eligible)), 1, -1):
         for group in combinations(eligible, size):
             if not any(a.is_relative_to(b) or b.is_relative_to(a)
@@ -34,7 +41,7 @@ def _frontier(plan):
     return []
 
 
-def _contents(root):
+def _contents(root, *, check_name=None):
     """Read bounded regular working files without following redirects or hard links."""
     files, seen, pending = {}, {}, [root]
     total = 0
@@ -49,6 +56,8 @@ def _contents(root):
                 raise ValueError("병렬 작업 폴더가 크기 제한을 초과했습니다.")
             name = file.relative_to(root).as_posix()
             _check_path(name, seen)
+            if check_name:
+                check_name(name)
             info = file.lstat()
             if _redirected(info):
                 raise ValueError("병렬 작업에 링크가 포함되어 있습니다.")
@@ -96,14 +105,14 @@ def _changes(initial, final, folders):
     return changes
 
 
-def _worker(adapter, root, item, task, plan, open_inbox):
+def _worker(adapter, root, item, task, plan, open_inbox, independent):
     initial = _contents(root)
     prompt = ("MEETING_IMPLEMENT\nImplement only the assigned task in the listed folders. "
               "Never commit, push, merge, deploy, change security policy, or edit another folder. "
               "Report work performed. If blocked, stop; do not grant yourself permission.\n"
               + json.dumps({"request": task, "assigned": item, "outcome": plan["outcome"],
                             "criteria": plan["criteria"], "rationale": plan["rationale"]}, ensure_ascii=False))
-    inbox = open_inbox()
+    inbox = open_inbox(item["id"]) if independent else open_inbox()
     try:
         result = adapter.execute(prompt, workspace=root, allow_edits=True, strict_completion=True, inbox=inbox)
     finally:
@@ -172,9 +181,9 @@ def _apply(repo, objects, version, changes, temp, tracked_modes):
     run_git(repo, *config, "apply", "--whitespace=nowarn", "-", data=patch)
 
 
-def execute_parallel(plan, workspace, adapters, developer, *, task, record, open_inbox):
+def execute_parallel(plan, workspace, adapters, developer, *, task, record, open_inbox, independent=False):
     """Apply one bounded root frontier; all later tasks stay with the primary worker."""
-    selected = _frontier(validate_plan(plan))
+    selected = _frontier(validate_plan(plan), all_independent=independent)
     if not selected:
         return ""
     repo = Path(workspace).resolve(strict=True)
@@ -203,26 +212,39 @@ def execute_parallel(plan, workspace, adapters, developer, *, task, record, open
         changes = {}
         try:
             with ThreadPoolExecutor(max_workers=MAX_ACTIVE) as workers:
-                jobs = []
+                jobs = {}
                 for item, root in zip(selected, roots):
                     record(item["id"], "별도 작업 트리에서 병렬 실행을 시작했습니다.")
-                    jobs.append(workers.submit(_worker, adapters[developer], root, item, task, plan, open_inbox))
-                for item, job in zip(selected, jobs):
+                    job = workers.submit(_worker, adapters[developer], root, item, task, plan, open_inbox, independent)
+                    jobs[job] = item
+                errors = []
+                for job in as_completed(jobs):
+                    item = jobs[job]
                     try:
                         changes[item["id"]] = job.result()
+                        if independent:
+                            _apply(repo, objects, version, changes[item["id"]], temp, tracked_modes)
+                            record(item["id"], "주 작업 트리에 반영: " + ", ".join(changes[item["id"]])[:800])
                     except (OSError, RuntimeError, ValueError) as exc:
-                        raise ValueError(f"{item['id']} 하위 작업을 검증하지 못했습니다: {exc}") from exc
-            combined = {name: data for changed in changes.values() for name, data in changed.items()}
-            _apply(repo, objects, version, combined, temp, tracked_modes)
+                        if independent:
+                            record(item["id"], "하위 작업을 반영하지 못했습니다. " + snapshot_request(str(exc))[:600])
+                        errors.append(f"{item['id']} 하위 작업을 검증하지 못했습니다: {exc}")
+                if errors:
+                    raise ValueError(errors[0])
+            if not independent:
+                combined = {name: data for changed in changes.values() for name, data in changed.items()}
+                _apply(repo, objects, version, combined, temp, tracked_modes)
         except (OSError, RuntimeError, ValueError) as exc:
             reason = snapshot_request(str(exc))[:600]
-            for item in selected:
-                record(item["id"], "병렬 결과를 적용하지 못했습니다. " + reason)
+            if not independent:
+                for item in selected:
+                    record(item["id"], "병렬 결과를 적용하지 못했습니다. " + reason)
             raise ValueError("병렬 작업 실행 또는 결과 반영에 실패했습니다.") from exc
     completed = []
     for item in selected:
         names = list(changes[item["id"]])
-        record(item["id"], "주 작업 트리에 반영: " + ", ".join(names)[:800])
+        if not independent:
+            record(item["id"], "주 작업 트리에 반영: " + ", ".join(names)[:800])
         completed.append({"id": item["id"], "description": item["description"], "changed_files": names})
     remaining = [item for item in plan["tasks"] if item["id"] not in changes]
     return ("The following parallel tasks are already applied in this worktree. Inspect the changes and "

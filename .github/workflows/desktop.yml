@@ -44,6 +44,10 @@ jobs:
           node desktop/verify-install.mjs $exe
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node desktop/verify-chat.mjs $exe (Join-Path $env:RUNNER_TEMP 'office-chat-evidence')
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+          $mode = if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { 'privilege-gate' } else { 'after' }
+          node desktop/verify-goal.mjs $exe (Join-Path $env:RUNNER_TEMP 'office-goal-evidence') $mode
       - name: Install and verify the Linux desktop app
         if: runner.os == 'Linux'
         run: |
@@ -52,3 +56,4 @@ jobs:
           test -f /usr/share/applications/ai-agent-office-desktop.desktop
           xvfb-run -a node desktop/verify-install.mjs /usr/bin/ai-agent-office-desktop
           xvfb-run -a node desktop/verify-chat.mjs /usr/bin/ai-agent-office-desktop "$RUNNER_TEMP/office-chat-evidence"
+          xvfb-run -a node desktop/verify-goal.mjs /usr/bin/ai-agent-office-desktop "$RUNNER_TEMP/office-goal-evidence" after

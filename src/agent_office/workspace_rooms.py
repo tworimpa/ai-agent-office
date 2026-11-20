@@ -7,7 +7,7 @@ import re
 import threading
 from hashlib import sha256
 
-from . import role_skills
+from . import overnight_goals, role_skills
 from . import meeting_store
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .models import OfficeError, validate_id
@@ -25,7 +25,7 @@ CURSOR_PATTERN = r"[ah]-[0-9a-f]{32}"
 
 
 def room_route(method, path):
-    match = re.fullmatch(rf"/rooms/([0-9a-f]{{32}})(?:/(assignments|inbox)|/history/({CURSOR_PATTERN}))?", path)
+    match = re.fullmatch(rf"/rooms/([0-9a-f]{{32}})(?:/(assignments|inbox|goal-policy)|/history/({CURSOR_PATTERN}))?", path)
     if match:
         workspace, view, cursor = match.groups()
         if method == "GET" and view != "assignments" or method == "POST" and view != "inbox" and cursor is None:
@@ -174,6 +174,7 @@ class WorkspaceRooms:
         self.engines = engines
         self.assignments = threading.Lock()
         with TaskStore(db_path, existing=True) as store, store._write():
+            overnight_goals.ensure_schema(store.connection)
             store.connection.execute("""CREATE TABLE IF NOT EXISTS studio_room_settings(
                 workspace_id TEXT PRIMARY KEY, settings_json TEXT NOT NULL)""")
             store.connection.execute("CREATE INDEX IF NOT EXISTS studio_runs_workspace ON studio_runs(workspace_id)")
@@ -195,6 +196,14 @@ class WorkspaceRooms:
             db.execute("INSERT INTO studio_room_settings VALUES(?,?) ON CONFLICT(workspace_id) "
                        "DO UPDATE SET settings_json=excluded.settings_json", (workspace_id, encode(settings)))
         return settings
+
+    def goal_policy(self, workspace_id, data=None):
+        self._workspace(workspace_id)
+        with TaskStore(self.path, existing=True) as store:
+            if data is None:
+                return overnight_goals.workspace_policy(store.connection, workspace_id)
+            with store._write():
+                return overnight_goals.save_policy(store.connection, workspace_id, data)
 
     def snapshot(self, workspace_id, cursor=None):
         workspace = self._workspace(workspace_id)
@@ -248,7 +257,9 @@ class WorkspaceRooms:
             page = {"runs": runs, "next_cursor": next_cursor}
             if cursor is None:
                 page.update(workspace=workspace, settings=self._settings(db, workspace_id), engines=engines,
-                            meeting_supported=True)
+                            meeting_supported=True, goal_supported=True,
+                            goal_default=db.execute("SELECT 1 FROM studio_goal_policies WHERE workspace_id=?",
+                                                    (workspace_id,)).fetchone() is not None)
         return page
 
     def inbox(self, workspace_id):
@@ -257,10 +268,15 @@ class WorkspaceRooms:
 
     def assign(self, workspace_id, data):
         required = {"id", "message", "allow_edits", "delegation"}
-        if not required <= data.keys() or data.keys() - required - {"indices", "test_files", "meeting", "review_plan", "role_engines"}:
+        if not required <= data.keys() or data.keys() - required - {"indices", "test_files", "meeting", "review_plan",
+                                                                    "role_engines", "goal", "goal_criteria", "reproduce_required"}:
             raise ValueError("조정자에게 보낼 요청을 확인하세요.")
         meeting = data.get("meeting", False)
         review_plan = data.get("review_plan", False)
+        goal = data.get("goal", False)
+        if (type(goal) is not bool or goal and data["allow_edits"] is not True or
+                not goal and ("goal_criteria" in data or "reproduce_required" in data)):
+            raise ValueError("개발 목표의 실행 범위를 확인하세요.")
         if type(meeting) is not bool or type(review_plan) is not bool or (review_plan and not meeting):
             raise ValueError("회의와 계획 검토 방식을 확인하세요.")
         overrides = data.get("role_engines", {})
@@ -283,6 +299,15 @@ class WorkspaceRooms:
                 if prior:
                     return prior
                 settings = self._settings(store.connection, workspace_id)
+                if goal:
+                    criteria = overnight_goals.criteria_for(task, data.get("goal_criteria"))
+                    goal_policy = overnight_goals.workspace_policy(store.connection, workspace_id, test_files)
+                    reproduce = data.get("reproduce_required", bool(re.search(
+                        r"재현|회귀 오류|reproduc(?:e|ible|tion)|regression bug", task, re.IGNORECASE)))
+                    if type(reproduce) is not bool:
+                        raise ValueError("재현 기준을 확인하세요.")
+                    # A named reproduction or explicit acceptance criteria provide a direct starting point.
+                    meeting = review_plan or not (reproduce or data.get("goal_criteria") or test_files)
             workspace = self._workspace(workspace_id)
             indices = data.get("indices", list(range(len(workspace["folders"]))))
             repo, folders = self.catalog.select(workspace_id, indices)
@@ -306,6 +331,9 @@ class WorkspaceRooms:
                                                    verifier_engine=verifier)
             assignment = {"roles": roles, "delegation": delegated,
                           "note": _assignment_note(settings, roles, allow_edits, delegated, choices)}
+            if goal:
+                assignment.update(goal_policy=goal_policy, goal_criteria=criteria, reproduce_required=reproduce,
+                                  planning_mode="meeting" if meeting else "direct")
             if test_files:
                 assignment["test_files"] = test_files
             if meeting:

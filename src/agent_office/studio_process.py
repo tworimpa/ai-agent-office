@@ -39,9 +39,9 @@ class LinuxChildren:
         if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
             raise OSError(ctypes.get_errno(), "Unable to own run descendants")
 
-    def spawn(self, argv, output=None):
-        return subprocess.Popen(argv, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                stdout=output if output is not None else subprocess.DEVNULL)
+    def spawn(self, argv, output=None, *, cwd=None, env=None, combined=False):
+        return subprocess.Popen(argv, stdin=subprocess.PIPE, stderr=subprocess.STDOUT if combined else subprocess.DEVNULL,
+                                stdout=output if output is not None else subprocess.DEVNULL, cwd=cwd, env=env)
 
     def drain(self, process):
         if process.poll() is None:
@@ -78,7 +78,7 @@ class WindowsJob:
         info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         win32job.SetInformationJobObject(self.handle, win32job.JobObjectExtendedLimitInformation, info)
 
-    def spawn(self, argv, output=None):
+    def spawn(self, argv, output=None, *, cwd=None, env=None, combined=False):
         # A Windows venv launcher can create the real interpreter before Python
         # code reads stdin. Suspend its primary thread until the job owns it.
         import msvcrt
@@ -101,10 +101,10 @@ class WindowsJob:
                 startup.dwFlags = subprocess.STARTF_USESTDHANDLES
                 startup.hStdInput = msvcrt.get_osfhandle(reader)
                 startup.hStdOutput = msvcrt.get_osfhandle(stdout.fileno())
-                startup.hStdError = msvcrt.get_osfhandle(devnull.fileno())
+                startup.hStdError = startup.hStdOutput if combined else msvcrt.get_osfhandle(devnull.fileno())
                 handle, thread, _, _ = win32process.CreateProcess(
                     argv[0], subprocess.list2cmdline(argv), None, None, True,
-                    win32con.CREATE_SUSPENDED | subprocess.CREATE_NO_WINDOW, None, None, startup,
+                    win32con.CREATE_SUSPENDED | subprocess.CREATE_NO_WINDOW, env, str(cwd) if cwd else None, startup,
                 )
                 try:
                     self.api.AssignProcessToJobObject(self.handle, handle)
@@ -155,9 +155,10 @@ class WindowsChild:
             raise TimeoutError("Coordinator did not exit")
 
 
-def run_child(mode, db_path, run_id, payload, stop, *, timeout=None, waiting_for_user=None):
+def run_child(mode, db_path, run_id, payload, stop, *, timeout=None, waiting_for_user=None, active_remaining=None):
     argv = [sys.executable, "-m", "agent_office.studio_runner", mode, str(db_path), run_id]
-    return run_owned_command(argv, payload, stop, timeout=timeout, waiting_for_user=waiting_for_user)
+    return run_owned_command(argv, payload, stop, timeout=timeout, waiting_for_user=waiting_for_user,
+                             active_remaining=active_remaining)
 
 
 def run_preview(db_path, run_id):
@@ -165,7 +166,7 @@ def run_preview(db_path, run_id):
     return run_child("preview", db_path, run_id, b"preview\n", threading.Event(), timeout=5)
 
 
-def run_owned_command(argv, payload, stop, *, timeout=None, output=None, waiting_for_user=None):
+def run_owned_command(argv, payload, stop, *, timeout=None, output=None, waiting_for_user=None, active_remaining=None):
     """Called in a dedicated supervisor so draining never claims unrelated children."""
     tree = WindowsJob() if os.name == "nt" else LinuxChildren()
     try:
@@ -179,11 +180,16 @@ def run_owned_command(argv, payload, stop, *, timeout=None, output=None, waiting
             checked = time.monotonic()
             while process.poll() is None:
                 current = time.monotonic()
+                if active_remaining and current >= deadline:
+                    remaining = active_remaining()
+                    if remaining <= 0:
+                        return False
+                    deadline = current + remaining
                 if waiting_for_user and deadline is not None and current - checked >= 1:
                     if waiting_for_user():
                         deadline += current - checked
                     checked = current
-                if stop.wait(0.03) or (deadline is not None and time.monotonic() >= deadline):
+                if stop.wait(0.03) or (not active_remaining and deadline is not None and time.monotonic() >= deadline):
                     return False
             return process.poll() == 0
         finally:
@@ -236,8 +242,30 @@ def supervise(db_path, run_id, payload):
         if not stopping:
             # Two complete develop/test/review attempts plus coordinator setup.
             budget = 2 * (900 + 300 + 900) + 60
+            from .goal_recovery import is_goal, timing
             from .meeting_store import summary
-            if summary(store.connection, run_id):
+            if is_goal(store.connection, run_id):
+                import json
+                store.connection.execute("DELETE FROM studio_goal_drains WHERE run_id=?", (run_id,))
+                policy = json.loads(store.connection.execute("SELECT policy_json FROM studio_goals WHERE id=?",
+                                                            (run_id,)).fetchone()[0])
+                remaining = policy["active_seconds"] - timing(store.connection, run_id)["active_seconds"]
+                if remaining > 0:
+                    success = run_child("worker", db_path, run_id, payload, disconnected, timeout=remaining,
+                                        active_remaining=lambda: policy["active_seconds"] -
+                                        timing(store.connection, run_id)["active_seconds"])
+                if (not success and not disconnected.is_set() and
+                        timing(store.connection, run_id)["active_seconds"] >= policy["active_seconds"]):
+                    message = "목표에 지정한 실제 작업 시간을 모두 사용했습니다."
+                    with store._write():
+                        from .goal_verification import init_schema
+                        init_schema(store.connection)
+                        store.connection.execute("UPDATE studio_runs SET diagnostic=?,proposed_state='FAILED',"
+                                                 "proposed_outcome='ACTIVE_BUDGET_EXHAUSTED' WHERE id=?", (message, run_id))
+                        store.connection.execute("INSERT OR REPLACE INTO studio_goal_stops VALUES (?,?)",
+                                                 (run_id, message))
+                    success = True
+            elif summary(store.connection, run_id):
                 def at_plan_gate():
                     return summary(store.connection, run_id)["status"] == "awaiting_review"
 

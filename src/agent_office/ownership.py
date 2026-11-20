@@ -32,6 +32,12 @@ class RunGuard:
         guard.path = guard.path.with_name("desktop-owner.lock")
         return guard
 
+    @classmethod
+    def worker(cls, db_path: Path, run_id: str):
+        guard = cls(db_path, run_id)
+        guard.path = guard.path.with_name(run_id + ".worker.lock")
+        return guard
+
     def __enter__(self):
         validate_db_file(self.db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,11 +121,12 @@ def recover_run(store, run_id: str, *, host_name: str, studio_owner=False):
                 # A live Studio owns the launch interval before its supervisor takes the run lock.
                 locks.enter_context(RunGuard.studio(store.path))
         locks.enter_context(RunGuard(store.path, run_id))
+        locks.enter_context(RunGuard.worker(store.path, run_id))
         locks.enter_context(store._write())
         run = store.get_run(run_id)
         if run.host_name != host_name:
             raise OfficeError("HOST_MISMATCH")
         if run.state in ACTIVE:
-            store._record(run_id, operation_key=f"{run_id}:recovery", event_type="RECOVERY_REQUIRED",
+            store._record(run_id, operation_key=f"{run_id}:recovery:{run.next_seq}", event_type="RECOVERY_REQUIRED",
                           state="RECOVERY_REQUIRED", outcome="INTERRUPTED", payload={"phase": "run"})
         return store.get_run(run_id)

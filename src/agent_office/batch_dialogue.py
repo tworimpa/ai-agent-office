@@ -61,6 +61,17 @@ def _turn(engine, argv, message, workspace, env, deadline, guard):
 
 def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox):
     deadline = time.monotonic() + timeout
+
+    def wait_decision(awaitable):
+        nonlocal deadline
+        started = time.monotonic()
+        if getattr(inbox, "goal_task_id", None) is not None and started < deadline:
+            # The previous batch turn has exited. Only Studio's live request/stop guard
+            # is needed until the operator answers on the original session.
+            response = asyncio.run(awaitable)
+            deadline += time.monotonic() - started
+            return response
+        return asyncio.run(asyncio.wait_for(awaitable, timeout=max(0, deadline - started)))
     message = prompt + "\n\n" + QUESTION_INSTRUCTIONS
     directions = getattr(inbox, "directions", None)
     session = decision = direction = kind = None
@@ -75,8 +86,7 @@ def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox):
         try:
             result = _turn(engine, command, message, workspace, env, deadline, guard)
         except DelegationWithdrawn:
-            decision = asyncio.run(asyncio.wait_for(inbox.await_operator(decision["id"]),
-                                                    timeout=max(0, deadline - time.monotonic())))
+            decision = wait_decision(inbox.await_operator(decision["id"]))
             result = _turn(engine, command, continuation_prompt(decision["answer"], kind=kind), workspace, env, deadline,
                            inbox.sending(decision["id"]))
         if result.returncode:
@@ -97,8 +107,7 @@ def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox):
             kind, question = request
             session = result.session_id
             command = _resume_argv(engine, argv, session)
-            decision = asyncio.run(asyncio.wait_for(inbox.ask(kind, question, session),
-                                                    timeout=max(0, deadline - time.monotonic())))
+            decision = wait_decision(inbox.ask(kind, question, session))
             message = continuation_prompt(decision["answer"], source=decision.get("source"), kind=kind)
             direction = None
             continue

@@ -37,6 +37,8 @@ class TaskState(TypedDict, total=False):
     developer_output: str
     test_output: str
     review_output: str
+    check_index: int
+    retry_allowed: bool
 
 
 def parse_review_verdict(output: str) -> str:
@@ -47,7 +49,8 @@ def parse_review_verdict(output: str) -> str:
 
 
 def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=None, save_stage=None, inbox_factory=None,
-                delegated_questions=(), skill_guidance=None, technical_choice_guidance="", studio_preview=None, meeting=None):
+                delegated_questions=(), skill_guidance=None, technical_choice_guidance="", studio_preview=None, meeting=None,
+                goal=None, resume_stage=None):
     guidance = skill_guidance or {}
     windows_service = studio_preview is not None and windows_service_session()
 
@@ -103,6 +106,8 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
 
     def develop(state: TaskState) -> dict:
         count = state.get("attempts", 0) + 1
+        if goal:
+            goal.invalidate()
         if meeting and count > 1:
             meeting.note_unverified("재작업이 시작되어 이전 결과를 다시 확인해야 합니다.")
         if save_stage and count > 1:
@@ -124,18 +129,25 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
         )
         if meeting is not None and meeting.applied_work:
             prompt += "\n\n" + meeting.applied_work
+        if goal:
+            prompt += ("\n\nDocument the failure hypothesis and implementation for this attempt. Preserve prior tests "
+                       "and scope. Use the baseline and the latest verification evidence supplied in feedback.")
         result = run_role(state, "developer", prompt)
         if save_stage:
             save_stage("developer_output", result.message)
         emit("STAGE_COMPLETED" if result.returncode == 0 else "STAGE_FAILED", "developer", count,
              engine=state["developer"], returncode=result.returncode)
-        return {
+        result_state = {
             "attempts": count,
             "developer_output": result.message,
             **({"test_output": "", "review_output": ""} if count > 1 else {}),
             "status": "DEVELOPED" if result.returncode == 0 else "RECOVERY_REQUIRED" if result.returncode == 124 else "FAILED",
             "feedback": "" if result.returncode == 0 else result.message[:2000],
         }
+        if goal and result.returncode == 0:
+            result_state["check_index"] = 0
+            goal.checkpoint("test", result_state)
+        return result_state
 
     def after_develop(state: TaskState) -> str:
         if state["status"] != "DEVELOPED":
@@ -151,23 +163,39 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
         emit("STAGE_STARTED", "test", state["attempts"], state="TESTING")
         timed_out = False
         returncode = None
+        retry_allowed = state["attempts"] < state["max_attempts"]
         try:
-            if test_files := state.get("test_files"):
-                verify_worktree_test_files(Path(state["workspace"]), test_files)
-            command = state["test_argv"]
-            with meeting.test_command(command) if meeting else nullcontext(command) as argv:
-                completed = subprocess.run(
-                    argv, cwd=state["workspace"],
-                    capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=300, check=False,
-                )
-            output = (completed.stdout + "\n" + completed.stderr)[-6000:]
-            passed = completed.returncode == 0
-            returncode = completed.returncode
-            if meeting:
-                witness = {"cwd": state["workspace"], "argv": argv, "exit_code": returncode}
-                output = ("Studio test invocation:\n" + json.dumps(witness, ensure_ascii=False)
-                          + "\nCaptured test output:\n" + output)
+            if goal:
+                passed, timed_out, retry_allowed, output = goal.verify(state, meeting)
+                if not passed and retry_allowed and state["attempts"] >= 2:
+                    consultation = run_role(state, "reviewer",
+                        "Independently compare the developer's hypothesis with the failed verification evidence. "
+                        "Do not edit files or grant permissions. Identify the competing explanation and next check.\n"
+                        + state["task"] + "\n" + state.get("developer_output", "") + "\n" + output)
+                    usable = consultation.returncode == 0 and not consultation.truncated
+                    bound = goal.review(state["attempts"], "consultation", "completed" if usable else "unverified",
+                                        consultation.message)
+                    retry_allowed = retry_allowed and usable and bound
+                    if not retry_allowed:
+                        goal.stop("가설에 대한 독립 검토를 확인하세요.")
+                    output += "\n가설 검토:\n" + consultation.message[:2000]
+            else:
+                if test_files := state.get("test_files"):
+                    verify_worktree_test_files(Path(state["workspace"]), test_files)
+                command = state["test_argv"]
+                with meeting.test_command(command) if meeting else nullcontext(command) as argv:
+                    completed = subprocess.run(
+                        argv, cwd=state["workspace"],
+                        capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=300, check=False,
+                    )
+                output = (completed.stdout + "\n" + completed.stderr)[-6000:]
+                passed = completed.returncode == 0
+                returncode = completed.returncode
+                if meeting:
+                    witness = {"cwd": state["workspace"], "argv": argv, "exit_code": returncode}
+                    output = ("Studio test invocation:\n" + json.dumps(witness, ensure_ascii=False)
+                              + "\nCaptured test output:\n" + output)
         except subprocess.TimeoutExpired as exc:
             passed = False
             timed_out = True
@@ -176,23 +204,30 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
         except (OSError, ValueError) as exc:
             passed = False
             output = str(exc)
+            if goal:
+                retry_allowed = False
+                goal.stop(output)
         if save_stage:
             save_stage("test_output", output)
         emit("STAGE_COMPLETED" if passed else "STAGE_FAILED", "test", state["attempts"], returncode=returncode)
-        if not passed and not timed_out and state["attempts"] < state["max_attempts"]:
+        if not passed and not timed_out and retry_allowed:
             emit("RETRY_SCHEDULED", "test", state["attempts"], state="RUNNING")
-        return {
+        result_state = {
             "status": "TEST_PASSED" if passed else "RECOVERY_REQUIRED" if timed_out else "TEST_FAILED",
             "test_output": output,
             "feedback": "" if passed else f"Tests failed:\n{output}",
+            "retry_allowed": retry_allowed,
         }
+        if goal and passed:
+            goal.checkpoint("review", dict(state, **result_state))
+        return result_state
 
     def after_test(state: TaskState) -> str:
         if state["status"] == "RECOVERY_REQUIRED":
             return "end"
         if state["status"] == "TEST_PASSED":
             return "review"
-        return "develop" if state["attempts"] < state["max_attempts"] else "end"
+        return "develop" if state["retry_allowed"] else "end"
 
     def review_evidence(state: TaskState) -> str:
         workspace = Path(state["workspace"])
@@ -207,6 +242,8 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
         return heading + f"Working-tree status:\n{status or '(no status lines shown)'}\n\nDiff:\n{diff or '(no patch shown)'}"
 
     def review(state: TaskState) -> dict:
+        if goal:
+            goal.invalidate()
         emit("STAGE_STARTED", "review", state["attempts"], state="REVIEWING", engine=state["reviewer"])
         revision = meeting.snapshot()["revision"] if meeting else None
         prompt = (
@@ -240,6 +277,13 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             status = "CHANGES_REQUESTED"
         else:
             status = "NEEDS_HUMAN_REVIEW"
+        if goal:
+            verdict = {"READY_FOR_HUMAN_REVIEW": "approved", "CHANGES_REQUESTED": "changes_requested"}.get(status, "unverified")
+            if not goal.review(state["attempts"], "review", verdict, output):
+                status = "NEEDS_HUMAN_REVIEW"
+            goal.stop({"READY_FOR_HUMAN_REVIEW": "검증과 독립 검토를 마쳤습니다. 후보 채택을 기다립니다.",
+                       "CHANGES_REQUESTED": "검토자가 후보 수정을 요청했습니다.",
+                       "RECOVERY_REQUIRED": "검토 실행 결과를 확인해야 합니다."}.get(status, "검토 결과를 확인하세요."))
         if status == "CHANGES_REQUESTED" and state["attempts"] < state["max_attempts"]:
             emit("RETRY_SCHEDULED", "review", state["attempts"], state="RUNNING", engine=state["reviewer"])
         return {
@@ -259,15 +303,24 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
     graph.add_node("plan_only", plan_only)
     graph.add_node("test", test)
     graph.add_node("review", review)
-    if meeting is not None:
+    if goal:
+        def baseline(_state):
+            ok, output = goal.baseline()
+            return {"status": "NEW" if ok else "TEST_FAILED", "feedback": output, "test_output": output}
+        graph.add_node("baseline", baseline)
+        graph.add_conditional_edges("baseline", lambda s: "develop" if s["status"] == "NEW" else "end",
+                                    {"develop": "develop", "end": END})
+    if resume_stage:
+        graph.add_edge(START, resume_stage)
+    elif meeting is not None:
         def prepare(_state):
             meeting.begin()
             return {}
         graph.add_node("meeting", prepare)
         graph.add_edge(START, "meeting")
-        graph.add_edge("meeting", "develop")
+        graph.add_edge("meeting", "baseline" if goal else "develop")
     else:
-        graph.add_edge(START, "develop")
+        graph.add_edge(START, "baseline" if goal else "develop")
     graph.add_conditional_edges("develop", after_develop, {
         "test": "test", "plan_only": "plan_only", "end": END,
     })

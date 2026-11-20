@@ -30,11 +30,13 @@ from .studio_runner import LocalRunner
 from .away_ledger import return_report, revoke_policy
 from .studio_ssh import RemoteUnavailable, is_peer_route, remote_request
 from .workspace_rooms import WorkspaceRooms, room_route
+from . import overnight_goals
 
 ASSETS = {
     "/": ("workspace-office.html", "text/html"),
     "/workspace-office.css": ("workspace-office.css", "text/css"),
     "/workspace-office.js": ("workspace-office.js", "text/javascript"),
+    "/workspace-goal.js": ("workspace-goal.js", "text/javascript"),
     "/office-content.js": ("office-content.js", "text/javascript"),
     "/office-content.css": ("office-content.css", "text/css"),
     "/office-flow.js": ("office-flow.js", "text/javascript"),
@@ -131,6 +133,8 @@ class StudioServer(ThreadingHTTPServer):
             self.skills = RoleSkillRegistry(self.db_path)
             self.engines = StudioEngineCatalog(self.db_path)
             self.runner = LocalRunner(self.db_path)
+            from .goal_peer import configure
+            configure(self.db_path, remotes)
             self.directions = self.runner.directions
             self.rooms = WorkspaceRooms(self.db_path, self.catalog, self.runner, self.engines)
             self.improvements = StudioImprovements(self.db_path, improvement_source)
@@ -264,6 +268,11 @@ class StudioHandler(ObserverHandler):
     def _local_api(self, path, data):
         write = data is not None
         catalog, runner = self.server.catalog, self.server.runner
+        peer_check = re.fullmatch(r"/api/goal-checks/([a-f0-9]{32})", path)
+        if peer_check:
+            from .goal_peer import lookup
+            self._reply(200, lookup(self.server.db_path, peer_check[1], data))
+            return
         room = room_route("POST" if write else "GET", path.removeprefix("/api")) if path.startswith("/api/") else None
         if room:
             workspace_id, view, cursor = room
@@ -271,10 +280,30 @@ class StudioHandler(ObserverHandler):
                 self._reply(202, {"run": self.server.rooms.assign(workspace_id, data)})
             elif view == "inbox":
                 self._reply(200, {"requests": self.server.rooms.inbox(workspace_id)})
+            elif view == "goal-policy":
+                self._reply(200, {"policy": self.server.rooms.goal_policy(workspace_id, data)})
             elif write:
                 self._reply(200, {"settings": self.server.rooms.save(workspace_id, data)})
             else:
                 self._reply(200, self.server.rooms.snapshot(workspace_id, cursor))
+            return
+        goal = overnight_goals.goal_route("POST" if write else "GET", path.removeprefix("/api"))
+        if goal:
+            run_id, action, attempt = goal
+            if action == "recover":
+                from .goal_recovery import reconcile
+                if set(data) != {"id"}:
+                    raise ValueError("복구 요청 ID를 확인하세요.")
+                result = {"recovery": reconcile(runner, run_id, validate_id(data["id"])), "run_id": run_id}
+            elif action == "adopt":
+                result = overnight_goals.adopt(self.server.db_path, run_id, data)
+            elif action == "candidate":
+                result = overnight_goals.candidate(self.server.db_path, run_id, attempt)
+            elif action == "compare":
+                result = overnight_goals.compare(self.server.db_path, run_id, attempt)
+            else:
+                result = {"goal": overnight_goals.report(self.server.db_path, run_id)}
+            self._reply(200, result)
             return
         meeting_gate = re.fullmatch(r"/api/runs/([a-f0-9]{32})/meeting/decision", path)
         if meeting_gate and data is not None:

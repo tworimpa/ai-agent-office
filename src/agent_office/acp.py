@@ -178,6 +178,11 @@ class _Session:
         return await self.wait_decision(self.inbox.ask(kind, prompt, self.session_id))
 
     async def wait_decision(self, awaitable):
+        from .dialogue import operator_wait
+        with operator_wait(self.inbox, self.timer):
+            return await self._live_decision(awaitable)
+
+    async def _live_decision(self, awaitable):
         # A dead provider cannot consume a later decision. Race its exit even
         # while the normal stdout reader is waiting for the operator.
         response = asyncio.create_task(awaitable)

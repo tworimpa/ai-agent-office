@@ -194,8 +194,11 @@ def begin_question(db, request):
 
 
 def defer(db, request_id, reason):
-    db.execute("UPDATE studio_away_checks SET reason=? WHERE request_id=? AND reason IS NULL AND evidence IS NULL",
-               (reason, request_id))
+    updated = db.execute("UPDATE studio_away_checks SET reason=? WHERE request_id=? AND reason IS NULL AND evidence IS NULL",
+                         (reason, request_id))
+    if updated.rowcount:
+        from .goal_recovery import note_wait
+        note_wait(db, request_id)
 
 
 def record_answer(db, request_id, consultation, answer, evidence):
