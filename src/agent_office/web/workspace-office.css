@@ -118,6 +118,64 @@ h1 { font: 700 clamp(1.7rem, 4vw, 3rem)/1.25 var(--serif); overflow-wrap: anywhe
 #meeting-note { margin-block-start: 8px; }
 #chat-meeting { align-self: flex-start; margin: 0 19px 8px; }
 .ledger :focus-visible { outline-color: #87572f; }
+.view-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-block: 5px;
+}
+.view-picker button, .evidence-links button, .view-return {
+  min-height: 34px;
+  padding: 5px 10px;
+  font: 600 .82rem/1.4 var(--sans);
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  background: transparent;
+}
+.view-picker button { border-color: transparent; }
+.view-picker [aria-pressed="true"], .view-picker [aria-checked="true"] {
+  color: #211c15;
+  background: #edc487;
+  border-color: #a07541;
+}
+.evidence-links { display: flex; flex-wrap: wrap; gap: 6px; margin-block: 8px; }
+.result-facts {
+  display: flex; flex-wrap: wrap; gap: 4px 10px; list-style: none;
+  padding: 7px 0 0; margin: 2px 0 0; border-block-start: 1px solid #6b5a41;
+  font-size: .79rem; line-height: 1.5; overflow-wrap: anywhere; color: #e2d0ae;
+}
+.office-thread { display: grid; gap: 10px; min-width: 0; overflow-wrap: anywhere; }
+#room-view-controls, #chat-view-controls {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 10px;
+}
+#chat-view-controls { padding: 4px 18px; border-bottom: 1px solid var(--line); }
+#chat-connection:empty { display: none; }
+#chat-pending { align-self: start; margin: 4px 18px; min-height: 32px; color: var(--gold); border-color: #ac8050; }
+#chat-connection:not(:empty) { margin: 4px 18px; color: var(--gold); }
+#chat-view-controls .evidence-links { margin: 2px 0; }
+.view-picker, .evidence-links { min-inline-size: 0; }
+.chat-dialog .evidence-links button { border-color: #76654e; background: transparent; color: var(--sand); }
+#chat-evidence { min-height: 0; max-height: 52dvh; overflow: auto; overscroll-behavior: contain; }
+#conversation:has([data-back]) #chat-evidence { flex: 1 1 auto; max-height: 65dvh; }
+#conversation:has([data-back]) #chat-log:not(:has(.request-item)),
+#conversation:has([data-back]) #chat-meeting { display: none; }
+#conversation:has([data-back]) #chat-log:has(.request-item) { max-height: 24dvh; }
+#chat-evidence > :not([hidden]) { padding-block-end: 10px; }
+#chat-evidence .evidence > summary { font-weight: 650; padding-block: .55rem; }
+#chat-evidence .evidence + .evidence { border-top: 1px solid var(--line); }
+#chat-evidence #evidence-panel { margin-inline: 18px; }
+#chat-evidence :is(.meeting, .meeting-version, .meeting-editor, #ledger-result details, #ledger-result summary) { color: var(--paper); }
+#chat-evidence :is(#meeting-phase, .contribution small) { color: var(--sand); }
+#chat-evidence #meeting-decision { color: var(--ink); }
+#chat-evidence #meeting-decision .meeting-editor { color: var(--ink); }
+#chat-evidence #evidence-tests pre, .ledger #evidence-tests pre { overflow-x: auto; max-block-size: 22rem; font-size: .85rem; }
+.chat-dialog :is(.chat-log, .chat-form, input, textarea) { min-width: 0; }
+@media (max-width: 520px) {
+  #chat-view-controls { padding-inline: 10px; }
+  #chat-evidence #evidence-panel { margin-inline: 10px; }
+  .chat-dialog .view-picker button { padding: 4px 8px; }
+}
 .empty-room { padding: clamp(28px, 9vw, 110px) 30px; border: 1px solid var(--line); min-height: 370px; background: linear-gradient(90deg, #171a15, #171a15bc 48%, #171a153d), #32271a url("/workspace-study.webp") center / cover; }
 .empty-room p { color: var(--soft); max-width: 38ch; margin-block: 12px 20px; line-height: 1.7; }
 
@@ -139,6 +197,9 @@ h1 { font: 700 clamp(1.7rem, 4vw, 3rem)/1.25 var(--serif); overflow-wrap: anywhe
 .message small { color: var(--sand); font-size: .72rem; }
 .request-item { display: grid; gap: 8px; padding: 13px; border: 1px solid #5f5749; border-radius: 5px; }
 .chat-log .request-item { background: #2d2e23; border-color: #887052; }
+.request-item, .request-item > *, .request-log, .chat-log > *, .office-thread > * { min-inline-size: 0; }
+.request-item pre { max-inline-size: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.request-item label, .request-item p { overflow-wrap: anywhere; }
 .request-item h3 { font-size: 1rem; }
 .request-item p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .request-item small { color: var(--sand); }

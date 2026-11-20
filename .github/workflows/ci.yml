@@ -32,6 +32,11 @@ jobs:
         run: npm ci
       - name: Frontend state and DOM tests
         run: npm run test:web
+      - name: Verify bundled offline flowchart renderer
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        run: |
+          npm run build:flow
+          git diff --exit-code -- src/agent_office/web/mermaid-flow-renderer.js
       - name: Compile source
         run: python -m compileall -q src tests
       - name: Deploy and recover a disposable Windows NSSM Studio in Edge
