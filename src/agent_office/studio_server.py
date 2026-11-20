@@ -13,7 +13,7 @@ from urllib.parse import parse_qsl, urlsplit
 import uuid
 
 from .models import OfficeError, validate_id
-from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER
+from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, resolve_executable
 from .engine_evidence import StudioEngineCatalog
 from .observer import ObserverHandler
 from .office_state import office_snapshot
@@ -205,6 +205,13 @@ class StudioHandler(ObserverHandler):
             hosts = [{"id": "local", "name": "이 컴퓨터"}]
             hosts.extend({"id": host.journal_id, "name": host.alias} for host in self.server.remotes.values())
             self._reply(200, {"hosts": hosts})
+            return
+        if parsed.path == "/api/studio-identity" and not write:
+            self._reply(200, {"journal_id": self.server.journal_id})
+            return
+        if parsed.path == "/api/studio-tools" and not write:
+            git = "git.exe" if os.name == "nt" else "git"
+            self._reply(200, {"git": {"installed": resolve_executable(git) is not None}})
             return
         path = parsed.path
         target = re.fullmatch(r"/api/(hosts|peer)/([a-f0-9]{32})(/.*)", path)

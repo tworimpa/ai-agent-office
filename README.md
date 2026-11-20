@@ -4,6 +4,10 @@ Local-first orchestration of coding agent CLIs with a browser-based local studio
 
 The selected local or SSH-connected host owns its folders, processes, requests and decision journal. The collaboration inbox supports operator decisions and opt-in, evidence-checked answers to selected technical questions.
 
+## 설치형 앱
+
+Windows와 Ubuntu·Debian 계열 Linux에서 **AI Agent Office** 앱을 열어 실행 중인 Studio에 연결하거나 새 로컬 작업실을 시작할 수 있습니다. 앱 창을 닫고 다시 열어도 실행 중인 작업은 같은 화면에서 확인할 수 있습니다. [빌드·설치·제거 안내](docs/desktop.md)
+
 ## 로컬 작업실 시작
 
 아래 명령을 설치된 환경에서 실행한 뒤 터미널에 표시되는 주소를 브라우저에서 여세요. Windows와 Linux에서 같은 명령을 사용합니다.

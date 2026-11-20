@@ -1,0 +1,63 @@
+:root {
+  color-scheme: dark;
+  font: 16px/1.55 "Segoe UI", system-ui, sans-serif;
+  color: #f2eee4;
+  background: #151823;
+}
+
+body { margin: 0; }
+main { margin: auto; max-width: 50rem; padding: clamp(1.3rem, 5vw, 3.3rem); }
+header { margin-bottom: 1.4rem; }
+h1 { font: 600 clamp(2rem, 6vw, 2.75rem)/1.12 Georgia, serif; letter-spacing: -.015em; margin: 0; }
+h2 { font-size: 1.06rem; margin: 0 0 .86rem; }
+p { color: #cbc9cb; margin: .55rem 0 .85rem; }
+.modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+section {
+  padding: 1.15rem;
+  background: #1c202e;
+  border: 1px solid #414453;
+  border-radius: .65rem;
+}
+#connected { margin-top: 1rem; }
+label { display: block; font-weight: 600; }
+input, textarea {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: .3rem;
+  border: 1px solid #747787;
+  border-radius: .36rem;
+  background: #151823;
+  padding: .58rem .65rem;
+  color: inherit;
+  font: inherit;
+}
+textarea { resize: vertical; }
+button {
+  border: 1px solid #656b79;
+  border-radius: .38rem;
+  background: #303849;
+  color: inherit;
+  padding: .46rem .78rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:hover { background: #3b4961; }
+button:disabled { cursor: wait; opacity: .6; }
+.primary { background: #edc98d; border-color: #edc98d; color: #231b18; }
+.primary:hover { background: #ffdda4; }
+.quiet { margin-top: 1rem; }
+details { margin: .55rem 0 .85rem; }
+summary { cursor: pointer; }
+details label { margin-top: .65rem; }
+#status:not(:empty), #error:not(:empty) { padding: .55rem 0 .75rem; }
+#error { color: #ffd0c7; }
+[aria-invalid="true"] { border-color: #ff9a86; }
+.toolbar { display: flex; align-items: center; justify-content: space-between; gap: .7rem; }
+.toolbar + .toolbar { margin-top: 1rem; }
+.toolbar h2 { margin: 0; }
+ul { list-style: none; margin: .6rem 0 0; padding: 0; }
+li { padding: .4rem 0; border-top: 1px solid #414453; display: flex; gap: .6rem; align-items: center; justify-content: space-between; }
+li button { flex-shrink: 0; font-size: .85rem; }
+:focus-visible { outline: 2px solid #edc98d; outline-offset: 3px; }
+@media (max-width: 670px) { .modes { grid-template-columns: 1fr; } }

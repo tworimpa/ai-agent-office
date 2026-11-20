@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>AI Agent Office · 연결 설정</title>
+  <link rel="stylesheet" href="setup.css">
+  <script src="setup.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>AI Agent Office</h1>
+      <p>이 컴퓨터에서 사무실을 열거나 이미 실행 중인 작업실에 연결하세요.</p>
+    </header>
+
+    <div id="status" role="status" aria-atomic="true"></div>
+    <div id="error" role="alert" aria-atomic="true"></div>
+
+    <div class="modes">
+      <section>
+        <h2>기존 작업실</h2>
+        <form id="connect">
+          <label for="address">Studio 주소</label>
+          <input id="address" type="url" required maxlength="192" spellcheck="false"
+            value="http://127.0.0.1:8766" aria-describedby="address-help">
+          <p id="address-help">현재 실행 중인 이 컴퓨터의 Studio 주소</p>
+          <button type="submit">기존 작업실 연결</button>
+        </form>
+      </section>
+      <section>
+        <h2>내 로컬 작업실</h2>
+        <form id="local">
+          <p>앱 창을 닫아도 작업은 이 컴퓨터에서 계속됩니다.</p>
+          <details>
+            <summary>SSH 원격 작업실 설정</summary>
+            <label for="remotes">원격 작업실</label>
+            <textarea id="remotes" rows="3" spellcheck="false" maxlength="2200" aria-describedby="remote-help"></textarea>
+            <p id="remote-help">한 줄에 SSH 별칭, Studio 포트, 저널 ID를 공백으로 구분해 입력하세요.</p>
+          </details>
+          <button type="submit">로컬 작업실 시작</button>
+        </form>
+      </section>
+    </div>
+
+    <section id="connected" hidden>
+      <div class="toolbar">
+        <strong id="connection"></strong>
+        <button id="open" type="button" class="primary">작업실 열기</button>
+      </div>
+      <div class="toolbar">
+        <h2>도구 상태</h2>
+        <button id="refresh" type="button">새로고침</button>
+      </div>
+      <ul id="tools" aria-label="Git과 에이전트 CLI 상태"></ul>
+      <button id="stop" type="button" class="quiet" hidden>로컬 작업실 종료</button>
+    </section>
+  </main>
+</body>
+</html>

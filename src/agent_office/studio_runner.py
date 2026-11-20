@@ -499,7 +499,8 @@ def worker(db_path, run_id):
         revision = source[0] if source else get_revision(db_path, run_id)
         selected_tests = json.loads(room["assignment_json"]).get("test_files") if room else None
         test_files = normalize_test_files(selected_tests) if selected_tests is not None else []
-        test_command = [sys.executable, "-m", "pytest", "-q"]
+        pytest_module = "agent_office.desktop_pytest" if os.environ.get("AGENT_OFFICE_DESKTOP_LOCAL") == "1" else "pytest"
+        test_command = [sys.executable, "-m", pytest_module, "-q"]
         if test_files:
             test_command.extend(["--", *test_files])
         args = SimpleNamespace(repo=Path(task.project), task=raw_task, developer=task.developer_engine,
