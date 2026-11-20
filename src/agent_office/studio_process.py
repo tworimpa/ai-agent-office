@@ -155,9 +155,9 @@ class WindowsChild:
             raise TimeoutError("Coordinator did not exit")
 
 
-def run_child(mode, db_path, run_id, payload, stop, *, timeout=None):
+def run_child(mode, db_path, run_id, payload, stop, *, timeout=None, waiting_for_user=None):
     argv = [sys.executable, "-m", "agent_office.studio_runner", mode, str(db_path), run_id]
-    return run_owned_command(argv, payload, stop, timeout=timeout)
+    return run_owned_command(argv, payload, stop, timeout=timeout, waiting_for_user=waiting_for_user)
 
 
 def run_preview(db_path, run_id):
@@ -165,7 +165,7 @@ def run_preview(db_path, run_id):
     return run_child("preview", db_path, run_id, b"preview\n", threading.Event(), timeout=5)
 
 
-def run_owned_command(argv, payload, stop, *, timeout=None, output=None):
+def run_owned_command(argv, payload, stop, *, timeout=None, output=None, waiting_for_user=None):
     """Called in a dedicated supervisor so draining never claims unrelated children."""
     tree = WindowsJob() if os.name == "nt" else LinuxChildren()
     try:
@@ -176,7 +176,13 @@ def run_owned_command(argv, payload, stop, *, timeout=None, output=None):
                 process.stdin.write(payload)
             process.stdin.close()
             deadline = None if timeout is None else time.monotonic() + timeout
+            checked = time.monotonic()
             while process.poll() is None:
+                current = time.monotonic()
+                if waiting_for_user and deadline is not None and current - checked >= 1:
+                    if waiting_for_user():
+                        deadline += current - checked
+                    checked = current
                 if stop.wait(0.03) or (deadline is not None and time.monotonic() >= deadline):
                     return False
             return process.poll() == 0
@@ -230,7 +236,15 @@ def supervise(db_path, run_id, payload):
         if not stopping:
             # Two complete develop/test/review attempts plus coordinator setup.
             budget = 2 * (900 + 300 + 900) + 60
-            success = run_child("worker", db_path, run_id, payload, disconnected, timeout=budget)
+            from .meeting_store import summary
+            if summary(store.connection, run_id):
+                def at_plan_gate():
+                    return summary(store.connection, run_id)["status"] == "awaiting_review"
+
+                success = run_child("worker", db_path, run_id, payload, disconnected, timeout=budget + 4 * 900,
+                                    waiting_for_user=at_plan_gate)
+            else:
+                success = run_child("worker", db_path, run_id, payload, disconnected, timeout=budget)
             if not success and not disconnected.is_set():
                 store.connection.execute(
                     "UPDATE studio_runs SET diagnostic=? WHERE id=? AND diagnostic=''",

@@ -72,7 +72,7 @@ test('coordinator assignment uses room defaults and sends a linked follow-up wit
     if (path === base) return room(assigned ? [{...assigned, state: mode}] : []);
     if (path === base + '/assignments') {
       assert.match(body.id, /^[a-f0-9]{32}$/);
-      assert.deepEqual(body, {id: body.id, message, allow_edits: true, delegation: null, indices: [0]});
+      assert.deepEqual(body, {id: body.id, message, meeting: true, allow_edits: true, delegation: null, indices: [0]});
       assigned = {...run, id: body.id, task: body.message};
       return {run: assigned};
     }
@@ -121,6 +121,8 @@ test('a lost assignment receipt preserves the exact request ID, choices and mess
     if (path === base + '/assignments') {
       if (++attempts === 1) {
         posted = body;
+        assert.equal(body.review_plan, true);
+        assert.deepEqual(body.role_engines, {reviewer: 'gemini'});
         assert.deepEqual(body.test_files, ['tests/test_review_regressions.py']);
         storedRun = {...run, id: body.id, task: body.message, allow_edits: body.allow_edits,
           assignment: {...run.assignment, test_files: body.test_files}};
@@ -137,6 +139,8 @@ test('a lost assignment receipt preserves the exact request ID, choices and mess
   first.person('coordinator').click();
   first.get('message').value = '저널 경로 설명을 보완해줘';
   first.get('allow-edits').click();
+  first.get('review-plan').click();
+  first.get('assignment-reviewer-engine').value = 'gemini';
   assert.equal(first.get('assignment-test-scope').hidden, false);
   first.get('test-files').value = 'tests/test_review_regressions.py';
   first.get('run-delegation').value = 'false';
@@ -151,6 +155,10 @@ test('a lost assignment receipt preserves the exact request ID, choices and mess
   assert.equal(second.get('message').value, posted.message);
   assert.equal(second.get('message').readOnly, true);
   assert.equal(second.get('run-delegation').value, 'false');
+  assert.equal(second.get('review-plan').checked, true);
+  assert.equal(second.get('review-plan').disabled, true);
+  assert.equal(second.get('assignment-reviewer-engine').value, 'gemini');
+  assert.equal(second.get('assignment-reviewer-engine').disabled, true);
   assert.equal(second.get('test-files').value, posted.test_files[0]);
   assert.equal(second.get('test-files').disabled, true);
   assert.equal(second.get('send').textContent, '같은 요청 다시 보내기');
@@ -163,6 +171,78 @@ test('a lost assignment receipt preserves the exact request ID, choices and mess
   assert.equal(second.window.sessionStorage.length, 0);
   await until(() => second.get('ledger-result').textContent.includes(posted.test_files[0]));
   assert.equal(attempts, 3);
+});
+
+test('meeting review retains a draft through polling and sends the product choice and edited plan to the selected remote run', async t => {
+  const plan = {
+    outcome: '원인을 고칩니다.', scope: ['기존 경로\n유지'], rationale: ['기존 설정  '],
+    tasks: [{id: 't1', owner: 'developer', description: '수정', depends_on: [], folders: ['src']},
+      {id: 't2', owner: 'reviewer', description: '독립 검토', depends_on: ['t1']}],
+    criteria: [{criterion: '재현 검증', verification: '테스트를 실행합니다.', test_files: ['tests/test_main.py']}],
+    questions: [{question: '기본 동작을 고르세요.', options: ['자동', '수동']}],
+    evidence: {revision: '4'.repeat(40), paths: ['src/main.py']},
+  };
+  const version = {revision: 1, plan, source: 'coordinator', reason: '첫 회의', verification: [], answers: {}};
+  let meeting = {run_id: runId, status: 'planning', revision: 0, contributions: [
+    {role: 'developer', engine: 'codex', text: '<img src=x> 경로 확인', created_at: run.created_at}],
+    revisions: [], choices: [], answers: {}, plan: null, verification: []};
+  const prefix = '/api/hosts/' + remote;
+  let posted, detailReads = 0;
+  const lines = {developer: '파일 경로를 확인했습니다.', coordinator: '계획 의견을 모으고 있습니다.', reviewer: '검토 중'};
+  const view = () => ({...run, lines, meeting});
+  const {get, person, submit, window, calls} = mount(t, (path, body) => {
+    if (path === prefix + '/rooms/' + workspace.id) return room([{...run, lines}]);
+    if (path === prefix + '/runs/' + runId) { detailReads++; return {run: view()}; }
+    if (path === prefix + '/runs/' + runId + '/meeting/decision') {
+      posted = body;
+      meeting = {...meeting, status: 'approved', revision: 2, plan: body.plan, answers: body.answers,
+        revisions: [version, {...version, revision: 2, source: 'operator', plan: body.plan, approved_by: 'operator'}],
+        decision: {id: body.id, revision: body.revision}, work: [
+          {revision: 2, task_id: 't1', engine: 'codex', result: '별도 작업 트리에서 병렬 실행을 시작했습니다.', created_at: run.created_at},
+          {revision: 2, task_id: 't1', engine: 'codex', result: '주 작업 트리에 반영: src/main.py', created_at: run.created_at},
+        ]};
+      return {meeting};
+    }
+  }, {query: '?host=' + remote + '&workspace=' + workspace.id + '&run=' + runId});
+  await until(() => !get('meeting').hidden);
+  assert.match(get('meeting-phase').textContent, /논의 중/);
+  assert.equal(get('meeting-decision').hidden, true);
+  assert.match(get('meeting-record').textContent, /<img src=x>/);
+  assert.equal(get('meeting-record').querySelector('img'), null);
+  assert.equal(person('coordinator').querySelector('.seat-line').textContent, lines.coordinator);
+  assert.equal(person('developer').querySelector('.seat-line').textContent, meeting.contributions[0].text);
+  person('developer').click();
+  assert.match(get('chat-log').textContent, /기획 회의 · 서진/);
+  get('chat-meeting').click();
+  assert.equal(window.document.activeElement, get('meeting-heading'));
+  meeting = {...meeting, status: 'awaiting_review', revision: 1, revisions: [version], plan,
+    choices: [{id: 'q1', ...plan.questions[0]}], verification: [{criterion: '재현 검증', status: 'not_verified', evidence: ''}]};
+  get('refresh').click();
+  await until(() => !get('meeting-decision').hidden && !get('approve-plan').disabled);
+  submit('meeting-decision');
+  assert.equal(posted, undefined);
+  const editor = get('meeting-outcome');
+  editor.closest('details').open = true;
+  editor.value = '수정된 결과 <script>문자열</script>';
+  editor.focus();
+  const seen = detailReads;
+  get('refresh').click();
+  await until(() => detailReads > seen);
+  assert.equal(window.document.activeElement, editor);
+  assert.equal(get('meeting-outcome').value, editor.value);
+  get('meeting-choice-0-1').click();
+  submit('meeting-decision');
+  await until(() => get('meeting-phase').textContent.includes('계획 확정'));
+  assert.deepEqual(posted, {id: posted.id, revision: 1, plan: {...plan, outcome: editor.value}, answers: {q1: '수동'}});
+  assert.match(posted.id, /^[a-f0-9]{32}$/);
+  assert.equal(get('meeting-decision').hidden, true);
+  assert.ok(get('meeting-record').textContent.includes('사용자 선택 · 수동'));
+  assert.ok(get('meeting-record').textContent.includes('계획 2판'));
+  assert.ok(get('meeting-record').textContent.includes('tests/test_main.py'));
+  assert.match(get('meeting-record').textContent, /병렬 작업 실행 기록.*t1.*별도 작업 트리.*주 작업 트리에 반영: src\/main.py/);
+  assert.equal(get('meeting-record').querySelector('script'), null);
+  assert.equal(calls.filter(call => call.body).length, 1);
+  assert.equal(new URLSearchParams(window.location.search).get('run'), runId);
 });
 
 test('legacy remote execution links find the workspace and retain the last progress during a disconnect', async t => {
@@ -189,6 +269,76 @@ test('legacy remote execution links find the workspace and retain the last progr
   disconnected = false;
   get('refresh').click();
   await until(() => get('connection').textContent === '원격 연구실 연결됨');
+});
+
+test('remote assignment uses the planning protocol only when the room advertises it', async t => {
+  const prefix = '/api/hosts/' + remote;
+  for (const supported of [false, true]) {
+    let posted;
+    const {get, person, submit} = mount(t, (path, body) => {
+      if (path === prefix + '/rooms/' + workspace.id) return supported ? {...room([]), meeting_supported: true} : room([]);
+      if (path === prefix + '/rooms/' + workspace.id + '/assignments') {
+        posted = body;
+        return {run: {...run, id: body.id}};
+      }
+      if (path === prefix + '/runs/' + posted?.id) return {run: {...run, id: posted.id}};
+    }, {query: '?host=' + remote + '&workspace=' + workspace.id});
+    await until(() => get('room-title').textContent === workspace.name);
+    person('coordinator').click();
+    assert.equal(get('review-option').hidden, !supported);
+    assert.equal(get('assignment-engines').hidden, !supported);
+    get('message').value = '수정 범위를 조사해 주세요.';
+    submit('chat-form');
+    await until(() => posted);
+    assert.deepEqual(posted, {id: posted.id, message: '수정 범위를 조사해 주세요.', allow_edits: false, delegation: null,
+      ...(supported ? {meeting: true} : {})});
+  }
+});
+
+test('returning to a workspace prioritizes a waiting meeting and reconciles an unacknowledged decision by ID', async t => {
+  const plan = {outcome: '확인', scope: ['범위'], tasks: [{id: 'T1', owner: 'developer', description: '진단', depends_on: []}],
+    criteria: [{criterion: '판정', verification: '코드 확인'}], rationale: ['기존 기준'], questions: [], evidence: {revision: '1'.repeat(40), paths: []}};
+  const gateId = '2'.repeat(32);
+  const waitingRun = {...run, id: gateId, task: '응답할 작업'};
+  let meeting = {run_id: gateId, status: 'awaiting_review', revision: 1, plan, contributions: [], choices: [],
+    answers: {}, verification: [], revisions: []};
+  let disconnected = false;
+  const path = '/api/runs/' + gateId;
+  const route = (url, body) => {
+    if (url === base) return room([run, {...waitingRun, meeting_status: meeting.status, pending_count: Number(meeting.status === 'awaiting_review')}]);
+    if (url === runPath) return {run};
+    if (url === path) return disconnected ? Response.json({}, {status: 503}) : {run: {...waitingRun, meeting}};
+    if (url === path + '/meeting/decision') {
+      assert.deepEqual(body.plan, plan);
+      assert.deepEqual(body.answers, {});
+      meeting = {...meeting, status: 'approved', decision: {id: body.id, revision: 1}};
+      disconnected = true;
+      throw new Error('lost after journal write');
+    }
+  };
+  const first = mount(t, route);
+  await until(() => !first.get('meeting-decision').hidden && !first.get('approve-plan').disabled);
+  assert.equal(first.get('ledger-heading').textContent, waitingRun.task);
+  assert.match(first.get('run-list').textContent, /계획 확인 대기/);
+  first.get('run-list').querySelector('a').click();
+  await until(() => first.get('ledger-heading').textContent === run.task);
+  first.get('inbox').click();
+  await until(() => first.get('request-log').textContent.includes(waitingRun.task));
+  first.get('request-log').querySelector('button').click();
+  await until(() => first.window.document.activeElement === first.get('meeting-heading'));
+  first.submit('meeting-decision');
+  await until(() => first.get('detail-status').textContent.includes('최신 상태를 확인할 수 없습니다.'));
+  const query = first.window.location.search;
+  const storage = Object.fromEntries(Object.entries(first.window.sessionStorage));
+  assert.equal(Object.keys(storage).length, 1);
+  first.close();
+  disconnected = false;
+  const second = mount(t, route, {query, storage});
+  await until(() => second.get('meeting-note').textContent === '계획 결정을 기록했습니다.');
+  assert.equal(second.get('ledger-heading').textContent, waitingRun.task);
+  assert.equal(second.get('meeting-decision').hidden, true);
+  assert.equal(second.window.sessionStorage.length, 0);
+  assert.equal(second.calls.some(call => call.body), false);
 });
 
 test('inbox distinguishes user-facing decisions, technical questions and tool approvals', async t => {

@@ -17,6 +17,7 @@ import uuid
 
 from . import role_skills as skills
 from . import team_runs
+from . import meeting_store
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .events import snapshot_request
 from .models import ACTIVE, OfficeError, OwnerInfo, TaskSpec, validate_id
@@ -95,6 +96,8 @@ def finish_drained(store, run_id, *, worker_succeeded, preview_finished):
             "UPDATE studio_runs SET changes=?,diff=?,preview=NULL,proposed_state=NULL,proposed_outcome=NULL WHERE id=?",
             (changes, diff, run_id),
         )
+        if state in {"CANCELED", "RECOVERY_REQUIRED"} and meeting_store.summary(store.connection, run_id):
+            meeting_store.stop(store.connection, run_id)
         store._record(run_id, operation_key=f"{run_id}:studio:final",
                       event_type="RECOVERY_REQUIRED" if state == "RECOVERY_REQUIRED" else "RUN_FINISHED",
                       state=state, outcome=outcome, payload={"phase": "run"})
@@ -124,6 +127,7 @@ class LocalRunner:
                 self.inbox = Inbox(self.path)
                 self.directions = Directions(self.path)
                 team_runs.ensure_schema(store.connection)
+                meeting_store.ensure_schema(store.connection)
                 skills.ensure_schema(store.connection)
                 stale = store.connection.execute(
                     "SELECT r.run_id FROM runs r JOIN studio_runs s ON s.id=r.run_id "
@@ -148,6 +152,8 @@ class LocalRunner:
             run = recover_run(store, run_id, host_name=platform.node(), studio_owner=True)
             with store._write():
                 expire_requests(store.connection, run_id)
+                if run.state == "RECOVERY_REQUIRED" and meeting_store.summary(store.connection, run_id):
+                    meeting_store.stop(store.connection, run_id)
             if run.state != "RECOVERY_REQUIRED":
                 return True
             store.connection.execute(
@@ -285,6 +291,8 @@ class LocalRunner:
                             store.connection.execute("INSERT INTO studio_room_assignments VALUES(?,?,?)",
                                                      (run_id, encode(room_assignment), room_revision))
                             register_choices(store.connection, run_id, room_revision, room_choices)
+                            if room_assignment.get("meeting"):
+                                meeting_store.register(store.connection, run_id, review_plan=room_assignment["review_plan"])
                 # Pending entries take ownership only after the entire team registration commits.
                 guards.pop_all()
 
@@ -385,6 +393,8 @@ class LocalRunner:
                                   (run_id,)).fetchone()
             if assigned:
                 result.update(assignment=json.loads(assigned[0]), base_revision=assigned[1])
+                if result["assignment"].get("meeting"):
+                    result["meeting"] = meeting_store.describe(db, run_id)
         versions = skills.selected_metadata(db, run_id)
         result["role_skill_snapshots"] = versions
         result["role_skills"] = {role: [version["id"] for version in items] for role, items in versions.items()}
@@ -401,6 +411,13 @@ class LocalRunner:
         with self.lock, TaskStore(self.path, existing=True) as store:
             self._refresh(store)
             return self._detail(store, run_id)
+
+    def decide_meeting(self, run_id, payload):
+        validate_id(run_id)
+        with self.lock, TaskStore(self.path, existing=True) as store:
+            self._refresh(store)
+            with store._write():
+                return meeting_store.decide(store.connection, run_id, payload)
 
     def runs(self):
         with self.lock, TaskStore(self.path, existing=True) as store:
@@ -419,6 +436,7 @@ class LocalRunner:
         if store.get_run(run_id).state not in ACTIVE:
             return
         db.execute("UPDATE studio_runs SET stop_requested=1 WHERE id=?", (run_id,))
+        meeting_store.stop(db, run_id)
         expire_requests(db, run_id)
         if run_id in self.pending:
             store._record(run_id, operation_key=f"{run_id}:studio:final", event_type="RUN_FINISHED",
@@ -484,6 +502,7 @@ def worker(db_path, run_id):
     raw_task = json.loads(sys.stdin.buffer.read())
     os.environ["PYTHONIOENCODING"] = "utf-8"  # Fixed pytest command writes UTF-8 to captured pipes.
     from .cli import execute_run
+    from .meeting_runtime import MeetingFailure
 
     with TaskStore(db_path, existing=True) as store:
         run = store.get_run(run_id)
@@ -536,7 +555,13 @@ def worker(db_path, run_id):
                         base_revision=revision,
                         delegated_questions=tuple(RULES[rule["topic"]] for rule in policy["rules"]) if policy else (),
                         technical_choice_guidance=CHOICE_INSTRUCTIONS if room and get_choices(db_path, run_id) else "",
-                        inbox_factory=inbox_factory if interactive else None, studio_preview=studio_preview)
+                        inbox_factory=inbox_factory if interactive else None, studio_preview=studio_preview,
+                        room_meeting=bool(room and json.loads(room["assignment_json"]).get("meeting")))
+        except MeetingFailure as exc:
+            with store._write():
+                meeting_store.fail(store.connection, run_id, str(exc))
+                store.connection.execute("UPDATE studio_runs SET diagnostic=? WHERE id=?", (str(exc), run_id))
+                defer_final("FAILED", "MEETING_FAILED")
         except (ValueError, OSError, subprocess.SubprocessError, RuntimeError):
             message = {
                 "QUEUED": "Git 작업 트리 또는 선택한 폴더를 준비하지 못했습니다.",

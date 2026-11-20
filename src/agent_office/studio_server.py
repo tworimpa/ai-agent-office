@@ -263,6 +263,10 @@ class StudioHandler(ObserverHandler):
             else:
                 self._reply(200, self.server.rooms.snapshot(workspace_id, cursor))
             return
+        meeting_gate = re.fullmatch(r"/api/runs/([a-f0-9]{32})/meeting/decision", path)
+        if meeting_gate and data is not None:
+            self._reply(200, {"meeting": self.server.runner.decide_meeting(meeting_gate[1], data)})
+            return
         directions = re.fullmatch(r"/api/runs/([a-f0-9]{32})/directions", path)
         if directions:
             run_id = directions[1]

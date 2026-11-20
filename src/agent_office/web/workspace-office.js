@@ -13,6 +13,9 @@ const requestLabels = {question: '기술 질문', product_decision: '제품 동�
 const requestStateLabels = {decided: '결정 접수됨', delivered: '에이전트에게 전달됨', expired: '만료됨'};
 const deliveryLabels = {queued: '전달 대기', sending: '전달 중', delivered: '전달됨', uncertain: '전달 여부 확인 필요', undelivered: '전달되지 않음'};
 const decisionLabels = {answer: '답변', approve: '이번 요청 승인', reject: '거절'};
+const meetingStates = {planning: '계획 논의 중', awaiting_review: '계획 확인 대기', approved: '계획 확정', stopped: '회의 중단', failed: '회의 실패'};
+const verificationStates = {not_verified: '검증 전', passed: '통과', failed: '실패'};
+const meetingRoles = {coordinator: '조정자', ...roleLabels, operator: '사용자', direction: '추가 지시'};
 const validId = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
 const validHistoryCursor = value => typeof value === 'string' && /^[ah]-[a-f0-9]{32}$/.test(value);
 function uniqueRuns(runs) {
@@ -24,6 +27,8 @@ function uniqueRuns(runs) {
   });
 }
 const stateName = state => states[state] ?? '상태 미확인';
+const runLabel = run => (run.state === 'RUNNING' || run.state === 'QUEUED') &&
+  ['planning', 'awaiting_review'].includes(run.meeting_status) ? meetingStates[run.meeting_status] : stateName(run.state);
 const engineName = engine => engines[engine] ?? '엔진 미확인';
 const codeBytes = value => new TextEncoder().encode(value).length;
 const stamp = ts => {
@@ -81,6 +86,7 @@ export function mountWorkspaceOffice(win = window) {
   let online = false, roomOnline = false, closed = false, epoch = 0, refreshToken = 0, timer;
   let chatRole = null, chatAttempt = null, chatRows = [], directionRows = [], chatDetailsOnline = false, inboxDetailsOnline = false;
   let chatState = null, settingsBusy = false, registrationBusy = false, deciding = new Set();
+  let meetingDecision = null, meetingReadOK = false;
   let inboxFocus;
   const stopping = new Set();
   let dialogEpoch = 0, inboxEpoch = 0, detailRead = 0, chatRead = 0, inboxRead = 0, skills = [], skillsCursor = null;
@@ -95,6 +101,7 @@ export function mountWorkspaceOffice(win = window) {
     (detail?.id === id && detail.workspace_id === workspaceId)));
   const sameContext = token => !closed && token === epoch;
   const canWrite = () => !closed && roomOnline && !!room;
+  const supportsMeetings = () => hostId === 'local' || room?.meeting_supported === true;
 
   async function request(path, body) {
     const controller = new win.AbortController();
@@ -163,6 +170,8 @@ export function mountWorkspaceOffice(win = window) {
     workspaceId = workspace;
     runId = run;
     detail = null;
+    meetingReadOK = false;
+    say('meeting-note', '');
     say('detail-status', '');
     say('stop-note', '');
     closeDialogs();
@@ -183,7 +192,7 @@ export function mountWorkspaceOffice(win = window) {
     const link = make('a', '', 'nav-link');
     link.href = address(hostId, workspaceId, run.id);
     if (run.id === runId) link.setAttribute('aria-current', 'page');
-    const meta = [stateName(run.state), stamp(run.created_at), run.pending_count && '응답 ' + run.pending_count + '건'].filter(Boolean);
+    const meta = [runLabel(run), stamp(run.created_at), run.pending_count && '응답 ' + run.pending_count + '건'].filter(Boolean);
     link.append(make('span', run.task, 'run-task'), make('small', meta.join(' · ')));
     link.title = run.task;
     link.addEventListener('click', event => navClick(event, hostId, workspaceId, run.id));
@@ -211,8 +220,8 @@ export function mountWorkspaceOffice(win = window) {
     get('history-older').hidden = !historyCursor;
     get('history-older').disabled = historyBusy || !roomOnline;
     const runs = roomRuns();
-    update('run-list', [workspaceId, runId, runs.map(({id, task, state, created_at, pending_count}) => ({
-      id, task, state, created_at, pending_count,
+    update('run-list', [workspaceId, runId, runs.map(({id, task, state, created_at, pending_count, meeting_status}) => ({
+      id, task, state, created_at, pending_count, meeting_status,
     }))], node => {
       const focused = node.contains(doc.activeElement) && doc.activeElement.href;
       node.replaceChildren(...runs.map(runLink));
@@ -287,11 +296,14 @@ export function mountWorkspaceOffice(win = window) {
       const profile = current?.assignment?.roles?.[role] ?? roomPerson(role);
       const engine = current?.[role + '_engine'] ?? profile.engine;
       const node = seat(role);
-      let line = current?.lines?.[role] ?? room.runs.find(run => run.id === current?.id)?.lines?.[role];
+      const meeting = current?.meeting;
+      const opinion = ['planning', 'awaiting_review'].includes(meeting?.status) &&
+        meeting.contributions.filter(entry => entry.role === role).at(-1);
+      let line = opinion?.text || current?.lines?.[role] || room.runs.find(run => run.id === current?.id)?.lines?.[role];
       if (!line) line = current && (role === 'developer' || current.allow_edits) ? stateName(current.state) : '배정된 작업이 없습니다.';
       const roleText = label + ' · ' + engineName(engine);
       const task = node.querySelector('.seat-task');
-      const assignment = role === 'developer' || current?.allow_edits ? current?.task : '';
+      const assignment = role === 'developer' || current?.allow_edits || current?.assignment?.meeting ? current?.task : '';
       node.querySelector('.seat-name').textContent = profile.name;
       node.querySelector('.seat-role').textContent = roleText;
       node.querySelector('.seat-line').textContent = line;
@@ -301,17 +313,20 @@ export function mountWorkspaceOffice(win = window) {
       node.dataset.request = String((current?.pending_count ?? room.runs.find(run => run.id === current?.id)?.pending_count ?? 0) > 0);
       node.setAttribute('aria-label', [profile.name, roleText, assignment, line, '대화 열기'].filter(Boolean).join(', '));
     }
-    seat('coordinator').querySelector('.seat-line').textContent = room.settings.delegation ? '새 작업 배정 · 기술 위임 켜짐' : '새 작업을 말씀해 주세요.';
+    const coordinatorLine = selected()?.lines?.coordinator ?? summary()?.lines?.coordinator;
+    seat('coordinator').querySelector('.seat-line').textContent = coordinatorLine ||
+      (room.settings.delegation ? '새 작업 배정 · 기술 위임 켜짐' : '새 작업을 말씀해 주세요.');
     renderLedger();
   }
 
   function renderLedger() {
     const run = selected();
+    renderMeeting(detail);
     get('detail-link').hidden = !run;
     get('detail-link').href = address(hostId, null, run?.id, '/studio') + '#detail';
     get('stop-run').hidden = !stoppable(run?.state);
     get('stop-run').disabled = !canWrite() || stopping.has(run?.id);
-    say('ledger-label', run ? stateName(run.state) : '작업 기록');
+    say('ledger-label', run ? runLabel(run) : '작업 기록');
     say('ledger-heading', run?.task ?? '선택한 작업이 없습니다');
     const date = stamp(run?.created_at);
     say('ledger-note', run ? [date, run.assignment?.delegation === true && '기술 질문 위임', run.pending_count && '응답 대기 ' + run.pending_count + '건'].filter(Boolean).join(' · ') :
@@ -332,6 +347,229 @@ export function mountWorkspaceOffice(win = window) {
       if (node.firstElementChild) node.firstElementChild.open = true;
     });
   }
+
+  function meetingList(parent, heading, rows, ordered = false) {
+    if (!rows?.length) return;
+    const list = make(ordered ? 'ol' : 'ul');
+    for (const row of rows) list.append(make('li', row));
+    parent.append(make('h5', heading), list);
+  }
+
+  function planRecord(plan) {
+    const body = make('div', '', 'meeting-plan');
+    if (!plan) return body;
+    body.append(make('h5', '목표 결과'), make('p', plan.outcome));
+    meetingList(body, '작업 범위', plan.scope);
+    meetingList(body, '작업 순서와 담당', plan.tasks.map(task => [
+      task.id, meetingRoles[task.owner] ?? task.owner, task.description,
+      task.depends_on.length ? '선행 작업 ' + task.depends_on.join(', ') : '',
+      task.folders?.length ? '작업 폴더 ' + task.folders.join(', ') : '',
+    ].filter(Boolean).join(' · ')), true);
+    meetingList(body, '완료 기준과 검증 방법', plan.criteria.map(row =>
+      [row.criterion, row.verification, row.test_files?.join(', ')].filter(Boolean).join(' · ')));
+    meetingList(body, '계획 근거', plan.rationale);
+    if (plan.evidence) {
+      body.append(make('h5', '참고한 저장소 근거'), make('p', '기준 커밋 ' + plan.evidence.revision));
+      meetingList(body, '파일', plan.evidence.paths);
+    }
+    return body;
+  }
+
+  function verificationRecord(parent, rows) {
+    meetingList(parent, '완료 기준 검증 결과', rows?.map(row =>
+      [row.criterion, verificationStates[row.status] ?? row.status, row.evidence].filter(Boolean).join(' · ')));
+  }
+
+  const decisionKey = (id, revision) => ['meeting-decision', hostId, workspaceId, id, revision].join(':');
+
+  function renderMeeting(run) {
+    const meeting = run?.meeting;
+    get('meeting').hidden = !meeting;
+    get('chat-meeting').hidden = !meeting;
+    if (!meeting) return;
+    const phase = meetingStates[meeting.status] ?? '상태 미확인';
+    say('meeting-phase', [phase, meeting.revision > 0 && '계획 ' + meeting.revision + '판'].filter(Boolean).join(' · '));
+    say('chat-meeting', phase + ' · 기획 회의 열기');
+    if (meeting.decision) {
+      const key = decisionKey(run.id, meeting.decision.revision);
+      if (readRecovery(key)?.id === meeting.decision.id) {
+        saveRecovery(key, null);
+        say('meeting-note', '계획 결정을 기록했습니다.');
+      }
+    }
+    update('meeting-record', [hostId, run.id, meeting], node => {
+      const body = doc.createDocumentFragment();
+      if (meeting.error) body.append(make('p', meeting.error));
+      for (const entry of meeting.contributions) {
+        const name = run.assignment?.roles?.[entry.role]?.name ?? meetingRoles[entry.role] ?? entry.role;
+        const label = [name, engines[entry.engine] ?? entry.engine, entry.revision && '계획 ' + entry.revision + '판', stamp(entry.created_at)].filter(Boolean).join(' · ');
+        const row = make('article', '', 'contribution');
+        row.append(make('small', label), make('p', entry.text));
+        body.append(row);
+      }
+      if (meeting.plan) body.append(planRecord(meeting.plan));
+      meetingList(body, '병렬 작업 실행 기록', meeting.work?.map(entry =>
+        ['계획 ' + entry.revision + '판', entry.task_id, engines[entry.engine] ?? entry.engine,
+          stamp(entry.created_at), entry.result].filter(Boolean).join(' · ')), true);
+      for (const choice of meeting.choices) {
+        const answer = meeting.answers[choice.id];
+        const row = make('div', '', 'meeting-choice');
+        row.append(make('h5', '제품 결정 · ' + choice.question),
+          make('p', answer ? '사용자 선택 · ' + answer : '선택지 · ' + choice.options.join(' / ')));
+        body.append(row);
+      }
+      verificationRecord(body, meeting.verification);
+      for (const version of meeting.revisions) {
+        const item = make('details', '', 'meeting-version');
+        item.dataset.revision = version.revision;
+        const source = meetingRoles[version.source] ?? version.source;
+        item.append(make('summary', ['계획 ' + version.revision + '판', source, stamp(version.created_at)].filter(Boolean).join(' · ')));
+        if (version.approved_by) item.append(make('p', '확정 · ' + (meetingRoles[version.approved_by] ?? version.approved_by)));
+        if (version.reason) item.append(make('p', version.reason));
+        if (version.direction_id) item.append(make('small', '추가 지시 ' + version.direction_id));
+        item.append(planRecord(version.plan));
+        version.plan.questions.forEach((question, index) => {
+          const answer = version.answers?.['q' + (index + 1)];
+          item.append(make('p', question.question + ' · ' + (answer || question.options.join(' / '))));
+        });
+        verificationRecord(item, version.verification);
+        body.append(item);
+      }
+      const expanded = new Set([...node.querySelectorAll('details[open]')].map(item => item.dataset.revision));
+      node.replaceChildren(body);
+      for (const item of node.querySelectorAll('details')) item.open = expanded.has(item.dataset.revision);
+    });
+    const waiting = meeting.status === 'awaiting_review' && !!meeting.plan && stoppable(run.state);
+    get('meeting-decision').hidden = !waiting;
+    if (!waiting) return;
+    update('meeting-inputs', [hostId, workspaceId, run.id, meeting.revision], node => {
+      node.replaceChildren(...decisionInputs(meeting));
+      say('meeting-note', '');
+    });
+    const disabled = !canWrite() || !meetingReadOK || !trustedRun(run.id) || !!meetingDecision;
+    for (const control of get('meeting-decision').elements) control.disabled = disabled;
+  }
+
+  function decisionInputs(meeting) {
+    const plan = meeting.plan;
+    const questions = meeting.choices.map((choice, index) => {
+      const group = make('fieldset');
+      group.append(make('legend', choice.question + ' (필수)'));
+      choice.options.forEach((value, number) => {
+        const radio = make('input');
+        radio.type = 'radio';
+        radio.name = choice.id;
+        radio.id = 'meeting-choice-' + index + '-' + number;
+        radio.value = value;
+        radio.required = true;
+        radio.checked = meeting.answers[choice.id] === value;
+        const label = make('label', '', 'meeting-option');
+        label.htmlFor = radio.id;
+        label.append(radio, make('span', value));
+        group.append(label);
+      });
+      return group;
+    });
+    const edit = make('details', '', 'meeting-editor');
+    edit.append(make('summary', '계획 수정'));
+    function field(parent, name, label, value, options) {
+      const control = make(options ? 'select' : 'textarea');
+      control.name = name;
+      control.id = 'meeting-' + name;
+      if (options) {
+        for (const [key, title] of options) control.append(option(key, title));
+      } else control.rows = 2;
+      control.value = value;
+      control.dataset.initial = control.value;
+      const title = make('label', label);
+      title.htmlFor = control.id;
+      parent.append(title, control);
+    }
+    field(edit, 'outcome', '목표 결과', plan.outcome);
+    field(edit, 'scope', '작업 범위 (한 줄에 하나씩)', plan.scope.join('\n'));
+    plan.tasks.forEach((task, i) => {
+      const group = make('fieldset');
+      group.append(make('legend', '작업 ' + task.id));
+      field(group, 'task-' + i, '작업 내용', task.description);
+      field(group, 'owner-' + i, '담당', task.owner, Object.entries(roleLabels));
+      field(group, 'dependencies-' + i, '선행 작업 ID (쉼표로 구분)', task.depends_on.join(', '));
+      edit.append(group);
+    });
+    plan.criteria.forEach((row, i) => {
+      const group = make('fieldset');
+      group.append(make('legend', '완료 기준 ' + (i + 1)));
+      field(group, 'criterion-' + i, '완료 기준', row.criterion);
+      field(group, 'verification-' + i, '검증 방법', row.verification);
+      edit.append(group);
+    });
+    field(edit, 'rationale', '계획 근거 (한 줄에 하나씩)', plan.rationale.join('\n'));
+    return [...questions, edit];
+  }
+
+  function readDecision(meeting) {
+    const form = get('meeting-decision');
+    const edit = (name, original, separator) => {
+      const control = form.elements.namedItem(name);
+      if (control.value === control.dataset.initial) return original;
+      return separator ? control.value.split(separator).map(item => item.trim()).filter(Boolean) : control.value.trim();
+    };
+    const plan = meeting.plan;
+    return {
+      revision: meeting.revision,
+      plan: {
+        ...plan, outcome: edit('outcome', plan.outcome), scope: edit('scope', plan.scope, '\n'), rationale: edit('rationale', plan.rationale, '\n'),
+        tasks: plan.tasks.map((task, i) => ({
+          ...task, description: edit('task-' + i, task.description), owner: edit('owner-' + i, task.owner),
+          depends_on: edit('dependencies-' + i, task.depends_on, ','),
+        })),
+        criteria: plan.criteria.map((row, i) => ({
+          ...row, criterion: edit('criterion-' + i, row.criterion), verification: edit('verification-' + i, row.verification),
+        })),
+      },
+      answers: Object.fromEntries(meeting.choices.map(choice => [choice.id, form.elements.namedItem(choice.id).value])),
+    };
+  }
+
+  get('meeting-decision').addEventListener('submit', async event => {
+    event.preventDefault();
+    const id = runId, token = epoch, meeting = detail?.meeting;
+    if (!canWrite() || !meetingReadOK || meetingDecision || !trustedRun(id) || detail?.id !== id || !stoppable(detail.state) ||
+        meeting?.status !== 'awaiting_review' || !event.currentTarget.reportValidity()) return;
+    const decision = readDecision(meeting);
+    const key = decisionKey(id, meeting.revision);
+    const previous = readRecovery(key);
+    const signature = JSON.stringify(decision);
+    const body = {id: previous?.signature === signature ? previous.id : win.crypto.randomUUID().replaceAll('-', ''), ...decision};
+    saveRecovery(key, {id: body.id, signature});
+    meetingDecision = body.id;
+    renderMeeting(detail);
+    say('meeting-note', '계획 결정을 보내는 중입니다.');
+    try {
+      const receipt = (await api(runPath(id) + '/meeting/decision', body)).meeting;
+      if (receipt?.run_id !== id || receipt.decision?.id !== body.id || receipt.decision?.revision !== body.revision) {
+        throw new Error('계획 결정의 접수 여부를 확인하지 못했습니다.');
+      }
+      saveRecovery(key, null);
+      if (sameContext(token) && runId === id) {
+        say('meeting-note', '계획 결정을 기록했습니다.');
+        if (detail?.id === id && detail.meeting.revision === meeting.revision) {
+          detail = {...detail, meeting: receipt};
+          renderRoom();
+        }
+      }
+    } catch (error) {
+      if (sameContext(token) && runId === id) say('meeting-note', error.status ? error.message : '접수 여부를 확인하지 못했습니다. 최신 회의 기록을 확인해 주세요.');
+    } finally {
+      if (sameContext(token) && runId === id) await refresh();
+      meetingDecision = null;
+      if (!closed) renderRoom();
+    }
+  });
+
+  get('chat-meeting').addEventListener('click', () => {
+    get('conversation').close();
+    get('meeting-heading').focus();
+  });
 
   function renderConnection() {
     const status = get('connection');
@@ -356,12 +594,14 @@ export function mountWorkspaceOffice(win = window) {
       if (!sameContext(token) || expected !== runId || read !== detailRead) return;
       if (run?.id !== expected) throw new Error('실행 정보가 달라졌습니다.');
       if (run.workspace_id !== workspaceId) {
+        meetingReadOK = false;
         detail = null;
         say('detail-status', '이 실행은 선택한 작업공간에 속하지 않습니다.');
         renderRoom();
         return;
       }
       detail = run;
+      meetingReadOK = true;
       say('detail-status', '');
       renderRoom();
       if (get('conversation').open) {
@@ -369,7 +609,11 @@ export function mountWorkspaceOffice(win = window) {
         chatControls();
       }
     } catch {
-      if (sameContext(token) && expected === runId && read === detailRead) say('detail-status', '실행 상세의 최신 상태를 확인할 수 없습니다.');
+      if (sameContext(token) && expected === runId && read === detailRead) {
+        meetingReadOK = false;
+        say('detail-status', '실행 상세의 최신 상태를 확인할 수 없습니다.');
+        renderRoom();
+      }
     }
   }
 
@@ -422,7 +666,7 @@ export function mountWorkspaceOffice(win = window) {
         if (!historyPaged && !historyBusy) historyCursor = validHistoryCursor(snapshot.next_cursor) ? snapshot.next_cursor : null;
         room = {...snapshot, runs};
         roomOnline = true;
-        if (!runId) runId = (activeRuns()[0] ?? room.runs[0])?.id ?? null;
+        if (!runId) runId = (room.runs.find(row => row.meeting_status === 'awaiting_review') ?? activeRuns()[0] ?? room.runs[0])?.id ?? null;
         if (room.runs.some(run => run.id === runId && (run.state !== detail?.state || run.attempts !== detail?.attempts))) detail = null;
       }
       win.history.replaceState(null, '', address(hostId, workspaceId, runId) + win.location.hash);
@@ -481,6 +725,14 @@ export function mountWorkspaceOffice(win = window) {
     root.append(make('p', '선택하지 않으면 서버가 작업실의 기본 폴더를 사용합니다.', 'field-help'));
   }
 
+  function engineOptions() {
+    return Object.entries(engines).map(([id, name]) => {
+      const probe = room.engines?.find(item => item.engine === id);
+      const hint = probe?.probe_status === 'ok' ? ' · CLI 확인' : probe?.probe_status === 'missing' ? ' · 설치 필요' : '';
+      return option(id, name + hint);
+    });
+  }
+
   function showChat(role) {
     if (!room) return;
     if (role !== 'coordinator') {
@@ -516,10 +768,20 @@ export function mountWorkspaceOffice(win = window) {
     get('message').placeholder = assignment ? '예시 · 이 프로젝트의 테스트 실패 원인을 찾아줘.' : '예시 · Windows에서만 재현되는지 확인해줘.';
     get('assignment-options').hidden = !assignment;
     get('edit-option').hidden = !assignment;
-    get('assignment-options').open = Boolean(saved?.delegation != null || saved?.indices || saved?.test_files);
+    get('review-option').hidden = !assignment || !supportsMeetings();
+    get('assignment-options').open = Boolean(saved?.delegation != null || saved?.indices || saved?.test_files || saved?.role_engines);
+    get('assignment-engines').hidden = !assignment || !supportsMeetings();
+    if (assignment && supportsMeetings()) {
+      for (const role of Object.keys(roleLabels)) {
+        const picker = get('assignment-' + role + '-engine');
+        picker.replaceChildren(option('', '작업실 기본값 · ' + engineName(room.settings[role].engine)), ...engineOptions());
+        picker.value = saved?.role_engines?.[role] ?? '';
+      }
+    }
     get('run-delegation').options[0].textContent = '작업실 기본값 · ' + (room.settings.delegation ? '조정자가 결정' : '나에게 질문');
     get('run-delegation').value = saved?.delegation == null ? '' : String(saved.delegation);
     get('allow-edits').checked = saved?.allow_edits ?? false;
+    get('review-plan').checked = saved?.review_plan === true;
     get('test-files').value = saved?.test_files?.join('\n') ?? '';
     if (assignment) folderChoices(saved?.indices);
     get('message').value = saved?.message ?? editor ?? '';
@@ -565,17 +827,18 @@ export function mountWorkspaceOffice(win = window) {
     const profile = role !== 'coordinator' && (assignment?.roles?.[role] ?? room?.settings[role]);
     const name = profile?.name ?? roleLabels[role];
     const line = row?.lines?.[role];
+    const contributions = (run?.meeting?.contributions ?? []).filter(entry => role === 'coordinator' || entry.role === role);
     const output = role === 'developer' ? detail?.developer_output : detail?.review_output;
     const relevant = chatRows.filter(item => item.role === role || role === 'coordinator');
     const directions = directionRows.filter(item => item.role === role || role === 'coordinator');
-    update('chat-log', [runId, role, run?.task, assignment, name, line, output, relevant, directions], node => {
+    update('chat-log', [runId, role, run?.task, assignment, name, line, output, relevant, directions, contributions], node => {
       const messages = [];
       if (run?.task) {
         messages.push(message('user', '나', run.task, stamp(run.created_at)));
         const roles = assignment?.roles;
         if (role === 'coordinator' && roles) {
           const applied = ['담당 · ' + roles.developer.name + ' (' + engineName(roles.developer.engine) + ')'];
-          if (run.allow_edits) applied.push('검토 · ' + roles.reviewer.name + ' (' + engineName(roles.reviewer.engine) + ')');
+          if (run.allow_edits || assignment.meeting) applied.push('검토 · ' + roles.reviewer.name + ' (' + engineName(roles.reviewer.engine) + ')');
           applied.push(assignment.delegation ? '기술 질문 위임' : '사용자에게 기술 질문');
           messages.push(message('agent', '조정자', assignment.note, applied.join(' / ')));
         }
@@ -586,6 +849,10 @@ export function mountWorkspaceOffice(win = window) {
         messages.push(message('agent', name, output || line));
       }
       const events = [];
+      for (const entry of contributions) {
+        const author = assignment?.roles?.[entry.role]?.name ?? meetingRoles[entry.role] ?? entry.role;
+        events.push([entry.created_at, message('agent', '기획 회의 · ' + author, entry.text, stamp(entry.created_at))]);
+      }
       for (const item of relevant) {
         const requestLabel = requestLabels[item.kind];
         if (!requestLabel) continue;
@@ -632,6 +899,8 @@ export function mountWorkspaceOffice(win = window) {
     get('message').readOnly = locked;
     get('run-delegation').disabled = locked;
     get('allow-edits').disabled = locked;
+    get('review-plan').disabled = locked;
+    for (const picker of get('assignment-engines').querySelectorAll('select')) picker.disabled = locked;
     const editAssignment = assignment && get('allow-edits').checked;
     get('assignment-test-scope').hidden = !editAssignment;
     get('test-files').disabled = locked || !editAssignment;
@@ -690,6 +959,16 @@ export function mountWorkspaceOffice(win = window) {
     if (role !== 'coordinator') return {id, role, attempt: chatAttempt, message: value};
     const mode = get('run-delegation').value;
     const body = {id, message: value, allow_edits: get('allow-edits').checked, delegation: mode === '' ? null : mode === 'true'};
+    if (supportsMeetings()) {
+      body.meeting = true;
+      if (get('review-plan').checked) body.review_plan = true;
+      const overrides = {};
+      for (const role of Object.keys(roleLabels)) {
+        const engine = get('assignment-' + role + '-engine').value;
+        if (engine) overrides[role] = engine;
+      }
+      if (Object.keys(overrides).length) body.role_engines = overrides;
+    }
     const indices = Array.from(get('assignment-folders').querySelectorAll('input:checked'), input => Number(input.value));
     if (indices.length) body.indices = indices;
     if (body.allow_edits) {
@@ -876,10 +1155,24 @@ export function mountWorkspaceOffice(win = window) {
       if (!sameContext(context) || token !== inboxEpoch || read !== inboxRead || !get('requests').open) return;
       const rows = [...pending.requests.filter(row => trustedRun(row.run_id)),
         ...history.requests.filter(row => row.run_id === id && row.status !== 'pending')];
+      const waiting = room.runs.filter(row => row.meeting_status === 'awaiting_review');
       inboxDetailsOnline = true;
-      update('request-log', rows, node => {
-        replaceRequests(node, rows.map(row => requestItem(row, context)));
-        if (!rows.length) node.append(make('p', '응답할 요청이 없습니다.', 'field-help'));
+      update('request-log', [rows, waiting.map(row => [row.id, row.task])], node => {
+        const gates = waiting.map(row => {
+          const item = make('article', '', 'request-item');
+          const open = make('button', '기획 회의 열기', 'secondary');
+          open.type = 'button';
+          open.addEventListener('click', async () => {
+            if (!sameContext(context) || !trustedRun(row.id)) return;
+            get('requests').close();
+            if (runId !== row.id) await navigation(hostId, workspaceId, row.id);
+            if (!closed && runId === row.id && !get('meeting').hidden) get('meeting-heading').focus();
+          });
+          item.append(make('h3', '계획 확인'), make('p', row.task), open);
+          return item;
+        });
+        replaceRequests(node, [...gates, ...rows.map(row => requestItem(row, context))]);
+        if (!rows.length && !gates.length) node.append(make('p', '응답할 요청이 없습니다.', 'field-help'));
       });
       if (inboxFocus) {
         [...get('request-log').children].find(item => item.dataset.request === inboxFocus)?.focus();
@@ -1005,11 +1298,7 @@ export function mountWorkspaceOffice(win = window) {
       const profile = room.settings[role];
       get(role + '-name').value = profile.name;
       const picker = get(role + '-engine');
-      picker.replaceChildren(...Object.entries(engines).map(([id, name]) => {
-        const probe = room.engines?.find(item => item.engine === id);
-        const hint = probe?.probe_status === 'ok' ? ' · CLI 확인' : probe?.probe_status === 'missing' ? ' · 설치 필요' : '';
-        return option(id, name + hint);
-      }));
+      picker.replaceChildren(...engineOptions());
       picker.value = profile.engine;
     }
     renderSkills(Object.fromEntries(Object.keys(roleLabels).map(role => [role, room.settings[role].skills])));

@@ -116,6 +116,7 @@ class DirectionChannel:
     def __init__(self, db_path, run_id, role, engine):
         self.path, self.run_id, self.role = Path(db_path), validate_id(run_id), role
         self.closed = False
+        self.replan = None
         with TaskStore(self.path, existing=True) as store:
             db = store.connection
             run = _run(db, run_id)
@@ -145,9 +146,13 @@ class DirectionChannel:
                 # across the transport boundary can never move these rows back to queued.
                 db.execute("UPDATE studio_directions SET delivery='sending' WHERE run_id=? AND role=? AND attempt=? "
                            "AND delivery='queued'", phase)
-                return _Delivery(self, rows)
-        self.closed = True
-        return None
+        if not rows or not available:
+            self.closed = True
+            return None
+        delivery = _Delivery(self, rows)
+        if self.replan:
+            delivery.prompt += "\n\nUpdated meeting plan and decisions:\n" + self.replan(rows)
+        return delivery
 
     def close(self):
         if not self.closed:
