@@ -143,6 +143,13 @@
           <option value="false">나에게 질문</option>
         </select>
         <fieldset id="assignment-folders" hidden></fieldset>
+        <fieldset id="assignment-test-scope" hidden>
+          <legend>테스트 범위</legend>
+          <label for="test-files">테스트 파일(선택)</label>
+          <textarea id="test-files" name="test_files" rows="2" maxlength="3872" aria-describedby="test-files-help"
+                    autocorrect="off" autocapitalize="none" spellcheck="false"></textarea>
+          <p id="test-files-help" class="field-help">저장소 기준 경로를 한 줄에 하나씩 입력하세요. 예: <code>tests/test_cli.py</code>. 비우면 전체 테스트를 실행합니다.</p>
+        </fieldset>
       </details>
       <label class="checkbox" id="edit-option"><input type="checkbox" id="allow-edits"> 파일 수정 허용</label>
       <p id="chat-note" class="form-note" role="status"></p>

@@ -115,6 +115,8 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
             "max_attempts": args.max_attempts,
             "status": "NEW",
         }
+        if test_files := getattr(args, "test_files", None):
+            initial["test_files"] = test_files
         if folders is not None:
             from .workspace import map_folders
             mapped = map_folders(worktree.path, folders)

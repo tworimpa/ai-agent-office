@@ -1,5 +1,6 @@
 """Workspace defaults and the coordinator's durable assignment receipt."""
 from collections import Counter
+from importlib.util import find_spec
 import json
 import platform
 import re
@@ -11,7 +12,7 @@ from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .models import OfficeError, validate_id
 from .office_state import _latest_stages
 from .store import TaskStore, encode
-from .studio_catalog import _single_line, read_workspace_revision
+from .studio_catalog import _single_line, normalize_test_files, read_workspace_revision, verify_committed_test_files
 from .studio_inbox import ROLE_STATE, holder_alive
 from .studio_runner import SOURCE, SUMMARY
 from .team_runs import validate_task
@@ -239,13 +240,16 @@ class WorkspaceRooms:
 
     def assign(self, workspace_id, data):
         required = {"id", "message", "allow_edits", "delegation"}
-        if not required <= data.keys() or data.keys() - required - {"indices"}:
+        if not required <= data.keys() or data.keys() - required - {"indices", "test_files"}:
             raise ValueError("조정자에게 보낼 요청을 확인하세요.")
         run_id = validate_id(data["id"])
         task, allow_edits, override = data["message"], data["allow_edits"], data["delegation"]
         validate_task(task)
         if type(allow_edits) is not bool or (override is not None and type(override) is not bool):
             raise ValueError("파일 수정과 기술 판단 위임 옵션을 확인하세요.")
+        test_files = normalize_test_files(data["test_files"]) if "test_files" in data else []
+        if test_files and not allow_edits:
+            raise ValueError("테스트 파일 지정은 파일 수정을 허용한 작업에 적용됩니다.")
         digest = "room:" + sha256(encode([workspace_id, data]).encode("utf-8")).hexdigest()
         with self.assignments:
             with self.runner.lock, TaskStore(self.path, existing=True) as store:
@@ -257,10 +261,14 @@ class WorkspaceRooms:
             workspace = self._workspace(workspace_id)
             indices = data.get("indices", list(range(len(workspace["folders"]))))
             repo, folders = self.catalog.select(workspace_id, indices)
+            if allow_edits and find_spec("pytest") is None:
+                raise ValueError("작업실 실행 환경에 pytest가 설치되어 있지 않습니다.")
             engines = self.engines.snapshot()["engines"]
             roles = _assign_roles(settings, engines, allow_edits)
             delegated = settings["delegation"] if override is None else override
             revision = read_workspace_revision(repo)
+            if test_files:
+                verify_committed_test_files(repo, revision, test_files)
             policy = choices = None
             if delegated:
                 from .coordinator_policy import policy_for_assignment
@@ -273,6 +281,8 @@ class WorkspaceRooms:
                                                    verifier_engine=verifier)
             assignment = {"roles": roles, "delegation": delegated,
                           "note": _assignment_note(settings, roles, allow_edits, delegated, choices)}
+            if test_files:
+                assignment["test_files"] = test_files
             return self.runner.start(run_id, workspace_id, repo, folders, task, allow_edits, indices=indices,
                                      request_digest=digest, developer_engine=roles["developer"]["engine"],
                                      reviewer_engine=roles["reviewer"]["engine"], use_inbox=True,

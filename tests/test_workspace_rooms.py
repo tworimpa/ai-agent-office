@@ -283,6 +283,27 @@ def test_room_records_codex_start_failure_without_provider_message(tmp_path, mon
         assert saved == (expected,)
 
 
+def test_room_rejects_invalid_test_selection_before_launch(tmp_path, monkeypatch):
+    web, contracts = project(tmp_path)
+    with studio(tmp_path / "tasks.db") as local:
+        monkeypatch.setattr(local.engines, "snapshot", lambda: engine_snapshot("codex"))
+        monkeypatch.setattr(local.runner, "_launch", lambda *_args: pytest.fail("Unexpected execution"))
+        workspace = register(local, (web, contracts))
+        route = f"/api/rooms/{workspace}/assignments"
+        for files in ([], ["../test_outside.py"], ["-k"], ["web"], ["C:/test_file.py"],
+                      ["web/test_missing.py"], ["web/test_value.py", "web/test_value.py"]):
+            job = {"id": uuid4().hex, "message": "원래 작업", "allow_edits": True,
+                   "delegation": None, "test_files": files}
+            assert request(local, route, job)[0] == 400
+        job = {"id": uuid4().hex, "message": "원래 작업", "allow_edits": False,
+               "delegation": None, "test_files": ["web/test_value.py"]}
+        assert request(local, route, job)[0] == 400
+        monkeypatch.setattr("agent_office.workspace_rooms.find_spec", lambda name: None)
+        status, data = request(local, route, {**job, "allow_edits": True})
+        assert status == 400 and "pytest" in data["error"]["message"]
+        assert request(local, "/api/runs") == (200, {"runs": []})
+
+
 @pytest.mark.parametrize("remote", [False, True])
 def test_room_assignment_continues_through_direction_and_results(tmp_path, monkeypatch, remote):
     workers(tmp_path, monkeypatch)
@@ -292,6 +313,8 @@ def test_room_assignment_continues_through_direction_and_results(tmp_path, monke
     (web / "test_value.py").write_text(
         "from pathlib import Path\ndef test_patch():\n"
         "    assert (Path(__file__).parents[1] / 'answer.txt').read_text() == 'fixture'\n", encoding="utf-8")
+    if remote:
+        (contracts / "test_contract.py").write_text("def test_outside_scope():\n    assert False\n", encoding="utf-8")
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                     "commit", "-qam", "test assigned result"], check=True, cwd=repo)
 
@@ -312,9 +335,14 @@ def test_room_assignment_continues_through_direction_and_results(tmp_path, monke
             unrelated = register(local, (web,), "별도 작업실", api=api)
             room = f"{api}/rooms/{workspace}"
             run_id = uuid4().hex
-            status, body = request(local, room + "/assignments", {"id": run_id, "message": "원래 작업",
-                                    "allow_edits": True, "delegation": None})
+            job = {"id": run_id, "message": "원래 작업", "allow_edits": True, "delegation": None}
+            if remote:
+                job["test_files"] = ["web/test_value.py"]
+            status, body = request(local, room + "/assignments", job)
             assert status == 202, body
+            if remote:
+                assert body["run"]["assignment"]["test_files"] == job["test_files"]
+                assert request(local, room + "/assignments", {**job, "test_files": ["contracts/test_contract.py"]})[0] == 409
             path = f"{api}/runs/{run_id}"
             question = wait_request(local, api, run_id, "question")
             assert request(local, room + "/inbox") == (200, {"requests": [question]})
@@ -335,7 +363,10 @@ def test_room_assignment_continues_through_direction_and_results(tmp_path, monke
             permission = wait_request(local, api, run_id, "permission")
             assert request(local, path + f"/inbox/{permission['id']}/decision", {"action": "approve"})[0] == 200
             run = wait_for(local, run_id, {"READY_FOR_HUMAN_REVIEW"}, api=api)
-            assert "지시 반영" in run["developer_output"] and "2 passed" in run["test_output"]
+            assert "지시 반영" in run["developer_output"]
+            assert ("1 passed" if remote else "2 passed") in run["test_output"]
+            if remote:
+                assert run["assignment"]["test_files"] == job["test_files"]
             assert "APPROVED" in run["review_output"] and "answer.txt" in run["changes"]
             assert not (repo / "answer.txt").exists()
             _, decisions = request(local, path + "/inbox")

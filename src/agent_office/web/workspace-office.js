@@ -316,8 +316,10 @@ export function mountWorkspaceOffice(win = window) {
     const date = stamp(run?.created_at);
     say('ledger-note', run ? [date, run.assignment?.delegation === true && '기술 질문 위임', run.pending_count && '응답 대기 ' + run.pending_count + '건'].filter(Boolean).join(' · ') :
       '조정자에게 요청을 보내 작업을 시작할 수 있습니다.');
+    const testFiles = detail?.assignment?.test_files;
     const evidence = detail ? [
-      ['개발 결과', detail.developer_output], ['테스트 결과', detail.test_output], ['검토 결과', detail.review_output],
+      ['개발 결과', detail.developer_output], ['테스트 파일', Array.isArray(testFiles) && testFiles.join('\n')],
+      ['테스트 결과', detail.test_output], ['검토 결과', detail.review_output],
       ['변경 파일', detail.changes], ['변경 내용', detail.diff], ['진단', detail.diagnostic],
     ].filter(([, value]) => value) : [];
     get('ledger-result').hidden = !evidence.length;
@@ -514,10 +516,11 @@ export function mountWorkspaceOffice(win = window) {
     get('message').placeholder = assignment ? '예시 · 이 프로젝트의 테스트 실패 원인을 찾아줘.' : '예시 · Windows에서만 재현되는지 확인해줘.';
     get('assignment-options').hidden = !assignment;
     get('edit-option').hidden = !assignment;
-    get('assignment-options').open = Boolean(saved?.delegation != null || saved?.indices);
+    get('assignment-options').open = Boolean(saved?.delegation != null || saved?.indices || saved?.test_files);
     get('run-delegation').options[0].textContent = '작업실 기본값 · ' + (room.settings.delegation ? '조정자가 결정' : '나에게 질문');
     get('run-delegation').value = saved?.delegation == null ? '' : String(saved.delegation);
     get('allow-edits').checked = saved?.allow_edits ?? false;
+    get('test-files').value = saved?.test_files?.join('\n') ?? '';
     if (assignment) folderChoices(saved?.indices);
     get('message').value = saved?.message ?? editor ?? '';
     say('chat-note', saved ? '이전 접수 결과를 확인하지 못했습니다. 같은 요청을 다시 보낼 수 있습니다.' : '');
@@ -629,6 +632,9 @@ export function mountWorkspaceOffice(win = window) {
     get('message').readOnly = locked;
     get('run-delegation').disabled = locked;
     get('allow-edits').disabled = locked;
+    const editAssignment = assignment && get('allow-edits').checked;
+    get('assignment-test-scope').hidden = !editAssignment;
+    get('test-files').disabled = locked || !editAssignment;
     for (const box of get('assignment-folders').querySelectorAll('input')) box.disabled = locked;
     get('send').hidden = !open;
     get('send').disabled = !enabled || !!chatState;
@@ -686,9 +692,14 @@ export function mountWorkspaceOffice(win = window) {
     const body = {id, message: value, allow_edits: get('allow-edits').checked, delegation: mode === '' ? null : mode === 'true'};
     const indices = Array.from(get('assignment-folders').querySelectorAll('input:checked'), input => Number(input.value));
     if (indices.length) body.indices = indices;
+    if (body.allow_edits) {
+      const files = get('test-files').value.split('\n').map(path => path.trim()).filter(Boolean);
+      if (files.length) body.test_files = files;
+    }
     return body;
   }
 
+  get('allow-edits').addEventListener('change', chatControls);
   get('chat-form').addEventListener('submit', async event => {
     event.preventDefault();
     const role = chatRole;

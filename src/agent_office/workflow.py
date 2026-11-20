@@ -11,6 +11,7 @@ from typing import Protocol, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from .adapters import AgentResult
+from .studio_catalog import verify_worktree_test_files
 from .workspace import git_summary, read_git_prefix
 
 
@@ -25,6 +26,7 @@ class TaskState(TypedDict, total=False):
     developer: str
     reviewer: str
     test_argv: list[str]
+    test_files: list[str]
     allow_edits: bool
     attempts: int
     max_attempts: int
@@ -131,6 +133,8 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
         timed_out = False
         returncode = None
         try:
+            if test_files := state.get("test_files"):
+                verify_worktree_test_files(Path(state["workspace"]), test_files)
             completed = subprocess.run(
                 state["test_argv"], cwd=state["workspace"],
                 capture_output=True, text=True, encoding="utf-8",
@@ -144,7 +148,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             timed_out = True
             output = str(exc)
             returncode = 124
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             passed = False
             output = str(exc)
         if save_stage:
