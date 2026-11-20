@@ -10,6 +10,14 @@ import threading
 import time
 
 
+def windows_service_session() -> bool:
+    """Detect the noninteractive Windows session inherited by service workers."""
+    if os.name != "nt":
+        return False
+    session = ctypes.c_ulong()
+    return bool(ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session))) and session.value == 0
+
+
 class LinuxChildren:
     def __init__(self):
         # Child subreaper: orphaned grandchildren (including setsid workers) reparent

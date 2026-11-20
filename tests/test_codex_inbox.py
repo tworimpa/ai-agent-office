@@ -102,6 +102,18 @@ def test_readonly_codex_handles_status_during_startup(tmp_path, monkeypatch, sce
     assert not operator.requests and not operator.confirmed
 
 
+@pytest.mark.parametrize("scenario", ["service-shell", "service-shell-legacy", "service-shell-rejected"])
+def test_windows_service_supplies_shell_context_and_preserves_approval(tmp_path, monkeypatch, scenario):
+    monkeypatch.setattr("agent_office.codex_inbox.windows_service_session", lambda: True)
+    operator, result = fixture(tmp_path, monkeypatch, scenario, edits=False)
+    if scenario == "service-shell-rejected":
+        assert result.returncode == 1
+        assert result.message == "Codex app-server [thread/inject_items] protocol: RPC rejected (code=-32602)."
+    else:
+        assert (result.returncode, result.session_id, result.message) == (0, "thread", "작업 완료")
+    assert not operator.requests
+
+
 @pytest.mark.parametrize(("scenario", "diagnosis"), [
     ("rpc-rejected", "Codex app-server [thread/start] protocol: RPC rejected (code=-32602)."),
     ("startup-notification", "Codex app-server [thread/start] protocol: unexpected notification (windows/worldWritableWarning)."),
@@ -153,8 +165,14 @@ def server():
 
     def start_turn(first, direction=False):
         start = read()
+        if first and not scenario.startswith("service-shell") and start["method"] == "thread/inject_items":
+            assert start["params"]["threadId"] == "thread"
+            emit(id=start["id"], result={})
+            start = read()
         assert start["method"] == "turn/start" and start["params"]["threadId"] == "thread"
         message = start["params"]["input"][0]["text"]
+        if scenario.startswith("service-shell"):
+            assert ("exec_command" in message and "cmd.exe" in message) == (scenario == "service-shell-legacy")
         if direction:
             marker = "\nOperator directions (JSON array):\n"
             if marker in message:
@@ -204,7 +222,8 @@ def server():
         topic = "windows/worldWritableWarning" if scenario == "startup-notification" else "unexpected/private-method-text"
         emit(method=topic, params={"path": "provider-private-text"})
         return
-    read_only = scenario in ("read-only", "direction-plan", "room-choice", "room-product", "remote-status", "account-status")
+    read_only = scenario.startswith("service-shell") or scenario in (
+        "read-only", "direction-plan", "room-choice", "room-product", "remote-status", "account-status")
     assert params["sandbox"] == ("read-only" if read_only else "workspace-write")
     policy = {"type": "readOnly"} if read_only else {
         "type": "workspaceWrite", "excludeTmpdirEnvVar": True, "excludeSlashTmp": True}
@@ -212,6 +231,21 @@ def server():
         policy["type"] = "dangerFullAccess"
     emit(id=start["id"], result={"sandbox": policy, "cwd": str(Path.cwd()), "approvalsReviewer": "user",
                                  "approvalPolicy": "on-request", "thread": {"id": "thread"}})
+    if scenario.startswith("service-shell"):
+        inject = read()
+        assert inject["method"] == "thread/inject_items" and inject["params"]["threadId"] == "thread"
+        context, = inject["params"]["items"]
+        assert context["type"] == "message" and context["role"] == "developer"
+        command, = context["content"]
+        assert command["type"] == "input_text"
+        assert all(part in command["text"] for part in ("cmd.exe", "exec_command", "login", "tty", "Git", "sandbox"))
+        if scenario == "service-shell":
+            emit(id=inject["id"], result={})
+        else:
+            code = -32601 if scenario == "service-shell-legacy" else -32602
+            emit(id=inject["id"], error={"code": code, "message": "provider refused context"})
+            if scenario == "service-shell-rejected":
+                return
     turn = start_turn(True)
     if scenario == "buffered-trailing":
         assert not sys.stdin.buffer.readline()

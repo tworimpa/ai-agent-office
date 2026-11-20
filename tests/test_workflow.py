@@ -11,7 +11,7 @@ class MockAdapter:
         self.responses = list(responses)
         self.calls = []
 
-    def execute(self, prompt, *, workspace, allow_edits):
+    def execute(self, prompt, *, workspace, allow_edits, inbox=None):
         self.calls.append((prompt, allow_edits))
         return self.responses.pop(0)
 
@@ -34,6 +34,33 @@ def test_develop_test_review(tmp_path):
     assert result["attempts"] == 1
     assert len(developer.calls) == 1
     assert reviewer.calls[0][1] is False
+
+
+@pytest.mark.parametrize("evidence_available", [True, False])
+def test_windows_service_review_receives_coordinator_git_evidence(tmp_path, monkeypatch, evidence_available):
+    from types import SimpleNamespace
+
+    def collect(worktree):
+        assert worktree == tmp_path.resolve()
+        if not evidence_available:
+            raise OSError("private Git diagnostic")
+        return " M notes.md", "diff --git a/notes.md b/notes.md\n-old\n+new"
+
+    monkeypatch.setattr("agent_office.workflow.windows_service_session", lambda: True)
+    monkeypatch.setattr("agent_office.workflow.changes_in", collect)
+    developer = MockAdapter([AgentResult(0, "implemented")])
+    reviewer = MockAdapter([AgentResult(0, "VERDICT: APPROVED")])
+    graph = build_graph({"claude": developer, "codex": reviewer},
+                        inbox_factory=lambda *_: SimpleNamespace(expire=lambda: None))
+    graph.invoke(base_state(tmp_path))
+    review, allow_edits = reviewer.calls[0]
+    assert not allow_edits and "Test results:\nok" in review
+    assert "Git evidence collected by the Studio coordinator" in review
+    if evidence_available:
+        assert " M notes.md" in review and "-old\n+new" in review
+    else:
+        assert "Git evidence unavailable" in review and "private Git diagnostic" not in review
+    assert "Git evidence" not in developer.calls[0][0]
 
 
 def test_retry_after_review_changes(tmp_path):
