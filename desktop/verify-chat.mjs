@@ -35,7 +35,7 @@ const run = {id,workspace_id:workspace.id,task:'사무실을 다시 열었을 �
   allow_edits:true,use_inbox:true,developer_engine:'codex',reviewer_engine:'codex',assignment,
   lines:{developer:'작업을 마쳤습니다.',reviewer:'리뷰를 마쳤습니다.'},pending_count:0,meeting,
   developer_output:'알림 설정을 저장하고 복원하도록 수정했습니다.\n\n## 변경 근거\n\n- 기존 설정 파일을 재사용했습니다.\n- `enabled` 값을 확인했습니다.\n\n```python\ndef restore(settings):\n'+code+'\n```\n\n복원 시나리오를 검증했습니다.',
-  test_output:'Studio test invocation:\n{"cwd":"/sample","argv":["python","-m","pytest","-q"],"exit_code":0}\nCaptured test output:\n... [100%]\n3 passed in 0.34s',
+  test_output:'Studio test invocation:\n{"cwd":"/sample","argv":["python","-m","agent_office.desktop_pytest","-q"],"exit_code":0}\nCaptured test output:\n... [100%]\n3 passed in 0.34s',
   review_output:'VERDICT: APPROVED\n\n설정 복원과 테스트를 확인했습니다.',changes:' M settings.py\n M tests/test_settings.py',
   diff:'diff --git a/settings.py b/settings.py\n--- a/settings.py\n+++ b/settings.py\n@@ -1 +1 @@\n-enabled = False\n+enabled = settings.enabled\ndiff --git a/tests/test_settings.py b/tests/test_settings.py\n--- a/tests/test_settings.py\n+++ b/tests/test_settings.py\n@@ -1 +1 @@\n-assert not enabled\n+assert enabled\n'}
 const paths = new Map([
@@ -93,6 +93,7 @@ try {
     assert.equal(await dialog.locator('[data-view="simple"]').getAttribute('aria-pressed'), 'true')
     assert.equal(await dialog.getByText('options["setting_18"]', {exact:false}).first().isVisible(), false)
     await dialog.locator('.result-facts').filter({hasText:'변경 파일 2개'}).waitFor()
+    await dialog.locator('.result-facts').filter({hasText:'테스트 3개 통과'}).waitFor()
     if (width === 1280) assert.equal(chartRequests.length, 0)
     await dialog.locator('[data-jump="changes"]').focus()
     await page.keyboard.press('Enter')
@@ -169,6 +170,7 @@ try {
     for (const view of ['technical','collaboration','simple']) {
       await dialog.locator(`[data-view="${view}"]`).click()
       const question = dialog.locator('.request-item')
+      await dialog.getByRole('button', {name:'응답할 요청 1건'}).click()
       await question.getByText(/config\.json/).waitFor()
       assert.ok(await question.getByRole('button', {name:'요청함에서 확인'}).isEnabled())
       assert.ok(await question.evaluate(el => el.getBoundingClientRect().width <= window.innerWidth))

@@ -849,6 +849,28 @@ test('each view exposes pending requests and permission scope, retaining a draft
   assert.equal(calls.filter(call => call.body).length, 1);
 });
 
+test('a late detail refresh cannot re-enable an offline question editor', async t => {
+  let slow = false, resolveDetail;
+  const row = {run_id:runId,id:'e'.repeat(32),kind:'question',role:'developer',status:'pending',prompt:'이 이름을 사용할까요?'};
+  const {get} = mount(t, path => {
+    if (path === base) return room();
+    if (path === runPath) return slow ? new Promise(resolve => { resolveDetail = resolve; }) : {run};
+    if (path === runPath + '/inbox') {
+      if (slow) throw new Error('offline');
+      return {requests:[row]};
+    }
+  });
+  const editor = () => get('office-thread').querySelector('textarea');
+  await until(() => editor() && !editor().disabled);
+  slow = true;
+  get('refresh').click();
+  await until(() => resolveDetail && editor()?.disabled);
+  const previous = editor();
+  resolveDetail({run:{...run,diagnostic:'updated'}});
+  await until(() => editor() && editor() !== previous);
+  assert.ok(editor().disabled);
+});
+
 test('evidence facts distinguish failed, unverified, read-only and manual outcomes', async t => {
   let result = {...run, outcome: 'TEST_FAILED', state: 'FAILED', changes:'(Git preview unavailable)',
     test_output: 'FAILED tests/test_demo.py::example - AssertionError\n1 failed, 2 passed in 0.12s'};

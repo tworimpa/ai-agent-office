@@ -106,7 +106,7 @@ function pytestCounts(output, result) {
   if (lines[0] === 'Studio test invocation:') {
     try {
       const {exit_code: code, argv} = JSON.parse(lines[1]);
-      if (!Array.isArray(argv) || !argv.includes('pytest') || !Number.isInteger(code) ||
+      if (!Array.isArray(argv) || argv[1] !== '-m' || !['pytest', 'agent_office.desktop_pytest'].includes(argv[2]) || !Number.isInteger(code) ||
           (code === 0) !== (result === '통과') || lines[2] !== 'Captured test output:') return '';
     } catch { return ''; }
   }
@@ -884,6 +884,7 @@ export function mountWorkspaceOffice(win = window) {
       say('detail-status', '');
       renderChatConnection();
       renderRoom();
+      requestControls();
       if (get('conversation').open) {
         renderChatLog();
         chatControls();
@@ -1107,7 +1108,19 @@ export function mountWorkspaceOffice(win = window) {
   function renderChatLog() {
     renderViewTools('chat', selected());
     renderThread('chat-log', chatRole);
+    const waiting = threadRun === runId ? chatRows.filter(row => row.status === 'pending').length : 0;
+    const planPending = detail?.meeting?.status === 'awaiting_review' && stoppable(detail.state);
+    const count = waiting + (planPending ? 1 : 0);
+    get('chat-pending').hidden = count === 0;
+    say('chat-pending', '응답할 요청 ' + count + '건');
   }
+
+  get('chat-pending').addEventListener('click', () => {
+    const target = get('chat-log').querySelector('.request-item') ??
+      get('meeting-decision').querySelector('input:not(:disabled), button:not(:disabled)') ?? get('decision-heading');
+    target?.scrollIntoView?.({block: 'center'});
+    target?.focus();
+  });
 
   function fullAnswer(id, run, role, text) {
     const key = [hostId, workspaceId, run.id, role].join(':');
