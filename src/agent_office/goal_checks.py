@@ -10,6 +10,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import time
+from urllib.parse import quote
 from xml.etree import ElementTree
 
 from .events import snapshot_request
@@ -99,15 +100,14 @@ def _command(workspace, check, report):
                 raise ValueError("검증할 저장소와 같은 package-lock.json으로 설치한 호스트의 jsdom이 필요합니다.")
             # Load only the predefined web suite dependency from a known
             # checkout. Relative imports still resolve against the candidate.
-            hook = report.parent / "web-dependencies.mjs"
-            hook.write_text(
+            hook = (
                 "import {createRequire,registerHooks} from 'node:module';\n"
                 "import {pathToFileURL} from 'node:url';\n"
                 "const require=createRequire(" + json.dumps(str(host_lock.resolve())) + ");\n"
                 "const url=pathToFileURL(require.resolve('jsdom')).href;\n"
                 "registerHooks({resolve(name,context,next){return name==='jsdom'?"
-                "{url,shortCircuit:true}:next(name,context)}});\n", encoding="utf-8")
-            options = ["--import", hook.as_uri()]
+                "{url,shortCircuit:true}:next(name,context)}});\n")
+            options = ["--import", "data:text/javascript," + quote(hook, safe="")]
         return [node, *options, "--test", "--test-reporter=junit", "--test-reporter-destination=" + str(report), *files], kind
     harness = Path(os.environ.get("AGENT_OFFICE_GOAL_INSTALL_HARNESS",
                                   Path(__file__).resolve().parents[2] / "desktop/verify-install.mjs"))

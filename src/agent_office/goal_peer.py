@@ -13,6 +13,7 @@ import time
 import uuid
 
 from .goal_checks import recipe, run_check
+from .goal_candidates import private_name
 from .meeting_parallel import _check_destination, _contents
 from .models import OfficeError, validate_id
 from .ownership import RunGuard
@@ -27,9 +28,7 @@ def _digest(data):
 
 
 def _safe_names(names):
-    if len(names) > MAX_FILES or any(re.search(
-        r"(?:^|/)(?:\.env(?:\.|$)|\.ssh(?:/|$)|\.aws(?:/|$))|\.(?:pem|key|pfx)$", name, re.I
-    ) for name in names):
+    if len(names) > MAX_FILES or any(private_name(name) for name in names):
         raise ValueError("비공개 파일 또는 크기 제한 때문에 원격 검증 소스를 고정할 수 없습니다.")
 
 

@@ -45,6 +45,9 @@ def validate_policy(value):
         stages.append(("quick", "full", "journey").index(check["stage"]))
     if stages != sorted(stages) or not {0, 1}.issubset(stages):
         raise ValueError("빠른 검증, 전체 검증, 사용자 여정 순서로 지정하세요.")
+    if any("--lf" in c["argv"] for c in checks) and not any(
+            c["stage"] == "full" and recipe(c["argv"]) == "pytest" for c in checks):
+        raise ValueError("실패 파일 자동 선택에는 전체 pytest 검증 단계가 필요합니다.")
     return json.loads(json.dumps(value))
 
 
@@ -84,14 +87,16 @@ def describe(db, run_id):
                 (run_id, candidate["attempt"], candidate["digest"])):
             candidate.update({kind + "_status": status, kind + "_output": output, kind + "_at": at})
     eligible = [candidate for candidate in candidates if candidate["eligible"]]
-    best = max(eligible, key=lambda c: (c["review_status"] == "approved", c["score"],
+    best = max(eligible, key=lambda c: (c["review_status"] == "approved", c["status"] == "passed", c["score"],
                                         c["review_status"] != "changes_requested"), default=None)
     return {"checks": checks, "candidates": candidates, "best_attempt": best["attempt"] if best else None,
             "stop_reason": stop[0] if stop else ""}
 
 
 def candidate_diff(db, run_id, attempt):
-    row = db.execute("SELECT patch FROM studio_goal_candidates WHERE run_id=? AND attempt=?", (run_id, attempt)).fetchone()
+    present = db.execute("SELECT 1 FROM sqlite_master WHERE name='studio_goal_candidates'").fetchone()
+    row = (db.execute("SELECT patch FROM studio_goal_candidates WHERE run_id=? AND attempt=?",
+                      (run_id, attempt)).fetchone() if present else None)
     if row is None:
         from .models import OfficeError
         raise OfficeError("NOT_FOUND")
@@ -181,7 +186,8 @@ class GoalVerification:
         fixed = sorted(k for k in base.keys() & cases.keys() if base[k] == "failed" and cases[k] == "passed")
         new = sorted(k for k, v in cases.items() if v == "failed" and base.get(k) != "failed")
         repaired = sorted(k for k in reference.keys() & cases.keys() if reference[k] == "failed" and cases[k] == "passed")
-        regressions = sorted(k for k in reference.keys() & cases.keys() if reference[k] != "failed" and cases[k] == "failed")
+        regressions = sorted(k for k, status in cases.items()
+                             if previous is not None and reference.get(k) != "failed" and status == "failed")
         remaining = sorted(k for k in reference.keys() & cases.keys() if reference[k] == cases[k] == "failed")
         receipt.update(
             scope_changes=[*("누락: " + k for k in removed[:50]), *("건너뜀: " + k for k in skipped[:50])],
@@ -235,7 +241,12 @@ class GoalVerification:
             reason = "기준 검증이 소스 파일을 수정했습니다. 변경을 확인하세요."
             self.stop(reason)
             return False, self.format(records) + "\n" + reason
-        if self.reproduce_required and not any(r["failed_ids"] for r in records):
+        configured_files = {path for c in self.policy["checks"] if c["stage"] == "quick" and recipe(c["argv"]) == "pytest"
+                            for path in c["argv"] if path.endswith(".py")}
+        failures = {case for _, cases in self._rows(0) for case, status in cases.items() if status == "failed"}
+        reproduction = (any(k.split("::", 1)[0] in configured_files for k in failures)
+                        if configured_files else bool(failures))
+        if self.reproduce_required and not reproduction:
             self.stop("기준 커밋에서 문제가 재현되지 않았습니다. 실패하는 회귀 테스트 또는 재현 조건이 필요합니다.")
             return False, self.format(records)
         return True, self.format(records)
@@ -245,6 +256,8 @@ class GoalVerification:
         return snapshot_request("\n".join(
             f"{r['stage']} · {r['status']} · {r['elapsed_seconds']}s · exit {r['exit_code']} · {r['counts']}"
             + ("\n" + "\n".join(r["failed_ids"][:8] + r["scope_changes"][:8]) if r.get("failed_ids") or r.get("scope_changes") else "")
+            + (f"\n직전 시도 대비 해결 {r['fixed_since_previous_count']}건, 새 실패 {r['failures_since_previous_count']}건, "
+               f"계속 실패 {r['still_failing_count']}건." if r.get("previous_attempt") is not None else "")
             + ("\n" + r["summary"][-1200:] if r["status"] != "passed" else "")
             for r in records))
 
@@ -255,8 +268,17 @@ class GoalVerification:
         records = [row[0] for row in self._rows(attempt)]
         if len(records) != start:
             raise ValueError("이전 검증 실행의 종료 상태를 확인해야 합니다.")
-        files, patch, digest = capture(self.root, self.revision, self.folders)
-        scope = scope_changes(self.root, self.revision, files)
+        try:
+            files, patch, digest = capture(self.root, self.revision, self.folders)
+            scope = scope_changes(self.root, self.revision, files)
+        except (OSError, ValueError) as exc:
+            reason = snapshot_request(str(exc))
+            record = dict(attempt=attempt, created_at=now(), digest="", score=0, eligible=False, status="unverified",
+                          files=[], hypothesis=snapshot_request(state.get("developer_output", "")),
+                          change="", scope_changes=[reason], next_action=reason, fixed_count=0, new_failure_count=0)
+            self.db.execute("INSERT INTO studio_goal_candidates VALUES(?,?,?,?)", (self.id, attempt, encode(record), ""))
+            self.stop(reason)
+            return False, False, False, reason
         for pos, check in enumerate(self.policy["checks"][start:], start):
             if "--lf" in check["argv"]:
                 check = self._focused(check)
@@ -288,7 +310,11 @@ class GoalVerification:
         score = int(passed) * 1000000 + stages_passed * 10000 + fixed * 10 - regressions * 10
         last = describe(self.db, self.id) or {}
         prior = last.get("candidates", [])
-        no_progress = bool(prior and (any(c["digest"] == digest and c["score"] >= score for c in prior)
+        rejected = passed and any(c["digest"] == digest and c["review_status"] == "changes_requested" for c in prior)
+        if rejected:
+            passed = False
+            explanation = "독립 검토가 수정을 요청한 후보와 변경 내용이 같습니다."
+        no_progress = bool(prior and (rejected or any(c["digest"] == digest and c["score"] >= score for c in prior)
                                      or len(prior) >= 2 and score <= max(c["score"] for c in prior)))
         retry = not passed and not interrupted and not no_progress and attempt < self.policy["max_attempts"]
         reason = ("독립 검토가 필요합니다." if passed else
@@ -302,7 +328,7 @@ class GoalVerification:
         if not retry:
             self.stop(reason)
         record = dict(attempt=attempt, created_at=now(), digest=digest, score=score, eligible=eligible,
-                      status="passed" if passed else "scope_reduced" if scope_reduced else "failed",
+                      status="passed" if passed else "scope_reduced" if scope_reduced else "changes_requested" if rejected else "failed",
                       files=files, hypothesis=snapshot_request(state.get("developer_output", "")),
                       change=", ".join(files), scope_changes=scope, next_action=reason,
                       fixed_count=fixed, new_failure_count=regressions)

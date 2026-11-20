@@ -71,7 +71,8 @@ def test_worker_loss_after_checkpoint_resumes_once_under_original_id(goal, monke
 
 
 def test_normal_supervisor_resumes_only_the_next_review(goal, monkeypatch):
-    from agent_office.goal_verification import default_policy
+    from agent_office.goal_candidates import capture
+    from agent_office.goal_verification import default_policy, init_schema
 
     runner, store, run_id, root = goal
     db = store.connection
@@ -93,6 +94,11 @@ def test_normal_supervisor_resumes_only_the_next_review(goal, monkeypatch):
             command.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(fake))} {engine} "$@"\n')
             command.chmod(0o755)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+    (root / "setting.py").write_text("enabled = True\n")
+    files, patch, digest = capture(root, metadata[0], ["."])
+    init_schema(db)
+    candidate = {"attempt":1, "digest":digest, "files":files, "eligible":True, "score":1}
+    db.execute("INSERT INTO studio_goal_candidates VALUES(?,?,?,?)", (run_id,1,json.dumps(candidate),patch))
     store.record_transition(run_id, operation_key="verify", event_type="STAGE_STARTED", state="TESTING")
     recovery.checkpoint(db, run_id, "review", dict(attempts=1, status="TEST_PASSED", test_output="1 passed"))
     finish_drained(store, run_id, worker_succeeded=False, preview_finished=False)

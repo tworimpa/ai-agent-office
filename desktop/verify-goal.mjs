@@ -106,6 +106,18 @@ async function decide() {
   await page.locator('#approve-plan').click()
   record('decision', '기본 테마를 밝게로 선택하고 계획 시작')
 }
+async function waitForQuestion(id) {
+  for (const deadline = Date.now() + 120000; Date.now() < deadline;) {
+    const {requests} = await json('/api/runs/' + id + '/inbox')
+    if (requests.some(row => row.kind === 'question' && row.status === 'pending')) return
+    const {goal} = await json('/api/runs/' + id + '/goal')
+    if (goal?.recovery?.disposition === 'closed') {
+      throw Error('Goal stopped before its product decision: ' + (goal.stop_reason || goal.state))
+    }
+    await delay(300)
+  }
+  throw Error('The fixture did not reach its product decision within two minutes')
+}
 async function verifyRestoredReport(captureOverview = false) {
   await page.locator('#goal-report').waitFor()
   await page
@@ -251,6 +263,7 @@ try {
     await writeFile(join(evidence, 'goal.json'), JSON.stringify(goal, null, 2))
     record('privilege-gate', '관리자 세션의 저장소 테스트를 실행하지 않고 미검증으로 기록')
   } else {
+    await waitForQuestion(run.id)
     await page.locator('#summary-action').filter({hasText: '질문에 답하기'}).click()
     const editor = page.locator('#office-thread .request-item textarea')
     await editor.fill('밝게')
@@ -313,6 +326,21 @@ try {
   console.log('Installed journey verified', evidence)
 } catch (error) {
   console.error('Fixture evidence:', evidence, 'working directory:', root)
+  if (origin && run) {
+    try {
+      const {run: detail} = await json('/api/runs/' + run.id)
+      const {goal} = await json('/api/runs/' + run.id + '/goal')
+      const diagnostic = {
+        run_id: run.id, state: detail.state, outcome: detail.outcome, diagnostic: detail.diagnostic,
+        developer: detail.developer_output?.slice(-1200), test: detail.test_output?.slice(-1200),
+        stop_reason: goal?.stop_reason, checks: goal?.checks.map(({attempt, stage, status, exit_code, summary}) =>
+          ({attempt, stage, status, exit_code, summary: summary.slice(-1200)})),
+        pending: goal?.recovery?.pending_decisions, next_action: goal?.next_action
+      }
+      console.error('Installed goal diagnostic:', JSON.stringify(diagnostic))
+      await writeFile(join(evidence, 'diagnostic.json'), JSON.stringify(diagnostic, null, 2))
+    } catch (readError) { console.error('Could not read fixture diagnostic:', readError.message) }
+  }
   if (page && !page.isClosed()) await screenshot('error').catch(() => {})
   throw error
 } finally {

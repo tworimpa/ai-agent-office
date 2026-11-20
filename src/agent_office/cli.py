@@ -146,8 +146,10 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
             initial["selected_folders"] = [str(path) for path in mapped]
         if resume:
             initial.update({key: val for key, val in resume.items() if key != "next_stage"})
-        result = graph.invoke(initial, config={"configurable": {"thread_id": run_id},
-                                               "recursion_limit": 8 + 4 * min(args.max_attempts, 10000)})
+        config = {"configurable": {"thread_id": run_id}}
+        if goal:
+            config["recursion_limit"] = 8 + 4 * args.max_attempts
+        result = graph.invoke(initial, config=config)
         state, outcome = {
             "PLAN_ONLY": ("PLAN_ONLY", "PLAN_ONLY"),
             "READY_FOR_HUMAN_REVIEW": ("READY_FOR_HUMAN_REVIEW", "APPROVED"),

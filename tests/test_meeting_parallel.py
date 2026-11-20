@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import threading
 import time
 from unittest.mock import Mock
@@ -138,40 +139,72 @@ def test_imports_both_independent_worktrees_and_hands_off_dependencies(setup):
 
 
 def test_goal_finishes_disjoint_work_while_product_choice_waits(setup):
-    from agent_office import goal_recovery, overnight_goals
+    from agent_office import goal_recovery, meeting_store, overnight_goals
+    from agent_office.batch_dialogue import run_batch_dialogue
     from agent_office.dialogue import PRODUCT_DECISION
+    from agent_office.meeting_runtime import RoomMeeting
     from agent_office.store import TaskStore
+    from agent_office.workflow import build_graph
 
     repo, plan = setup
     path, run_id = repo.parent / "goal.sqlite3", uuid4().hex
+    (repo/"test_join.py").write_text("from pathlib import Path\ndef test_join():\n"
+                                    "    assert Path('first/joined.txt').read_text() == 'dark/done'\n")
+    git(repo, "add", "test_join.py")
+    git(repo, "commit", "-qm", "test dependent task")
+    plan["evidence"]["revision"] = git(repo,"rev-parse","HEAD")
+    script = repo.parent / "batch_fixture.py"
+    script.write_text(
+        "import json,sys\nfrom pathlib import Path\n"
+        "message=json.load(sys.stdin)['message']['content']\n"
+        "if '--conversation' in sys.argv:\n"
+        "    assert message.endswith('dark')\n"
+        "    with Path('first/new.py').open('a') as f: f.write('dark')\n"
+        "    reply='done'\n"
+        "else: reply='AGENT_OFFICE_PRODUCT_DECISION\\nChoose a display mode.'\n"
+        "print(json.dumps({'status':'SUCCESS','response':reply,'conversation_id':'12345678-1234-4234-a234-123456789abc'}))\n")
     with closing(LocalRunner(path)):
         pass
     seed(path, run_id)
     with TaskStore(path) as store:
         overnight_goals.ensure_schema(store.connection)
+        store.connection.execute("UPDATE studio_runs SET folders='[\".\"]' WHERE id=?", (run_id,))
+        store.connection.execute("UPDATE tasks SET developer_engine='antigravity' WHERE current_run_id=?", (run_id,))
         overnight_goals.register(store.connection, run_id, "workspace", "fixture", plan["evidence"]["revision"],
                                  ["."], {"goal_criteria":["check"], "goal_policy":{}})
-    inbox, receipt = Inbox(path), threading.Event()
-    def record(ident, result):
-        if ident == "B" and "주 작업 트리에 반영" in result:
-            receipt.set()
+        meeting_store.register(store.connection,run_id)
+        meeting_store.propose(store.connection,run_id,plan)
+    inbox = Inbox(path)
+    worker_timeout = 4
     class WorkerWithChoice:
-        def execute(self, prompt, *, workspace, allow_edits, strict_completion, inbox):
-            job = json.loads(prompt.splitlines()[-1])["assigned"]
-            if job["id"] == "A":
-                row = asyncio.run(asyncio.wait_for(inbox.ask(PRODUCT_DECISION, "표시 모드를 선택하세요.", "first"), 12))
-                with inbox.sending(row["id"]):
-                    answer = row["answer"]
-                inbox.delivered(row["id"])
+        def execute(self, prompt, *, workspace, allow_edits, strict_completion=False, inbox=None):
+            if prompt.startswith("MEETING_IMPLEMENT"):
+                item = json.loads(prompt.splitlines()[-1])["assigned"]
+                if item["id"] == "A":
+                    return run_batch_dialogue("antigravity",[sys.executable,str(script)],prompt,workspace,
+                                              os.environ.copy(),worker_timeout,inbox)
+                (workspace/"second/new.py").write_text("done")
+            elif allow_edits:
+                remaining = json.loads(prompt.splitlines()[-1])["remaining"]
+                assert [task["id"] for task in remaining] == ["C"]
+                value = (workspace/"first/new.py").read_text()+"/"+(workspace/"second/new.py").read_text()
+                (workspace/"first/joined.txt").write_text(value)
             else:
-                answer = "done"
-            (workspace / job["folders"][0] / "new.py").write_text(answer, encoding="utf-8")
+                return AgentResult(0,"VERDICT: APPROVED")
             return AgentResult(0, "완료")
+    adapters = {"antigravity":WorkerWithChoice(), "gemini":WorkerWithChoice()}
+    meeting = RoomMeeting(path,run_id,repo,"fixture","antigravity","gemini",["."],adapters)
+    meeting.begin = lambda: None  # The approved plan is already in the meeting journal.
+    graph = build_graph(adapters,meeting=meeting)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        job = pool.submit(execute_parallel, plan, repo, {"cline":WorkerWithChoice()}, "cline", task="요청",
-                          record=record, independent=True,
-                          open_inbox=lambda task_id: InboxChannel(path, run_id, "developer", "cline", goal_task_id=task_id))
-        assert receipt.wait(12) and not job.done()
+        job = pool.submit(graph.invoke,dict(workspace=str(repo), task="fixture",developer="antigravity",reviewer="gemini",
+                                            attempts=0,max_attempts=1,allow_edits=True,test_argv=[sys.executable,"-m","pytest","-q"]))
+        for _ in range(600):
+            if (repo/"second/new.py").exists() or job.done():
+                break
+            time.sleep(.03)
+        if job.done():
+            pytest.fail(str(job.result()))
         assert (repo / "second/new.py").read_text() == "done"
         assert not (repo / "first/new.py").exists()
         for _ in range(100):
@@ -182,9 +215,14 @@ def test_goal_finishes_disjoint_work_while_product_choice_waits(setup):
         assert decision["kind"] == PRODUCT_DECISION
         with TaskStore(path) as store:
             assert goal_recovery.timing(store.connection, run_id)["waiting_for_user"]
+        time.sleep(worker_timeout+.3)
+        assert not job.done() and not (repo/"first/joined.txt").exists()
         inbox.decide(run_id, decision["id"], {"action":"answer", "answer":"dark"})
-        assert '"remaining"' in job.result(timeout=12)
+        assert job.result(timeout=20)["status"] == "READY_FOR_HUMAN_REVIEW"
     assert (repo / "first/new.py").read_text() == "dark"
+    assert (repo/"first/joined.txt").read_text() == "dark/done"
+    history, = inbox.history(run_id)
+    assert history["status"] == "delivered"
 
 
 def test_worker_merges_into_linked_parent_without_changing_tracked_executable_mode(setup):

@@ -2,7 +2,7 @@
 from uuid import uuid4
 
 from agent_office import goal_verification
-from agent_office.store import TaskStore, encode
+from agent_office.store import TaskStore, encode, now
 from agent_office.studio_ssh import _check_reply
 from test_studio_http import project, request, studio
 from test_workspace_rooms import engine_snapshot
@@ -46,13 +46,17 @@ def test_goal_intake_pins_policy_and_operator_adopts_the_reviewed_digest(tmp_pat
             db = store.connection
             db.execute("UPDATE runs SET state='FAILED',outcome='TEST_FAILED',ended_at=started_at WHERE run_id=?", (run_id,))
             goal_verification.init_schema(db)
-            for attempt in (1, 2):
-                candidate = dict(attempt=attempt, digest=str(attempt)*64, eligible=True, score=attempt)
+            for attempt in (1, 2, 3):
+                candidate = dict(attempt=attempt, digest=str(attempt)*64, eligible=True, score=attempt, status="passed")
                 patch = ("diff --git a/setting b/setting\nnew file mode 100644\n--- /dev/null\n+++ b/setting\n"
                          f"@@ -0,0 +1 @@\n+candidate {attempt}\n")
                 db.execute("INSERT INTO studio_goal_candidates VALUES(?,?,?,?)", (run_id, attempt, encode(candidate), patch))
+                if attempt <= 2:
+                    db.execute("INSERT INTO studio_goal_reviews VALUES(?,?,?,?,?,?,?)",
+                               (run_id, attempt, "review", candidate["digest"], "approved", "검토 완료", now()))
         first = dict(id=uuid4().hex, attempt=1, digest="1"*64, previous_digest=None)
         second = dict(id=uuid4().hex, attempt=2, digest="2"*64, previous_digest=first["digest"])
+        assert request(server, journal + "/adopt", dict(first, attempt=3, digest="3"*64))[0] == 409
         assert "+candidate 1" in request(server, journal + "/candidates/1")[1]["diff"]
         status, comparison = request(server, journal + "/compare/1/2")
         assert status == 200 and comparison["format"] == "files", comparison

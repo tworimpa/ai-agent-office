@@ -7,6 +7,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import subprocess
 import tomllib
 
 from .away_evidence import require_base, DelegationDeferred
@@ -15,8 +16,14 @@ from .meeting_parallel import _check_destination
 from .workspace import read_git_prefix
 
 
+def private_name(name):
+    return bool(re.search(r"(?:^|/)(?:\.env(?:\.|$)|\.ssh(?:/|$)|\.aws(?:/|$)|\.netrc$|\.git-credentials$|"
+                          r"\.npmrc$|\.pypirc$|credentials\.json$|id_(?:rsa|dsa|ecdsa|ed25519)$)|"
+                          r"\.(?:pem|key|pfx)$", name, re.I))
+
+
 def capture(root, revision, folders):
-    from .release_store import run_git
+    from .release_validation import _execute, _tool_env
 
     root = Path(root)
     try:
@@ -36,14 +43,19 @@ def capture(root, revision, folders):
     for name in paths:
         if not any(PurePosixPath(name).is_relative_to(folder) for folder in folders):
             raise ValueError("허용한 작업 범위를 벗어난 파일: " + name)
-        if re.search(r"(?:^|/)(?:\.env(?:\.|$)|\.ssh/|\.aws/)|\.(?:pem|key|pfx)$", name, re.I):
+        if private_name(name):
             raise ValueError("비공개 설정 파일은 후보에 담을 수 없습니다.")
     if not paths:
         return [], "", ""
-    data = run_git(root, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--full-index",
-                   "--binary", revision, "--", *tracked) if tracked else b""
-    if len(data) > 1024 * 1024:
-        raise ValueError("검토할 후보 변경이 1MiB 제한을 초과했습니다.")
+    data = b""
+    if tracked:
+        git = ["git", "-C", str(root), "--no-pager", "--no-replace-objects", "-c", "core.fsmonitor=false",
+               "-c", "core.hooksPath=" + os.devnull, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+               "--full-index", "--binary", revision, "--", *tracked]
+        env = dict(_tool_env(), GIT_ALLOW_PROTOCOL="", GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
+        code, data = _execute(git, env=env, timeout=30, limit=1024 * 1024, stderr=subprocess.DEVNULL)
+        if code:
+            raise ValueError("기준 커밋과 후보 변경을 비교할 수 없습니다.")
     patch = data.decode("utf-8")
     for name in untracked:
         file = root / name

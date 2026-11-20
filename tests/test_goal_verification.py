@@ -106,6 +106,28 @@ def test_modified_original_assertion_with_unchanged_test_id_blocks_success(goal)
     assert report["best_attempt"] is None and report["candidates"][0]["scope_changes"]
 
 
+def test_review_rejection_cannot_be_retried_with_the_same_passing_patch(goal):
+    assert goal.baseline()[0]
+    (goal.root / "settings.py").write_text("def value(saved): return saved\n")
+    assert goal.verify({"attempts": 1}, None)[0]
+    assert goal.review(1, "review", "changes_requested", "requested additional behavior")
+    assert goal.verify({"attempts": 2}, None)[:3] == (False, False, False)
+    assert goals.describe(goal.db, goal.id)["candidates"][1]["status"] == "changes_requested"
+
+
+def test_wrong_failure_and_out_of_scope_changes_do_not_start_candidate_tests(goal):
+    (goal.root / "settings.py").write_text("def value(saved): return 'dark'\n")
+    subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=u@example.invalid",
+                    "commit", "-qam", "unrelated default regression"], cwd=goal.root, check=True)
+    goal.revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=goal.root, text=True).strip()
+    assert not goal.baseline()[0]
+    (goal.root / "settings.py").write_text("def value(saved): return saved\n")
+    goal.folders = ["elsewhere"]
+    assert goal.verify({"attempts": 1}, None)[:3] == (False, False, False)
+    report = goals.describe(goal.db, goal.id)
+    assert report["candidates"][0]["status"] == "unverified" and all(r["attempt"] == 0 for r in report["checks"])
+
+
 def test_unavailable_or_elevated_hosts_never_spawn(tmp_path, monkeypatch):
     def unexpected(*_args, **_kwargs):
         pytest.fail("verification subprocess launched")

@@ -34,6 +34,7 @@ const candidate = {
   attempt: 1,
   status: 'passed',
   eligible: true,
+  review_status: 'approved',
   digest: 'a'.repeat(64),
   hypothesis: '기본값 고정',
   change: '설정 읽기',
@@ -99,12 +100,14 @@ test('overnight settings save the user-selected scope to the workspace, separate
   assert.equal(get('goal-option').hidden, true);
   get('allow-edits').click();
   get('overnight-goal').click();
+  get('goal-criteria').value = '저장한 설정 복원\n빈 설정 파일 처리';
   get('message').value = 'Windows 설정을 복원해 주세요.';
   submit('chat-form');
   await until(() => Boolean(assignment));
   assert.equal(assignment.goal, true);
   assert.equal(assignment.allow_edits, true);
   assert.equal(assignment.message, 'Windows 설정을 복원해 주세요.');
+  assert.deepEqual(assignment.goal_criteria, ['저장한 설정 복원', '빈 설정 파일 처리']);
   assert.equal(window.document.querySelectorAll('#goal-policy-form form').length, 0);
 });
 
@@ -156,13 +159,16 @@ test('old host shows only supported controls and sends no goal request', async (
 
 test('workspace goal default can be opted out of on the individual edit assignment', async (t) => {
   let submission;
-  const {get, person, submit} = mount(t, fixture((path, body) => {
-    if (path === base) return {...room(), goal_supported: true, goal_default: true};
-    if (path === base + '/assignments' && body) {
-      submission = body;
-      return {run: {...run, id: body.id}};
-    }
-  }));
+  const {get, person, submit} = mount(
+    t,
+    fixture((path, body) => {
+      if (path === base) return {...room(), goal_supported: true, goal_default: true};
+      if (path === base + '/assignments' && body) {
+        submission = body;
+        return {run: {...run, id: body.id}};
+      }
+    })
+  );
   await until(() => !get('settings').disabled);
   person('coordinator').click();
   get('allow-edits').click();
@@ -176,13 +182,29 @@ test('workspace goal default can be opted out of on the individual edit assignme
 });
 
 test('attempt comparison shows the actual patch fallback and missing checks without enabling adoption', async (t) => {
-  const second = {...candidate, attempt: 2, digest: 'b'.repeat(64), status: 'scope_reduced',
-    eligible: false, scope_changes: ['누락: tests/test_defaults.py']};
-  const {get} = mount(t, fixture((path) => {
-    if (path === runPath + '/goal') return {goal: {...goal, candidates: [candidate, second]}};
-    if (path === runPath + '/goal/compare/1/2') return {run_id: run.id, from_attempt: 1, to_attempt: 2,
-      diff: '-test_defaults', format: 'patches', truncated: true};
-  }));
+  const second = {
+    ...candidate,
+    attempt: 2,
+    digest: 'b'.repeat(64),
+    status: 'scope_reduced',
+    eligible: false,
+    scope_changes: ['누락: tests/test_defaults.py']
+  };
+  const {get} = mount(
+    t,
+    fixture((path) => {
+      if (path === runPath + '/goal') return {goal: {...goal, candidates: [candidate, second]}};
+      if (path === runPath + '/goal/compare/1/2')
+        return {
+          run_id: run.id,
+          from_attempt: 1,
+          to_attempt: 2,
+          diff: '-test_defaults',
+          format: 'patches',
+          truncated: true
+        };
+    })
+  );
   await until(() => !get('goal-report').hidden);
   const row = get('goal-record').querySelector('[data-goal-attempt="2"]');
   row.querySelector('[data-goal-compare]').click();

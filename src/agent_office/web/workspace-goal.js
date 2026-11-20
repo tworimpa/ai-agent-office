@@ -46,6 +46,8 @@ const formatted = (value) => {
   return Number.isNaN(date.valueOf()) ? '미확인' : date.toLocaleString('ko-KR');
 };
 const active = new Set(['QUEUED', 'RUNNING', 'WAITING_USER', 'TESTING', 'REVIEWING', 'STOP_REQUESTED']);
+const canAdoptCandidate = (candidate) =>
+  candidate?.eligible === true && candidate.status === 'passed' && candidate.review_status === 'approved';
 
 export function mountGoals({win, get, make, api, refresh, context, openInbox, openMeeting}) {
   let latest = null,
@@ -145,14 +147,39 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
     get('goal-report').hidden = false;
     const running = checks.findLast((check) => check.status === 'running');
     const recent = events.at(-1);
+    const best = candidates.find((candidate) => candidate.attempt === goal.best_attempt);
     get('goal-progress').textContent =
       (goal.progress_uncertain ? '진행 불확실 · ' : '') +
-      (running
-        ? attemptLabel(running.attempt) + ' · ' + (stages[running.stage] ?? running.stage) + ' 실행 중'
-        : goal.stop_reason ||
-          goal.outcome ||
-          (recent ? label(stages[recent.stage] ?? recent.stage) + ' · ' + label(recent.kind) : '접수됨'));
-    get('goal-next').textContent = '다음 행동 · ' + (goal.next_action || '실행 호스트의 다음 기록을 기다립니다.');
+      (goal.adopted_attempt != null
+        ? attemptLabel(goal.adopted_attempt) + '의 후보 채택을 기록했습니다.'
+        : running
+          ? attemptLabel(running.attempt) + ' · ' + (stages[running.stage] ?? running.stage) + ' 실행 중'
+          : goal.stop_reason ||
+            goal.outcome ||
+            (recent ? label(stages[recent.stage] ?? recent.stage) + ' · ' + label(recent.kind) : '접수됨'));
+    let next = goal.next_action || '실행 호스트의 다음 기록을 기다립니다.';
+    if (goal.recovery?.disposition === 'closed') {
+      next =
+        goal.adopted_attempt != null
+          ? '채택한 후보의 남은 수동 확인 항목을 검토하세요.'
+          : canAdoptCandidate(best)
+            ? attemptLabel(goal.best_attempt) + '의 변경과 검증 결과를 확인하고 채택을 결정하세요.'
+            : best
+              ? attemptLabel(best.attempt) + '의 실패 및 미검증 항목을 확인하세요.'
+              : '최초 실패와 중단 이유를 확인하세요.';
+    } else if (context().pending || goal.recovery?.pending_decisions?.length) {
+      next = '요청함에서 질문이나 권한 요청의 내용을 확인하세요.';
+    } else if (context().meetingPhase === 'awaiting_review') {
+      next = '기획 회의에서 계획과 남은 제품 결정을 확인하세요.';
+    } else if (goal.progress_uncertain) {
+      next = '마지막 진전 시각과 실행 중인 검증 명령을 확인하세요.';
+    } else if (running) {
+      const subsequent = goal.policy?.checks?.[running.position + 1];
+      next = subsequent
+        ? '현재 검증 결과에 따라 ' + (stages[subsequent.stage] ?? subsequent.stage) + ' 단계를 진행합니다.'
+        : '현재 검증 결과를 확인한 뒤 다음 시도나 검토 여부를 결정합니다.';
+    }
+    get('goal-next').textContent = '다음 행동 · ' + next;
     get('goal-activity').textContent =
       '마지막 진전 ' +
       formatted(goal.last_progress_at) +
@@ -215,14 +242,20 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
     }
     const baseline = section('최초 실패', 'baseline');
     const first = checks.find((check) => check.attempt === 0 && check.status === 'failed');
-    if (first) baseline.append(renderCheck(first));
-    else baseline.append(make('p', '기준 커밋에서 확인된 실패 기록이 없습니다.'));
+    if (first) {
+      if (first.failed_ids?.[0]) baseline.append(make('p', first.failed_ids[0]));
+      baseline.append(renderCheck(first));
+    } else baseline.append(make('p', '기준 커밋에서 확인된 실패 기록이 없습니다.'));
     const revisions = section('시도별 변경과 후보', 'candidates');
+    if (candidates.length && candidates.at(-1).attempt !== goal.best_attempt)
+      revisions.append(make('p', '마지막 시도 · ' + attemptLabel(candidates.at(-1).attempt)));
     revisions.append(
       make(
         'p',
         goal.best_attempt != null
-          ? '검토할 최선 후보 · ' + attemptLabel(goal.best_attempt)
+          ? '검토할 최선 후보 · ' +
+              attemptLabel(goal.best_attempt) +
+              (canAdoptCandidate(best) ? ' · 독립 검토 승인' : ' · 미검증 또는 보완 항목 있음')
           : '검토할 최선 후보가 아직 없습니다.'
       )
     );
@@ -322,7 +355,7 @@ export function mountGoals({win, get, make, api, refresh, context, openInbox, op
       if (
         !active.has(goal.state) &&
         goal.state !== 'RECOVERY_REQUIRED' &&
-        candidate.eligible !== false &&
+        canAdoptCandidate(candidate) &&
         candidate.attempt !== goal.adopted_attempt
       ) {
         adopt = button('이 후보 채택 기록', () =>

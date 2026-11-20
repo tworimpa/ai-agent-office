@@ -104,10 +104,15 @@ def report(path, run_id):
     with TaskStore(path, readonly=True) as store:
         db = store.connection
         db.execute("BEGIN")
-        run = store.get_run(validate_id(run_id))
+        validate_id(run_id)
         row = db.execute("SELECT * FROM studio_goals WHERE id=?", (run_id,)).fetchone()
         if row is None:
+            # Historical team parents have no individual worker run in the runs table.
+            if not db.execute("SELECT 1 FROM studio_runs WHERE id=? UNION ALL "
+                              "SELECT 1 FROM studio_teams WHERE id=?", (run_id, run_id)).fetchone():
+                raise OfficeError("NOT_FOUND")
             return None
+        run = store.get_run(run_id)
         verification = goal_verification.describe(db, run_id) or dict(checks=[], candidates=[], best_attempt=None, stop_reason="")
         recovery = goal_recovery.detail(store, run_id)
         events = timeline(db, run_id)
@@ -226,7 +231,8 @@ def adopt(path, run_id, data):
         if store.get_run(run_id).state in ACTIVE:
             raise OfficeError("RUN_BUSY")
         candidates = (describe(db, run_id) or {}).get("candidates", [])
-        if not any(c["eligible"] and c["attempt"] == data["attempt"] and c["digest"] == data["digest"] for c in candidates):
+        if not any(c["eligible"] and c["attempt"] == data["attempt"] and c["digest"] == data["digest"] and
+                   c["status"] == "passed" and c["review_status"] == "approved" for c in candidates):
             raise OfficeError("REQUEST_CONFLICT")
         at = now()
         db.execute("UPDATE studio_goals SET adopted_attempt=?,adopted_digest=?,adopted_at=? WHERE id=?",

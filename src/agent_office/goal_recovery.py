@@ -3,13 +3,14 @@ from datetime import datetime
 import hashlib
 from importlib import metadata
 import json
+import os
 from pathlib import Path
 import platform
-import re
 import sys
 import sysconfig
 
 from .events import snapshot_request
+from .goal_candidates import private_name
 from .meeting_parallel import _contents
 from .models import ACTIVE, OfficeError, validate_id
 from .ownership import RunGuard, RunBusyError
@@ -118,12 +119,13 @@ def _environment(root, checks, update):
     file(sys.executable)
     # Only installed distribution names and versions. No executable probes or environment dumps.
     sites = sorted({sysconfig.get_path("purelib"), sysconfig.get_path("platlib")})
-    packages = sorted((d.metadata.get("Name", "").casefold(), d.version)
+    packages = sorted((d.metadata.get("Name", "").casefold(), d.version or "")
                       for d in metadata.distributions(path=sites))
     update(encode(packages).encode())
     host_module = Path(__file__).parent
     for name in ("goal_checks.py", "goal_candidates.py", "goal_verification.py", "goal_host_checks.py",
-                 "goal_peer.py", "goal_pytest.py", "workflow.py"):
+                 "goal_peer.py", "goal_pytest.py", "goal_process.py", "goal_artifact.py", "studio_process.py",
+                 "workflow.py"):
         file(host_module / name)
     files = set()
     for check in checks:
@@ -136,12 +138,20 @@ def _environment(root, checks, update):
         argv, kind = _command(root, check, Path("report.xml"))
         update(encode(argv).encode())
         files.add(Path(argv[0]))
-        if kind == "installed":
+        if kind == "web":
+            project = root
+            if not (root / "node_modules/jsdom/package.json").is_file():
+                project = Path(os.environ.get("AGENT_OFFICE_GOAL_WEB_PROJECT", Path(__file__).resolve().parents[2]))
+            files.update((project / "package-lock.json", project / "node_modules/.package-lock.json",
+                          project / "node_modules/jsdom/package.json"))
+        elif kind == "installed":
             harness, installed = map(Path, argv[1:])
             runtime = installed.parent / "resources"
             files.update((harness, harness.with_name("studio.mjs"), installed, runtime / "app.asar",
-                          harness.parent.parent / "package-lock.json",
-                          harness.parent.parent / "node_modules" / ".package-lock.json"))
+                          harness.parent / "package-lock.json", harness.parent / "node_modules/.package-lock.json",
+                          harness.parent / "node_modules/playwright/package.json",
+                          harness.parent / "fixtures/codex.py", harness.parent / "fixtures/agy.py",
+                          harness.parent / "fixtures/meeting.py"))
     for path in sorted(files):
         file(path)
 
@@ -169,7 +179,7 @@ def _fingerprint(db, run_id):
     _environment(root, json.loads(goal["policy_json"]).get("checks", []), update)
     update(run_git(root, "ls-files", "--stage", "-z"))
     def check_name(name):
-        if re.search(r"(?:^|/)(?:\.env(?:\.|$)|\.ssh(?:/|$)|\.aws(?:/|$))|\.(?:pem|key|pfx)$", name, re.I):
+        if private_name(name):
             raise ValueError("비공개 파일이 포함된 작업 트리에는 복구 체크포인트를 만들 수 없습니다.")
     for name, (mode, data) in sorted(_contents(root, check_name=check_name).items()):
         update(encode([name, mode]).encode())

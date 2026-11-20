@@ -28,7 +28,7 @@ RESERVED_WINDOWS_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
     f"{prefix}{digit}" for prefix in ("COM", "LPT") for digit in "123456789¹²³"}
 
 
-def _execute(argv, *, limit, timeout, env, source=None):
+def _execute(argv, *, limit, timeout, env, source=None, stderr=subprocess.STDOUT):
     """Bound the pipe while the child runs, including on Windows."""
     if argv[0] in {"git", "docker"}:
         command = argv[0] + (".exe" if os.name == "nt" else "")
@@ -37,7 +37,7 @@ def _execute(argv, *, limit, timeout, env, source=None):
             raise FileNotFoundError(f"Missing required executable: {command}")
         argv = [executable, *argv[1:]]
     with subprocess.Popen(argv, stdin=source if source is not None else subprocess.DEVNULL,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env) as process:
+                          stdout=subprocess.PIPE, stderr=stderr, env=env) as process:
         chunks = []
 
         def read():
