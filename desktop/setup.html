@@ -12,15 +12,19 @@
   <main>
     <header>
       <h1>AI Agent Office</h1>
-      <p>이 컴퓨터에서 사무실을 열거나 이미 실행 중인 작업실에 연결하세요.</p>
+      <p>이 컴퓨터에서 작업할 폴더를 고르고 에이전트에게 첫 작업을 맡기세요.</p>
     </header>
 
     <div id="status" role="status" aria-atomic="true"></div>
     <div id="error" role="alert" aria-atomic="true"></div>
 
-    <div class="modes">
-      <section>
-        <h2>기존 작업실</h2>
+    <button id="retry" type="button" class="primary" hidden>저장된 연결 다시 시도</button>
+    <section id="start-options">
+      <form id="local">
+        <button type="submit" class="primary">내 작업실 시작</button>
+      </form>
+      <details id="connection-options">
+        <summary>기존 Studio 연결 및 SSH 설정</summary>
         <form id="connect">
           <label for="address">Studio 주소</label>
           <input id="address" type="url" required maxlength="192" spellcheck="false"
@@ -28,21 +32,11 @@
           <p id="address-help">현재 실행 중인 이 컴퓨터의 Studio 주소</p>
           <button type="submit">기존 작업실 연결</button>
         </form>
-      </section>
-      <section>
-        <h2>내 로컬 작업실</h2>
-        <form id="local">
-          <p>앱 창을 닫아도 작업은 이 컴퓨터에서 계속됩니다.</p>
-          <details>
-            <summary>SSH 원격 작업실 설정</summary>
-            <label for="remotes">원격 작업실</label>
-            <textarea id="remotes" rows="3" spellcheck="false" maxlength="2200" aria-describedby="remote-help"></textarea>
-            <p id="remote-help">한 줄에 SSH 별칭, Studio 포트, 저널 ID를 공백으로 구분해 입력하세요.</p>
-          </details>
-          <button type="submit">로컬 작업실 시작</button>
-        </form>
-      </section>
-    </div>
+        <label for="remotes">SSH 원격 작업실</label>
+        <textarea id="remotes" form="local" rows="3" spellcheck="false" maxlength="2200" aria-describedby="remote-help"></textarea>
+        <p id="remote-help">원격 작업실을 추가하려면 한 줄에 SSH 별칭, Studio 포트, 저널 ID를 입력한 뒤 내 작업실 시작을 누르세요.</p>
+      </details>
+    </section>
 
     <section id="connected" hidden>
       <div class="toolbar">

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, realpath, rename, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { basename, delimiter, dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
@@ -11,13 +11,14 @@ import { LocalStudio } from './studio.mjs'
 if (!process.argv[2]) throw new Error('Usage: node verify-install.mjs PATH_TO_PACKAGED_EXECUTABLE [--live]')
 const exe = await realpath(process.argv[2])
 const live = process.argv.includes('--live')
+const nativePicker = process.argv.includes('--native-picker')
 const windows = process.platform === 'win32'
 const python = join(dirname(exe), 'resources', 'runtime', windows ? 'python.exe' : 'bin/python3')
 const root = await mkdtemp(join(tmpdir(), 'agent-office-desktop-'))
 const profile = join(root, 'profile')
 const fixtureDir = join(root, 'mock-bin')
-const repo = join(root, '작업공간')
-const fixture = fileURLToPath(new URL('./fixtures/codex.py', import.meta.url))
+const repo = join(root, nativePicker ? 'desktop-project' : '작업공간')
+const views = []
 const peerProfile = join(root, 'peer')
 const resultFile = join(root, 'result.json')
 let app
@@ -51,10 +52,13 @@ await writeFile(join(repo, 'tests', 'test_local.py'), [
 git('init', '-q')
 git('add', '.gitignore', 'note.txt', 'read_note.py', 'tests/test_local.py')
 git('-c', 'user.name=Office Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'initial')
-await writeFile(join(fixtureDir, windows ? 'codex.cmd' : 'codex'),
-  windows ? `@"${python}" "${fixture}" %*\r\n`
-    : `#!/bin/sh\nexec ${shellQuote(python)} ${shellQuote(fixture)} "$@"\n`,
-  { mode: 0o700 })
+for (const command of ['codex', 'agy']) {
+  const fixture = fileURLToPath(new URL(`./fixtures/${command}.py`, import.meta.url))
+  await writeFile(join(fixtureDir, windows ? command + '.cmd' : command),
+    windows ? `@"${python}" "${fixture}" %*\r\n`
+      : `#!/bin/sh\nexec ${shellQuote(python)} ${shellQuote(fixture)} "$@"\n`,
+    { mode: 0o700 })
+}
 const pathKey = Object.keys(process.env).find(key => key.toUpperCase() === 'PATH') ?? 'PATH'
 const env = live ? { ...process.env } : { ...process.env, [pathKey]: fixtureDir + delimiter + process.env[pathKey] }
 const attached = new LocalStudio(peerProfile, python)
@@ -87,18 +91,70 @@ function nextWindow() {
   return app.waitForEvent('window', { timeout: 20000 })
 }
 
-async function register(window) {
-  await window.locator('#register').click()
-  await window.locator('#workspace-name').fill('설치판 검증')
-  await window.locator('#workspace-paths').fill(repo)
+async function capture(window, stage) {
+  for (const width of [1366, 680]) {
+    await window.setViewportSize({ width, height: 768 })
+    await window.screenshot({ path: join(root, stage + '-' + width + '.png') })
+    const view = await window.evaluate(() => ({
+      width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth,
+    }))
+    assert.ok(view.scrollWidth <= view.width, stage + ' must fit horizontally')
+    views.push({ stage, ...view })
+  }
+  await window.setViewportSize({ width: 1366, height: 768 })
+}
+
+async function register(window, local) {
+  const picker = window.locator('#pick-folders')
+  if (local) {
+    if (nativePicker) {
+      await writeFile(join(root, 'native-picker.json'), JSON.stringify({ pid: app.process().pid, repo }))
+      console.log('Select the test folder in the native picker: ' + repo)
+    } else {
+      await app.evaluate(({ dialog }, folder) => {
+        dialog.showOpenDialog = async (_parent, options) => {
+          if (!options.properties.includes('openDirectory')) throw new Error('Expected a directory picker')
+          return { canceled: false, filePaths: [folder] }
+        }
+      }, repo)
+    }
+    await window.locator('#empty-register').focus()
+    await window.keyboard.press('Enter')
+    try {
+      await window.waitForFunction(name => document.querySelector('#workspace-name').value === name, basename(repo),
+        { timeout: nativePicker ? 120000 : 15000 })
+    } catch (error) {
+      throw new Error('Folder selection did not register the fixture: ' + JSON.stringify({
+        name: await window.locator('#workspace-name').inputValue(),
+        paths: await window.locator('#workspace-paths').inputValue(),
+        note: await window.locator('#register-note').textContent(),
+      }), { cause: error })
+    }
+    await capture(window, '03-register')
+  } else {
+    await window.locator('#empty-register').click()
+    assert.equal(await picker.isVisible(), false)
+    await window.locator('#workspace-name').fill('설치판 검증')
+    await window.locator('#workspace-paths').fill(repo)
+  }
   await window.locator('#save-workspace').click()
-  await window.getByRole('heading', { name: '설치판 검증' }).waitFor()
+  await window.getByRole('heading', { name: local ? basename(repo) : '설치판 검증', exact: true }).waitFor()
 }
 
 async function read(origin, path) {
   const response = await fetch(origin + path, { signal: AbortSignal.timeout(5000) })
   assert.equal(response.status, 200, path)
   return response.json()
+}
+
+async function decideRequest(window, button, runId) {
+  const decision = window.waitForResponse(response => {
+    const path = new URL(response.url()).pathname
+    return path.startsWith('/api/runs/' + runId + '/inbox/') && path.endsWith('/decision') &&
+      response.request().method() === 'POST'
+  })
+  await button.click()
+  assert.ok((await decision).ok())
 }
 
 async function finishedRun(origin, id) {
@@ -119,7 +175,10 @@ async function submitAssignment(window, message) {
   const payload = await submission.json()
   assert.equal(submission.status(), 202, JSON.stringify(payload))
   assert.equal(payload.run.assignment.meeting, true)
-  await window.getByRole('button', { name: '대화 닫기' }).click()
+  await window.locator('#assignment-receipt').waitFor()
+  const title = await window.locator('#receipt-task').textContent()
+  assert.ok(title && message.startsWith(title.replace(/…$/, '')))
+  assert.equal(await window.locator('#chat-form').isVisible(), false)
   return payload.run
 }
 
@@ -146,60 +205,70 @@ async function approvePlan(window, revision, edit) {
 }
 
 try {
-  const peer = await attached.start()
   let window = await launch()
-  await window.locator('#address').fill('http://example.invalid:8766')
-  await window.getByRole('button', { name: '기존 작업실 연결' }).click()
-  await window.getByRole('alert').filter({ hasText: '이 컴퓨터의 Studio 주소' }).waitFor()
-  await window.locator('#address').fill(peer.origin)
-  await window.getByRole('button', { name: '기존 작업실 연결' }).click()
-  const openedPeer = nextWindow()
-  await window.locator('#open').click()
-  window = await openedPeer
-  await window.locator('#register').waitFor()
-  assert.equal(new URL(window.url()).origin, peer.origin)
-  await register(window)
-  await close()
-  assert.equal((await attached.running()).journalId, peer.journalId)
-  assert.equal((await read(peer.origin, '/api/workspaces')).workspaces.length, 1)
-  console.log('Existing Studio connection survived closing the desktop app.')
-
-  window = await launch()
-  await window.getByRole('heading', { name: '설치판 검증' }).waitFor()
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items[0].submenu.items[0].click())
-  window = app.windows().find(page => page.url().includes('setup.html')) ?? await nextWindow()
-  await window.getByRole('button', { name: '로컬 작업실 시작' }).click()
-  await window.getByText('로컬 작업실 실행 중', { exact: true }).waitFor()
+  await capture(window, '01-setup')
+  assert.equal(await window.locator('#address').isVisible(), false)
   const openedLocal = nextWindow()
-  await window.locator('#open').click()
+  await window.getByRole('button', { name: '내 작업실 시작' }).click()
   window = await openedLocal
+  await window.locator('#empty-register').waitFor()
   const local = await standalone.running()
-  assert.notEqual(local.journalId, peer.journalId)
   assert.equal(new URL(window.url()).origin, local.origin)
-  await register(window)
+  await capture(window, '02-empty')
+  await register(window, true)
+  await capture(window, '04-room')
 
-  let codex
+  let codex, agy
   for (const deadline = Date.now() + 30000; Date.now() < deadline;) {
     const { engines } = await read(local.origin, '/api/engines')
     codex = engines.find(engine => engine.engine === 'codex')
-    if (codex?.headless_support && codex.auth_status === 'authenticated' && (live || codex.version === '0.169.1')) break
+    agy = engines.find(engine => engine.engine === 'antigravity')
+    if (codex?.headless_support && codex.auth_status === 'authenticated' && (live || agy?.headless_support)) break
     await delay(150)
   }
-  assert.ok(codex?.headless_support && codex.auth_status === 'authenticated', 'Codex metadata probe is not ready')
-  if (!live) assert.equal(codex.version, '0.169.1')
-  await window.locator('#settings').click()
-  await window.locator('#reviewer-engine').selectOption('codex')
-  await window.locator('#save-settings').click()
-  await window.locator('#room-settings').waitFor({ state: 'hidden' })
+  assert.ok(codex?.headless_support && codex.auth_status === 'authenticated',
+    'Codex metadata probe is not ready: ' + JSON.stringify({ codex, agy }))
+  if (live) {
+    // The optional live walkthrough has always targeted Codex for both roles.
+    await window.locator('#settings').click()
+    await window.locator('#reviewer-engine').selectOption('codex')
+    await window.locator('#save-settings').click()
+    await window.locator('#room-settings').waitFor({ state: 'hidden' })
+  } else {
+    assert.equal(codex.version, '0.169.1')
+    assert.equal(agy?.version, '1.0.0-fixture')
+  }
   let simpleId
   if (!live) {
-    await window.locator('.seat[data-person="coordinator"]').click()
+    const first = window.getByRole('button', {name: /첫 작업 맡기기/})
+    await first.focus()
+    await window.keyboard.press('Enter')
+    await capture(window, '05-assignment')
     const simple = await submitAssignment(window, '작업 파일을 설명해 주세요. 파일 수정 없이 read_note.py와 tests/test_local.py를 확인하세요.')
+    assert.equal(simple.assignment.roles.developer.engine, 'codex')
+    assert.equal(simple.assignment.roles.reviewer.engine, 'antigravity')
+    await capture(window, '06-receipt')
+    await window.locator('#receipt-owner').focus()
+    await window.keyboard.press('Enter')
+    const chat = window.locator('#conversation')
+    await chat.locator('.request-item textarea').waitFor()
+    await chat.locator('#message').fill('테스트 파일도 함께 설명해 주세요.')
+    const sent = window.waitForResponse(r => r.url().endsWith('/runs/' + simple.id + '/directions') && r.request().method() === 'POST')
+    await chat.locator('#send').click()
+    assert.ok((await sent).ok())
+    await chat.locator('.request-item textarea').fill('네, 테스트도 설명해 주세요.')
+    await decideRequest(window, chat.getByRole('button', { name: '답변 보내기' }), simple.id)
+    await window.keyboard.press('Escape')
     const automatic = await finishedRun(local.origin, simple.id)
     assert.equal(automatic.state, 'PLAN_ONLY', JSON.stringify(automatic))
-    assert.equal(automatic.meeting.revision, 1)
+    const directions = (await read(local.origin, '/api/runs/' + simple.id + '/directions')).directions
+    assert.equal(directions.length, 1)
+    assert.equal(directions[0].delivery, 'delivered')
+    assert.equal(automatic.meeting.revision, 2)
+    assert.equal(automatic.meeting.revisions.at(-1).direction_id, directions[0].id)
+    assert.deepEqual((await read(local.origin, '/api/rooms/' + simple.workspace_id)).runs.map(item => item.id), [simple.id])
     assert.equal(automatic.meeting.revisions[0].approved_by, 'coordinator')
-    assert.deepEqual(automatic.meeting.contributions.map(entry => entry.role), ['developer', 'reviewer'])
+    assert.deepEqual(automatic.meeting.contributions.filter(entry => entry.revision === 1).map(entry => entry.role), ['developer', 'reviewer'])
     assert.deepEqual(automatic.meeting.choices, [])
     assert.equal(automatic.meeting.decision, null)
     assert.equal(automatic.test_output, '')
@@ -221,6 +290,16 @@ try {
     '검토자는 위 질문의 대상이 아닙니다. 현재 스레드에서 직접 변경된 파일과 작업실 테스트 결과를 읽고 독립적인 검토 판정을 내려 주세요.',
   ].join('\n') : 'note.txt의 문장 형식과 마지막 줄바꿈을 결정한 뒤 지정 문장을 추가하고 테스트해 주세요.')
   if (!live) {
+    await window.locator('#receipt-new').click()
+    assert.equal(await window.locator('#message').inputValue(), '')
+    assert.equal(await window.locator('#assignment-receipt').isVisible(), false)
+  }
+  await window.getByRole('button', { name: '대화 닫기' }).click()
+  if (!live) {
+    const planAction = window.locator('#summary-action').filter({ hasText: '계획 확인하기' })
+    await planAction.focus()
+    await window.keyboard.press('Enter')
+    assert.equal(await window.locator('#meeting-inputs input[type=radio]').first().evaluate(el => el === document.activeElement), true)
     await window.locator('#meeting-decision').waitFor()
     const waiting = (await read(local.origin, '/api/runs/' + run.id)).run
     assert.equal(waiting.meeting.status, 'awaiting_review')
@@ -242,13 +321,31 @@ try {
 
   window = await launch()
   await window.waitForURL(url => url.searchParams.get('run') === run.id)
-  await window.locator('.seat[data-person="developer"]').click()
-  await window.locator('#chat-log .request-item textarea').fill('네. 대기 중인 추가 지시를 적용해 주세요.')
-  await window.locator('#conversation').getByRole('button', { name: '답변 보내기' }).click()
-  await window.getByRole('button', { name: '대화 닫기' }).click()
+  const question = window.locator('#summary-action').filter({ hasText: '질문에 답하기' })
+  await question.waitFor()
+  await capture(window, '07-question')
+  await question.focus()
+  await window.keyboard.press('Enter')
+  const draft = window.locator('#office-thread .request-item textarea')
+  assert.equal(await draft.evaluate(el => el === document.activeElement), true)
+  await draft.fill('네. 대기 중인 추가 지시를 적용해 주세요.')
+  await decideRequest(window, window.locator('#office-thread').getByRole('button', { name: '답변 보내기' }), run.id)
   if (!live) {
     const approved = await approvePlan(window, 3, false)
     assert.equal(approved.revisions.at(-1).source, 'direction')
+    const permission = window.locator('#summary-action').filter({ hasText: '권한 요청 확인' })
+    await permission.focus()
+    await window.keyboard.press('Enter')
+    const pending = (await read(local.origin, '/api/runs/' + run.id + '/inbox')).requests
+      .find(row => row.kind === 'permission' && row.status === 'pending')
+    assert.ok(pending)
+    const item = window.locator(`#requests [data-request="${run.id}:${pending.id}"]`)
+    await item.waitFor()
+    assert.ok(await item.evaluate(el => el.contains(document.activeElement)))
+    const target = (await read(local.origin, '/api/runs/' + run.id)).run.workspace
+    assert.equal((await readFile(join(target, 'note.txt'), 'utf8')).trim(), 'original')
+    await decideRequest(window, item.getByRole('button', { name: '이번 요청만 승인' }), run.id)
+    await window.keyboard.press('Escape')
   }
   const final = await finishedRun(local.origin, run.id)
   assert.equal(final.state, 'READY_FOR_HUMAN_REVIEW', JSON.stringify({
@@ -275,8 +372,57 @@ try {
     assert.match(final.meeting.plan.tasks[0].description, /desktop verified/)
   }
   await window.screenshot({ path: join(root, 'window.png') })
+  const peer = await attached.start()
+  assert.notEqual(peer.journalId, local.journalId)
+  const setup = nextWindow()
+  await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items[0].submenu.items[0].click())
+  window = await setup
+  await window.locator('#connection-options summary').first().click()
+  await window.locator('#address').fill('http://example.invalid:8766')
+  await window.locator('#connect button').click()
+  await window.getByRole('alert').filter({ hasText: '이 컴퓨터의 Studio 주소' }).waitFor()
+  await window.locator('#address').fill(peer.origin)
+  const connected = nextWindow()
+  await window.locator('#connect button').click()
+  window = await connected
+  await window.locator('#empty-register').waitFor()
+  assert.equal(new URL(window.url()).origin, peer.origin)
+  await register(window, false)
+  await close()
+  assert.equal((await attached.running()).journalId, peer.journalId)
+  assert.equal((await read(peer.origin, '/api/workspaces')).workspaces.length, 1)
+  window = await launch()
+  await window.getByRole('heading', { name: '설치판 검증' }).waitFor()
+  assert.equal(new URL(window.url()).origin, peer.origin)
+  await close()
+  const config = join(profile, 'connection.json')
+  const saved = JSON.parse(await readFile(config, 'utf8'))
+  const db = join(profile, 'local-studio', 'tasks.sqlite3')
+  assert.ok(await standalone.stop(local.bootId))
+  await rename(db, db + '.backup')
+  saved.connection = { mode: 'local', origin: local.origin }
+  await writeFile(config, JSON.stringify(saved))
+  window = await launch()
+  await window.getByRole('alert').filter({ hasText: '저장된 로컬 저널 ID' }).waitFor()
+  await rename(config, config + '.backup')
+  await window.locator('#retry').click()
+  await window.getByRole('alert').filter({ hasText: 'connection.json' }).waitFor()
+  assert.equal(await window.locator('#start-options').isVisible(), false)
+  await assert.rejects(access(db), { code: 'ENOENT' })
+  saved.connection.journalId = local.journalId
+  await writeFile(config, JSON.stringify(saved))
+  await window.locator('#retry').click()
+  await window.getByRole('alert').filter({ hasText: local.journalId }).waitFor()
+  await assert.rejects(access(db), { code: 'ENOENT' })
+  await rename(db + '.backup', db)
+  const repaired = nextWindow()
+  await window.locator('#retry').click()
+  window = await repaired
+  await window.waitForURL(url => url.searchParams.get('run') === run.id)
+  assert.equal((await standalone.running()).journalId, local.journalId)
   await writeFile(resultFile, JSON.stringify({
     provider: live ? 'codex' : 'fixture', platform: process.platform, exe, attached: peer, local,
+    folderPicker: nativePicker ? 'operating-system' : 'dialog-result-fixture', views,
     runId: run.id, simpleId, sameRouteAfterReopen: true, state: final.state, meeting: final.meeting,
     persistedDirection: direction.id, test: final.test_output, review: final.review_output,
   }, null, 2))

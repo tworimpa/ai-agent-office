@@ -1,6 +1,6 @@
 {
   "name": "ai-agent-office-desktop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "AI Agent Office의 데스크톱 작업실",
   "author": "AI Agent Office",
@@ -34,6 +34,7 @@
       "main.mjs",
       "studio.mjs",
       "preload.cjs",
+      "folders-preload.cjs",
       "setup.html",
       "setup.css",
       "setup.js"
