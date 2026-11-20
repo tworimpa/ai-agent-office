@@ -57,6 +57,31 @@ const outcomes = {
   CANCELED: '실행이 중지되었습니다.',
 };
 
+function summaryConclusion(run) {
+  let result;
+  if (run.state === 'RECOVERY_REQUIRED') {
+    result = run.diagnostic || (run.review_output || run.test_output || '').split(/\r?\n/)
+      .find(line => /timed?\s*out|timeout|시간\s*(?:초과|제한)|중단/i.test(line));
+  } else if (run.state === 'FAILED') {
+    result = run.diagnostic || run.meeting?.error;
+    if (!result && run.outcome === 'TEST_FAILED') {
+      const failure = run.test_output?.split(/\r?\n/).find(line => /^FAILED |^ERROR |^E\s{3}\S/.test(line));
+      if (failure) result = '실패 기록 · ' + failure.replace(/^(?:FAILED |ERROR |E\s{3})/, '');
+    } else if (!result && ['REVIEW_FAILED', 'CHANGES_REQUESTED'].includes(run.outcome)) {
+      result = run.review_output;
+    } else if (!result && run.outcome === 'DEVELOPER_FAILED') {
+      result = run.developer_output;
+    }
+  } else if (run.state === 'PLAN_ONLY' || run.state === 'READY_FOR_HUMAN_REVIEW') {
+    result = run.developer_output;
+  } else if (run.state === 'WAITING_USER') {
+    result = run.review_output;
+  }
+  const prose = firstProseParagraph((result || '').replace(/^\s*VERDICT: (?:CHANGES_REQUESTED|APPROVED)\s*$/gm, ''));
+  const chars = Array.from(prose);
+  return chars.length > 180 ? chars.slice(0, 179).join('') + '…' : prose;
+}
+
 function resultFacts(run) {
   if (run.kind === 'parallel') {
     const children = run.subtasks ?? [];
@@ -175,9 +200,10 @@ export function mountWorkspaceOffice(win = window) {
 
   let {host: hostId, workspace: workspaceId, run: runId} = readAddress();
   let directory = [], workspaces = [], room = null, detail = null;
+  let roomLoadError = '';
   let olderRuns = [], historyCursor = null, historyPaged = false, historyBusy = false, historyEpoch = 0;
   let online = false, roomOnline = false, closed = false, epoch = 0, refreshToken = 0, timer;
-  let chatRole = null, chatAttempt = null, chatRows = [], directionRows = [], chatDetailsOnline = false, inboxDetailsOnline = false;
+  let chatRole = null, chatAttempt = null, receiptRunId = null, chatRows = [], directionRows = [], chatDetailsOnline = false, inboxDetailsOnline = false;
   let chatState = null, settingsBusy = false, registrationBusy = false, deciding = new Set();
   let meetingDecision = null, meetingReadOK = false;
   let view = 'simple', jump = null, threadRun = null, directionsOnline = false;
@@ -252,6 +278,7 @@ export function mountWorkspaceOffice(win = window) {
 
   function navigation(host, workspace, run, replace = false) {
     resetThread();
+    roomLoadError = '';
     const changingRoom = host !== hostId || workspace !== workspaceId;
     if (host !== hostId) {
       online = false;
@@ -387,16 +414,130 @@ export function mountWorkspaceOffice(win = window) {
     return activeRuns().find(atDesk) ?? (run && activeStates.has(run.state) ? run : activeRuns()[0] ?? run);
   }
 
+  function nextStep(run) {
+    const phase = run.meeting?.status ?? run.meeting_status;
+    const row = chatDetailsOnline && threadRun === run.id && chatRows.find(item => item.status === 'pending' &&
+      !item.delegation_in_progress && Object.hasOwn(requestLabels, item.kind));
+    if (row && activeStates.has(run.state) && run.state !== 'STOP_REQUESTED') {
+      const permission = row.kind === 'permission';
+      const prompt = permission ? '요청 범위를 읽고 승인 또는 거절을 선택해 주세요.' : firstProseParagraph(row.prompt);
+      return {key: row.kind, row, role: row.role, state: requestLabels[row.kind], next: prompt || '질문에 답해 주세요.',
+        label: permission ? '권한 요청 확인' : '질문에 답하기'};
+    }
+    if (phase === 'awaiting_review' && stoppable(run.state)) {
+      const choices = run.meeting?.choices ?? [];
+      return {key: 'plan', role: 'coordinator', state: '계획 확인 대기',
+        next: choices.length ? '제품 동작을 선택하고 계획을 확인해 주세요.' : '제안된 계획을 읽고 시작 여부를 결정해 주세요.', label: '계획 확인하기'};
+    }
+    if (stoppable(run.state) && run.pending_count > 0 && (threadRun !== run.id || !chatDetailsOnline)) {
+      return {key: 'inbox', state: '응답 필요', next: '이 작업에서 응답을 기다리는 요청이 있습니다.', label: '요청 확인'};
+    }
+    if (activeStates.has(run.state)) {
+      const planning = phase === 'planning' && stoppable(run.state);
+      const role = planning || ['QUEUED', 'STOP_REQUESTED'].includes(run.state) || run.kind === 'parallel' ? 'coordinator' :
+        run.state === 'TESTING' ? 'tester' : run.state === 'REVIEWING' ? 'reviewer' : 'developer';
+      let next = '지금 응답할 항목이 없습니다.';
+      if (!chatDetailsOnline && run.kind !== 'parallel') next = threadRun === run.id || !roomOnline ?
+        '질문과 권한 요청의 최신 상태를 확인할 수 없습니다.' : '질문과 권한 요청의 최신 상태를 확인 중입니다.';
+      return {key: 'chat', state: planning ? meetingStates.planning : runLabel(run), role, next, label: '진행 상황 보기'};
+    }
+    const role = run.outcome === 'TEST_FAILED' ? 'tester' : ['READY_FOR_HUMAN_REVIEW', 'WAITING_USER'].includes(run.state) ||
+      ['CHANGES_REQUESTED', 'REVIEW_FAILED'].includes(run.outcome) ? 'reviewer' :
+      run.state === 'PLAN_ONLY' || run.outcome === 'DEVELOPER_FAILED' ? 'developer' : 'coordinator';
+    if (run.state === 'FAILED' || run.state === 'RECOVERY_REQUIRED') {
+      const key = run.diagnostic ? 'diagnostic' : run.outcome === 'TEST_FAILED' ? 'tests' :
+        run.meeting?.error ? 'meeting' : run.outcome === 'REVIEW_FAILED' && run.review_output ? 'review' : 'chat';
+      const cause = outcomes[run.outcome] ?? '실패 원인을 확인해 주세요.';
+      return {key, role, state: runLabel(run), next: cause, label: '실행 기록 확인'};
+    }
+    const next = {PLAN_ONLY: '담당자가 남긴 조회 결과를 확인하세요.', READY_FOR_HUMAN_REVIEW: '변경 사항과 검토 결과를 확인하세요.',
+      WAITING_USER: outcomes.REVIEW_UNDECIDED, CANCELED: outcomes.CANCELED}[run.state] ?? '이 작업의 실행 기록을 확인하세요.';
+    return {key: 'chat', role, state: runLabel(run), next, label: '결과 확인'};
+  }
+
+  function renderTaskSummary(run) {
+    get('task-summary').hidden = !run;
+    if (!run) return;
+    const step = nextStep(run);
+    const profile = run.assignment?.roles?.[step.role];
+    const role = roleLabels[step.role];
+    const owner = role ? [role, profile?.name, engineName(run[step.role + '_engine'] ?? profile?.engine)].filter(Boolean).join(' · ') :
+      step.role === 'tester' ? '테스트 실행기' : '조정자';
+    say('summary-title', taskTitle(run.task));
+    say('summary-state', step.state);
+    say('summary-owner', owner);
+    say('summary-next', step.next);
+    const conclusion = detail && !activeStates.has(run.state) ? summaryConclusion(run) : '';
+    get('summary-result').hidden = !conclusion;
+    say('summary-result', conclusion);
+    say('summary-action', step.label);
+    get('summary-action').disabled = !roomOnline || (['plan', 'meeting', 'diagnostic', 'tests', 'review'].includes(step.key) && !meetingReadOK);
+    const facts = detail && !activeStates.has(run.state) ? resultFacts(run) : [];
+    get('summary-facts').hidden = !facts.length;
+    update('summary-facts', facts, list => list.replaceChildren(...facts.map(fact => make('li', fact))));
+    const others = room.runs.filter(row => row.id !== run.id && row.pending_count > 0);
+    get('summary-other').hidden = !others.length;
+    update('summary-other', [hostId, workspaceId, others.map(({id, task, pending_count}) => [id, task, pending_count])], node => {
+      const focused = node.contains(doc.activeElement) && doc.activeElement.dataset.run;
+      node.replaceChildren(make('span', '다른 작업에서 응답을 기다립니다'));
+      for (const other of others) {
+        const button = make('button', taskTitle(other.task) + ' · ' + other.pending_count + '건 확인');
+        button.type = 'button';
+        button.dataset.run = other.id;
+        button.addEventListener('click', () => openOtherRequest(other.id));
+        node.append(button);
+        if (focused === other.id) button.focus({preventScroll: true});
+      }
+    });
+    for (const button of get('summary-other').querySelectorAll('button')) button.disabled = !roomOnline;
+  }
+
+  async function openOtherRequest(id) {
+    if (!canWrite() || !room.runs.some(row => row.id === id && row.pending_count > 0)) return;
+    const token = epoch + 1;
+    await navigation(hostId, workspaceId, id);
+    if (!sameContext(token) || runId !== id || !roomOnline) return;
+    const run = selected();
+    if (!run) return;
+    const step = nextStep(run);
+    if (step.row || ['plan', 'inbox'].includes(step.key)) openSummaryStep(run, step);
+    else get('summary-action').focus();
+  }
+
+  function openSummaryStep(run, step) {
+    if (!canWrite() || run.id !== runId) return;
+    if (step.key === 'plan') {
+      if (!meetingReadOK || get('meeting-decision').hidden) return;
+      openEvidence('room', 'meeting');
+      (get('meeting-inputs').querySelector('input[type="radio"]:not(:disabled)') ?? get('approve-plan')).focus();
+    } else if (step.key === 'inbox' || step.key === 'permission') {
+      showRequests(step.row ? run.id + ':' + step.row.id : null, run.id);
+    } else if (step.row) {
+      doc.getElementById('thread-answer-' + run.id + '-' + step.row.id)?.focus();
+    } else if (step.key === 'chat') {
+      showChat(step.role === 'reviewer' ? 'reviewer' : 'developer', run.id);
+    } else {
+      openEvidence('room', step.key);
+    }
+  }
+
+  get('summary-action').addEventListener('click', () => {
+    const run = selected();
+    if (run) openSummaryStep(run, nextStep(run));
+  });
+
   function renderRoom() {
     get('room').hidden = !room;
     get('empty-room').hidden = !!room;
     get('empty-register').hidden = !online || workspaces.length > 0;
     get('empty-register').disabled = registrationBusy;
+    say('empty-register', canPickFolders() ? '폴더 선택' : '작업공간 등록');
+    get('empty-retry').hidden = Boolean(room) || !roomLoadError;
     if (!room) {
       say('empty-title', workspaces.length ? '작업실 선택' : '작업실');
-      say('empty-note', workspaceId && !roomOnline ? '작업실 정보를 불러오는 중이거나 호스트와 연결되지 않았습니다.' :
+      say('empty-note', roomLoadError || (workspaceId && !roomOnline ? '작업실 정보를 불러오는 중이거나 호스트와 연결되지 않았습니다.' :
         workspaces.length ? '목록에서 들어갈 작업공간을 선택하세요.' :
-        online ? '폴더를 등록해 작업실을 열 수 있습니다.' : '작업공간을 불러오는 중입니다.');
+        online ? '폴더를 등록해 작업실을 열 수 있습니다.' : '작업공간을 불러오는 중입니다.'));
       return;
     }
     say('room-title', room.workspace.name);
@@ -405,15 +546,15 @@ export function mountWorkspaceOffice(win = window) {
     say('inbox-count', String(count));
     get('settings').disabled = !roomOnline;
     get('inbox').disabled = !roomOnline && !get('requests').open;
+    const firstTask = !room.runs.length && !selected() && !runId;
+    doc.querySelector('.room-scene').dataset.first = String(firstTask);
+    seat('coordinator').querySelector('.seat-start').hidden = !firstTask;
     for (const [role, label] of Object.entries(roleLabels)) {
       const current = visibleRun(role);
       const profile = current?.assignment?.roles?.[role] ?? roomPerson(role);
       const engine = current?.[role + '_engine'] ?? profile.engine;
       const node = seat(role);
-      const meeting = current?.meeting;
-      const opinion = ['planning', 'awaiting_review'].includes(meeting?.status) &&
-        meeting.contributions.filter(entry => entry.role === role).at(-1);
-      let line = opinion?.text || current?.lines?.[role] || room.runs.find(run => run.id === current?.id)?.lines?.[role];
+      let line = current?.lines?.[role] || room.runs.find(run => run.id === current?.id)?.lines?.[role];
       if (!line) line = current && (role === 'developer' || current.allow_edits) ? stateName(current.state) : '배정된 작업이 없습니다.';
       const roleText = label + ' · ' + engineName(engine);
       const task = node.querySelector('.seat-task');
@@ -428,8 +569,9 @@ export function mountWorkspaceOffice(win = window) {
       node.setAttribute('aria-label', [profile.name, roleText, assignment, line, '대화 열기'].filter(Boolean).join(', '));
     }
     const coordinatorLine = selected()?.lines?.coordinator ?? summary()?.lines?.coordinator;
-    seat('coordinator').querySelector('.seat-line').textContent = coordinatorLine ||
-      (room.settings.delegation ? '새 작업 배정 · 기술 위임 켜짐' : '새 작업을 말씀해 주세요.');
+    seat('coordinator').querySelector('.seat-line').textContent = firstTask ? '원하는 결과를 적어 주세요.' :
+      coordinatorLine || '새 작업을 맡길 수 있습니다.';
+    renderTaskSummary(selected());
     renderLedger();
   }
 
@@ -615,7 +757,7 @@ export function mountWorkspaceOffice(win = window) {
     const showRecord = view === 'collaboration';
     get('meeting').hidden = !meeting || (!showRecord && !waiting);
     get('meeting-record').hidden = !showRecord;
-    get('chat-meeting').hidden = !meeting || view !== 'technical';
+    get('chat-meeting').hidden = !meeting || view !== 'technical' || chatRole === 'coordinator' && !receiptRunId;
     get('meeting-decision').hidden = !waiting;
     const key = hostId + ':' + runId;
     if (planRun !== key) {
@@ -905,14 +1047,15 @@ export function mountWorkspaceOffice(win = window) {
     const sequence = ++refreshToken;
     const current = () => sameContext(token) && sequence === refreshToken;
     try {
-      if (!directory.length) {
+      if (!directory.length || roomLoadError) {
         const {hosts} = await request('/api/hosts');
         if (!current()) return;
         directory = hosts;
       }
       if (!directory.some(host => host.id === hostId)) {
-        say('empty-note', '이 주소의 실행 호스트를 찾을 수 없습니다.');
-        renderNavigation();
+        roomLoadError = `실행 호스트를 찾을 수 없습니다 (${hostId}). 호스트 설정을 확인하고 다시 시도하세요.`;
+        online = false;
+        render();
         return;
       }
       if (!workspaceId || !workspaces.some(item => item.id === workspaceId)) {
@@ -948,9 +1091,11 @@ export function mountWorkspaceOffice(win = window) {
         if (!historyPaged && !historyBusy) historyCursor = validHistoryCursor(snapshot.next_cursor) ? snapshot.next_cursor : null;
         room = {...snapshot, runs};
         roomOnline = true;
-        if (!runId) runId = (room.runs.find(row => row.meeting_status === 'awaiting_review') ?? activeRuns()[0] ?? room.runs[0])?.id ?? null;
+        if (!runId) runId = (room.runs.find(row => row.meeting_status === 'awaiting_review') ??
+          room.runs.find(row => row.pending_count > 0) ?? activeRuns()[0] ?? room.runs[0])?.id ?? null;
         if (room.runs.some(run => run.id === runId && (run.state !== detail?.state || run.attempts !== detail?.attempts))) detail = null;
       }
+      roomLoadError = '';
       win.history.replaceState(null, '', address(hostId, workspaceId, runId) + win.location.hash);
       render();
       const detailRequest = fetchRun(token, runId);
@@ -965,6 +1110,9 @@ export function mountWorkspaceOffice(win = window) {
       if (!current()) return;
       online = false;
       roomOnline = false;
+      const hostName = directory.find(item => item.id === hostId)?.name ?? (hostId === 'local' ? '이 컴퓨터' : hostId);
+      const target = workspaces.find(item => item.id === workspaceId)?.name ?? workspaceId;
+      roomLoadError = `${hostName}${target ? ' · ' + target : ''}에 연결할 수 없습니다. 작업실이 실행 중인지 확인하고 다시 시도하세요.`;
       chatDetailsOnline = false;
       inboxDetailsOnline = false;
       render();
@@ -1015,14 +1163,16 @@ export function mountWorkspaceOffice(win = window) {
     });
   }
 
-  function showChat(role) {
+  function showChat(role, pinnedRunId = null) {
     if (!room) return;
+    if (pinnedRunId && (selected()?.id !== pinnedRunId || !trustedRun(pinnedRunId))) return;
+    receiptRunId = null;
     if (jump) {
       view = jump.view;
       jump = null;
       renderRoom();
     }
-    if (role !== 'coordinator') {
+    if (role !== 'coordinator' && !pinnedRunId) {
       const run = visibleRun(role);
       if (run?.id !== runId && run?.id) {
         closeDialogs();
@@ -1049,7 +1199,7 @@ export function mountWorkspaceOffice(win = window) {
     say('chat-title', name + '와 대화');
     get('chat-portrait').dataset.person = role;
     say('chat-context', assignment ? room.workspace.name : current ? taskTitle(current.task) : '배정된 작업이 없습니다.');
-    say('chat-label', assignment ? '요청할 작업' : '이 작업에 추가할 지시');
+    say('chat-label', assignment ? '새로 맡길 작업' : '이 작업에 추가할 지시');
     get('message').placeholder = assignment ? '예시 · 이 프로젝트의 테스트 실패 원인을 찾아줘.' : '예시 · Windows에서만 재현되는지 확인해줘.';
     get('assignment-options').hidden = !assignment;
     get('edit-option').hidden = !assignment;
@@ -1106,14 +1256,28 @@ export function mountWorkspaceOffice(win = window) {
   }
 
   function renderChatLog() {
-    renderViewTools('chat', selected());
-    renderThread('chat-log', chatRole);
+    const composing = chatRole === 'coordinator' && !receiptRunId;
+    const run = composing ? null : selected();
+    renderViewTools('chat', run);
+    renderThread('chat-log', chatRole, run);
+    get('chat-evidence').hidden = composing;
+    if (composing) get('chat-meeting').hidden = true;
     const waiting = threadRun === runId ? chatRows.filter(row => row.status === 'pending').length : 0;
     const planPending = detail?.meeting?.status === 'awaiting_review' && stoppable(detail.state);
     const count = waiting + (planPending ? 1 : 0);
-    get('chat-pending').hidden = count === 0;
+    get('chat-pending').hidden = composing || count === 0;
     say('chat-pending', '응답할 요청 ' + count + '건');
   }
+
+  function receiptRole(run) {
+    return run.state === 'REVIEWING' ? 'reviewer' : 'developer';
+  }
+
+  get('receipt-owner').addEventListener('click', () => {
+    const run = selected();
+    if (receiptRunId && run?.id === receiptRunId) showChat(receiptRole(run), receiptRunId);
+  });
+  get('receipt-new').addEventListener('click', () => showChat('coordinator'));
 
   get('chat-pending').addEventListener('click', () => {
     const target = get('chat-log').querySelector('.request-item') ??
@@ -1144,8 +1308,7 @@ export function mountWorkspaceOffice(win = window) {
     return entry.node;
   }
 
-  function renderThread(id, role) {
-    const run = selected();
+  function renderThread(id, role, run = selected()) {
     const simple = view === 'simple';
     const assignment = run?.assignment;
     const rows = threadRun === runId ? chatRows : [];
@@ -1209,9 +1372,18 @@ export function mountWorkspaceOffice(win = window) {
       else if (failed || !explanation && !activeStates.has(run.state) && run.outcome !== 'APPROVED') {
         status.append(make('p', outcomes[run.outcome] ?? (failed ? '실패 원인 미확인' : '결과 설명 미확인')));
       }
-      const facts = make('ul', '', 'result-facts');
-      for (const fact of resultFacts(run)) facts.append(make('li', fact));
-      status.append(facts);
+      const facts = resultFacts(run).filter(fact => {
+        if (!activeStates.has(run.state)) return true;
+        if (fact.startsWith('테스트 ')) return ['TESTING', 'REVIEWING'].includes(run.state) || !!run.test_output;
+        if (fact.startsWith('검토 ')) return run.state === 'REVIEWING' || !!run.review_output;
+        if (fact.startsWith('변경 파일 ')) return !!run.changes;
+        return !fact.startsWith('완료 기준 ');
+      });
+      if (facts.length) {
+        const list = make('ul', '', 'result-facts');
+        for (const fact of facts) list.append(make('li', fact));
+        status.append(list);
+      }
       if (simple && explanation?.trim() && explanation.trim() !== body?.trim()) {
         status.append(fullAnswer(id, run, ownerRole, explanation));
       }
@@ -1233,9 +1405,23 @@ export function mountWorkspaceOffice(win = window) {
     const assignment = role === 'coordinator';
     const recoverable = Boolean(readRecovery(sessionKey(role)));
     const run = selected();
+    const receipt = assignment && !!receiptRunId && run?.id === receiptRunId;
+    get('assignment-receipt').hidden = !receipt;
+    if (receipt) {
+      const owner = receiptRole(run);
+      const name = run.assignment?.roles?.[owner]?.name ?? roomPerson(owner).name;
+      get('receipt-portrait').dataset.person = owner;
+      say('receipt-task', taskTitle(run.task));
+      const phase = run.meeting?.status ?? run.meeting_status;
+      const stage = activeStates.has(run.state) && phase === 'planning' ? '작업 계획을 검토하고 있습니다.' :
+        activeStates.has(run.state) && phase === 'awaiting_review' ? '계획에 대한 사용자 결정을 기다리고 있습니다.' : runLabel(run);
+      say('receipt-status', name + ' · ' + stage);
+    }
     const interactive = run && run.assignment && run.use_inbox === true;
+    // Opening the receipt before the first attempt starts must not require reopening the chat.
+    if (!assignment && chatAttempt === 0 && run?.attempts === 1) chatAttempt = 1;
     const staleAttempt = interactive && run.attempts !== chatAttempt;
-    const open = assignment || interactive && !staleAttempt && chatAttempt > 0 && (run.state === followupStates[role] || recoverable);
+    const open = assignment ? !receiptRunId : interactive && !staleAttempt && chatAttempt > 0 && (run.state === followupStates[role] || recoverable);
     const locked = !!chatState || recoverable;
     const enabled = canWrite() && (assignment || directionsOnline && chatDetailsOnline);
     get('message').disabled = !open || !enabled;
@@ -1249,16 +1435,19 @@ export function mountWorkspaceOffice(win = window) {
     get('test-files').disabled = locked || !editAssignment;
     for (const box of get('assignment-folders').querySelectorAll('input')) box.disabled = locked;
     get('send').hidden = !open;
-    get('chat-form').hidden = !assignment && !open && !!run && !activeStates.has(run.state);
+    get('chat-form').hidden = !open;
     get('send').disabled = !enabled || !!chatState;
     say('send', recoverable && !chatState ? '같은 요청 다시 보내기' : assignment ? '작업 맡기기' : '추가 지시 보내기');
-    if (!open && !chatState) {
+    if (!open && !assignment && !chatState) {
       let reason = '진행 중인 작업에서 추가 지시를 보낼 수 있습니다.';
       if (staleAttempt) reason = '실행 시도가 바뀌었습니다. 현재 시도에 추가 지시를 보내려면 대화를 다시 여세요.';
       else if (run && !interactive) reason = '추가 지시는 작업실에서 새로 맡긴 작업에 보낼 수 있습니다.';
       else if (run && activeStates.has(run.state)) reason = '이 에이전트의 실행 단계가 시작되면 추가 지시를 보낼 수 있습니다.';
       say('chat-note', reason);
+    } else if (open && !assignment && !chatState && get('chat-note').dataset.waiting === 'true') {
+      say('chat-note', '');
     }
+    get('chat-note').dataset.waiting = String(!open && !assignment && !chatState);
     requestControls();
   }
 
@@ -1361,11 +1550,14 @@ export function mountWorkspaceOffice(win = window) {
         // Keep the coordinator conversation open once the just-assigned execution is selected.
         resetThread();
         runId = entry.id;
+        receiptRunId = entry.id;
         detail = entry;
         say('stop-note', '');
         win.history.pushState(null, '', address(hostId, workspaceId, runId));
         say('chat-note', '작업을 배정했습니다.');
         renderChatLog();
+        chatControls();
+        get('receipt-owner').focus();
       } else {
         directionRows = [...directionRows.filter(item => item.id !== entry.id), entry];
         say('chat-note', '추가 지시를 접수했습니다.');
@@ -1392,6 +1584,7 @@ export function mountWorkspaceOffice(win = window) {
     if (get('conversation').open) return;
     ++dialogEpoch;
     chatRole = null;
+    receiptRunId = null;
     get('room-evidence').append(get('evidence-panel'));
     if (jump?.place === 'chat') {
       view = jump.view;
@@ -1528,9 +1721,9 @@ export function mountWorkspaceOffice(win = window) {
     return node;
   }
 
-  function showRequests(focusKey) {
+  function showRequests(focusKey, focusRun) {
     const token = ++inboxEpoch;
-    inboxFocus = focusKey;
+    inboxFocus = focusKey || focusRun ? {key: focusKey, run: focusRun} : null;
     inboxDetailsOnline = false;
     get('request-log').replaceChildren(make('p', '요청을 불러오는 중입니다.', 'field-help'));
     snapshots.delete('request-log');
@@ -1572,7 +1765,10 @@ export function mountWorkspaceOffice(win = window) {
         if (!rows.length && !gates.length) node.append(make('p', '응답할 요청이 없습니다.', 'field-help'));
       });
       if (inboxFocus) {
-        [...get('request-log').children].find(item => item.dataset.request === inboxFocus)?.focus();
+        const target = [...get('request-log').children].find(item => inboxFocus.key ?
+          item.dataset.request === inboxFocus.key : item.dataset.request?.startsWith(inboxFocus.run + ':') && item.querySelector('[data-control]'));
+        if (target) target.focus();
+        else say('request-note', '선택한 요청의 최신 상태를 확인해 주세요.');
         inboxFocus = null;
       }
       requestControls();
@@ -1732,26 +1928,73 @@ export function mountWorkspaceOffice(win = window) {
     }
   });
 
-  function showRegister() {
-    if (!online || registrationBusy) return;
-    say('register-note', '');
-    openDialog(get('register-dialog'), get('workspace-name'));
+  let registrationHost, suggestedName = '', nameEdited = false;
+  function canPickFolders() {
+    return hostId === 'local' && typeof win.officeFolders?.select === 'function';
+  }
+  const pathsField = get('workspace-paths'), nameField = get('workspace-name'), picker = get('pick-folders');
+  const registeredPaths = () => pathsField.value.split(/\r?\n/).map(path => path.trim()).filter(Boolean);
+  function suggestName() {
+    const paths = registeredPaths();
+    suggestedName = paths[0]?.split(/[\\/]/).filter(Boolean).at(-1) ?? '';
+    if (!nameEdited) nameField.value = suggestedName;
+    picker.textContent = paths.length ? '폴더 추가' : '폴더 선택';
   }
 
+  function showRegister() {
+    if (!online || registrationBusy) return;
+    if (registrationHost !== hostId) {
+      registrationHost = hostId;
+      get('register-form').reset();
+      nameEdited = false;
+    }
+    const native = canPickFolders();
+    picker.hidden = !native;
+    const hostName = directory.find(item => item.id === hostId)?.name ?? hostId;
+    say('register-host', '등록할 실행 호스트 · ' + hostName);
+    say('paths-help', native ? '선택한 폴더를 확인하거나 경로를 한 줄씩 입력하세요.' :
+      hostName + '에서 사용할 폴더의 절대 경로를 한 줄씩 입력하세요.');
+    suggestName();
+    say('register-note', '');
+    openDialog(get('register-dialog'), native ? picker : pathsField);
+  }
+
+  nameField.addEventListener('input', () => { nameEdited = nameField.value !== suggestedName; });
+  pathsField.addEventListener('input', suggestName);
+  async function pickFolders() {
+    if (!online || picker.hidden || registrationBusy) return;
+    const token = epoch;
+    const current = () => sameContext(token) && get('register-dialog').open;
+    try {
+      const paths = await win.officeFolders.select();
+      if (!current() || !paths.length) return;
+      if (paths.some(path => /[\r\n]/.test(path))) throw new Error('줄바꿈이 없는 폴더 이름을 선택하세요.');
+      pathsField.value = [...new Set([...registeredPaths(), ...paths])].join('\n');
+      suggestName();
+      say('register-note', '');
+    } catch (error) {
+      if (current()) say('register-note', error.message || '폴더를 선택할 수 없습니다. 경로를 직접 입력하세요.');
+    }
+  }
+  picker.addEventListener('click', pickFolders);
+  get('empty-retry').addEventListener('click', refresh);
   get('register').addEventListener('click', showRegister);
-  get('empty-register').addEventListener('click', showRegister);
+  get('empty-register').addEventListener('click', () => {
+    showRegister();
+    if (canPickFolders() && get('register-dialog').open) pickFolders();
+  });
   get('register-form').addEventListener('submit', async event => {
     event.preventDefault();
     if (!online || registrationBusy) return;
     const token = epoch;
-    const body = {name: get('workspace-name').value.trim(),
-      paths: get('workspace-paths').value.split(/\r?\n/).map(path => path.trim()).filter(Boolean)};
+    const body = {name: nameField.value.trim(), paths: registeredPaths()};
     if (!body.name || !body.paths.length) return say('register-note', '이름과 폴더 경로를 입력하세요.');
     registrationBusy = get('save-workspace').disabled = true;
     try {
       const {workspace} = await api('/workspaces', body);
       if (!sameContext(token)) return;
       get('register-form').reset();
+      nameEdited = false;
       registrationBusy = false;
       navigation(hostId, workspace.id, null);
     } catch (error) {

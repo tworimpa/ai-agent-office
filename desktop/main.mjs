@@ -23,6 +23,8 @@ if (profileOverride && isAbsolute(profileOverride)) app.setPath('userData', prof
 
 let setupWindow, officeWindow, studio, profilePath, profile, selected, startupError = ''
 let confirmInProgress = false
+let profileUnreadable = false
+let pickerOpen = false
 
 function bundledPython() {
   const win = process.platform === 'win32'
@@ -36,10 +38,15 @@ function bundledPython() {
 function readProfile() {
   try {
     const saved = JSON.parse(readFileSync(profilePath, 'utf8'))
-    if (!saved || typeof saved !== 'object') throw new Error()
+    if (!saved || Array.isArray(saved) || typeof saved !== 'object' ||
+        (saved.connection && !['attached', 'local'].includes(saved.connection.mode)) ||
+        (saved.recent !== undefined && (!saved.recent || typeof saved.recent !== 'object' || Array.isArray(saved.recent)))) {
+      throw new Error()
+    }
     return { recent: {}, ...saved, remotes: validateRemotes(saved.remotes ?? []) }
-  } catch {
-    return { remotes: [], recent: {} }
+  } catch (error) {
+    if (error.code === 'ENOENT') return { remotes: [], recent: {} }
+    throw new Error(`저장된 연결 설정을 읽을 수 없습니다. ${profilePath} 파일을 복구한 뒤 다시 시도하세요.`)
   }
 }
 
@@ -50,10 +57,14 @@ function saveProfile() {
 }
 
 function choose(next, mode) {
-  selected = { ...next, mode }
+  if (profile.connection?.mode === 'local' && profile.connection.journalId) {
+    profile.localJournalId = profile.connection.journalId
+  }
   profile.connection = { mode, origin: next.origin, journalId: next.journalId }
   if (mode === 'attached') profile.address = next.origin
+  if (mode === 'local') profile.localJournalId = next.journalId
   saveProfile()
+  selected = { ...next, mode }
   startupError = ''
   return sessionSummary()
 }
@@ -64,12 +75,22 @@ function sessionSummary(liveRemotes) {
     remotes: liveRemotes ?? profile.remotes,
     selected,
     startupError,
+    canRetry: Boolean(startupError && (profileUnreadable || profile.connection)),
+    profileUnreadable,
   }
 }
 
 async function startLocal(remotes) {
   const requested = validateRemotes(remotes)
-  const runtime = await studio.start(requested)
+  const saved = profile.connection
+  const expected = saved?.mode === 'local' ? saved.journalId : profile.localJournalId
+  if (saved?.mode === 'local' && !expected) throw new Error('저장된 로컬 저널 ID를 복구하고 다시 시도하세요.')
+  let runtime
+  try {
+    runtime = await studio.start(requested, expected ?? null)
+  } catch (error) {
+    throw new Error(expected ? `저장된 로컬 작업실(${expected})을 열 수 없습니다. ${join(studio.directory, 'tasks.sqlite3')} 파일을 확인하고 다시 시도하세요. ${error.message}` : error.message)
+  }
   const effective = runtime.remotes ?? profile.remotes
   if (JSON.stringify(effective) !== JSON.stringify(requested)) {
     throw new Error('원격 작업실 설정을 적용하려면 실행 중인 로컬 작업실을 먼저 종료하세요.')
@@ -107,7 +128,8 @@ async function showOffice() {
   await checkStudio(connection.origin, connection.journalId)
   if (selected !== connection) return
 
-  if (officeWindow && connection.journalId && officeWindow.officeJournal === connection.journalId &&
+  if (officeWindow && officeWindow.officeMode === connection.mode && officeWindow.officeBoot === connection.bootId &&
+      connection.journalId && officeWindow.officeJournal === connection.journalId &&
       officeWindow.officeOrigin === connection.origin) {
     officeWindow.show()
     officeWindow.focus()
@@ -122,11 +144,15 @@ async function showOffice() {
     callback({ cancel: new URL(details.url).origin !== connection.origin })
   })
   const window = new BrowserWindow({
-    ...windowDefaults, show: false, webPreferences: { ...isolated, session: isolatedSession },
+    ...windowDefaults, show: false, webPreferences: { ...isolated, session: isolatedSession,
+      ...(connection.mode === 'local' ? { preload: fileURLToPath(new URL('./folders-preload.cjs', import.meta.url)) } : {}),
+    },
   })
   officeWindow = window
   window.officeOrigin = connection.origin
   window.officeJournal = connection.journalId
+  window.officeBoot = connection.bootId
+  window.officeMode = connection.mode
   const key = connection.journalId
   const allowed = url => studioPage(url, connection.origin) !== null
   const remember = (_event, url) => {
@@ -182,14 +208,43 @@ async function stopLocal() {
 }
 
 function registerActions() {
+  ipcMain.handle('desktop:pick-folders', async event => {
+    const owner = officeWindow
+    const connection = selected
+    const frame = event.senderFrame
+    const isCurrent = () => {
+      if (!owner || owner.isDestroyed() || officeWindow !== owner || selected !== connection ||
+          owner.officeMode !== 'local' || connection?.mode !== 'local' || connection.bootId !== owner.officeBoot ||
+          owner.webContents !== event.sender || !frame || frame !== owner.webContents.mainFrame) return false
+      const page = new URL(frame.url)
+      return page.origin === connection.origin && page.pathname === '/' &&
+        page.searchParams.getAll('host').every(host => host === 'local')
+    }
+    if (!isCurrent() || pickerOpen) return []
+    pickerOpen = true
+    try {
+      const runtime = await studio.running()
+      if (!isCurrent() || runtime?.bootId !== connection.bootId || runtime?.journalId !== connection.journalId) return []
+      const result = await dialog.showOpenDialog(owner, { title: '작업공간 폴더 선택', properties: ['openDirectory', 'multiSelections'] })
+      if (result.canceled || !isCurrent()) return []
+      return result.filePaths
+    } finally {
+      pickerOpen = false
+    }
+  })
   const actions = {
     state: async () => sessionSummary((await studio.running())?.remotes),
     connect: async address => {
       if (typeof address !== 'string' || address.length > 192) throw new Error('Studio 주소를 확인하세요.')
-      const next = await checkStudio(address)
-      return choose(next, 'attached')
+      try {
+        choose(await checkStudio(address), 'attached')
+        await showOffice()
+      } catch (error) {
+        throw new Error(`${address} · ${error.message}`)
+      }
     },
-    start: startLocal,
+    start: async remotes => { await startLocal(remotes); await showOffice() },
+    retry: restore,
     open: showOffice,
     stop: stopLocal,
     tools: () => selected ? readTools(selected.origin) : null,
@@ -204,6 +259,7 @@ function registerActions() {
         return { ok: false, message: '연결 설정 화면에서 실행하세요.' }
       }
       try {
+        if (profileUnreadable && !['state', 'retry'].includes(name)) throw new Error(startupError)
         return { ok: true, value: await action(value) }
       } catch (error) {
         return { ok: false, message: error.message }
@@ -212,11 +268,35 @@ function registerActions() {
   }
 }
 
+async function restore() {
+  try {
+    if (profileUnreadable) {
+      profile = readProfile()
+      profileUnreadable = false
+    }
+    const saved = profile.connection
+    if (saved?.mode === 'attached') {
+      if (!saved.journalId) throw new Error('저널 ID를 제공하지 않는 작업실입니다. 기존 작업실 연결에서 주소를 확인하고 연결하세요.')
+      choose(await checkStudio(saved.origin, saved.journalId), 'attached')
+    }
+    if (saved?.mode === 'local') await startLocal(profile.remotes)
+    if (selected) await showOffice()
+    startupError = ''
+    return sessionSummary()
+  } catch (error) {
+    const saved = profile.connection
+    const target = saved?.mode === 'attached' ? `저장된 작업실 ${saved.origin} · ` : ''
+    startupError = target + error.message
+    throw new Error(startupError)
+  }
+}
+
 async function initialize() {
   const directory = app.getPath('userData')
   mkdirSync(directory, { recursive: true, mode: 0o700 })
   profilePath = join(directory, 'connection.json')
-  profile = readProfile()
+  profile = { remotes: [], recent: {} }
+  profileUnreadable = true
   studio = new LocalStudio(join(directory, 'local-studio'), bundledPython())
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
   session.defaultSession.setPermissionCheckHandler(() => false)
@@ -234,20 +314,10 @@ async function initialize() {
     { label: '보기', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
   ]))
 
-  const saved = profile.connection
   try {
-    if (saved?.mode === 'attached') {
-      if (saved.journalId) choose(await checkStudio(saved.origin, saved.journalId), 'attached')
-      else startupError = '이 작업실 버전은 저널을 식별할 수 없습니다. 주소를 확인하고 다시 연결하세요.'
-    }
-    if (saved?.mode === 'local') await startLocal(profile.remotes)
-    if (selected) {
-      await showOffice()
-      return
-    }
-  } catch (error) {
-    startupError = error.message
-  }
+    await restore()
+    if (selected) return
+  } catch { /* The setup window displays the failed target and retry action. */ }
   showSetup()
 }
 

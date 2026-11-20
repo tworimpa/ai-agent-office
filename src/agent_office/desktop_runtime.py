@@ -22,7 +22,7 @@ class DesktopHandler(StudioHandler):
             super()._local_api(path, data)
 
 
-def serve(directory: Path, remotes: tuple[RemoteHost, ...]):
+def serve(directory: Path, remotes: tuple[RemoteHost, ...], expected_journal=None):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     receipt_path = directory / "runtime.json"
     boot_id = uuid4().hex
@@ -31,7 +31,7 @@ def serve(directory: Path, remotes: tuple[RemoteHost, ...]):
     db_path = directory / "tasks.sqlite3"
     with RunGuard.desktop(db_path):
         try:
-            with StudioServer(db_path, 0, remotes=remotes) as server:
+            with StudioServer(db_path, 0, remotes=remotes, expected_journal=expected_journal) as server:
                 server.RequestHandlerClass = DesktopHandler
                 server.desktop_receipt = {
                     "boot_id": boot_id,
@@ -57,6 +57,7 @@ def serve(directory: Path, remotes: tuple[RemoteHost, ...]):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Run a separate local desktop Studio")
     parser.add_argument("--data-dir", required=True, type=Path)
+    parser.add_argument("--expected-journal")
     parser.add_argument("--remote", action="append", nargs=3, default=[], metavar=("ALIAS", "PORT", "JOURNAL_ID"))
     args = parser.parse_args(argv)
     if not args.data_dir.is_absolute():
@@ -64,7 +65,7 @@ def main(argv=None):
     os.environ["AGENT_OFFICE_DESKTOP_LOCAL"] = "1"
     try:
         remotes = tuple(RemoteHost(alias, int(port), journal) for alias, port, journal in args.remote)
-        serve(args.data_dir, remotes)
+        serve(args.data_dir, remotes, args.expected_journal)
     except KeyboardInterrupt:
         return 0
     except (OSError, ValueError, OfficeError, sqlite3.Error) as exc:

@@ -98,7 +98,7 @@ class StudioServer(ThreadingHTTPServer):
         super().server_bind()
 
     def __init__(self, db_path: Path, port: int = 8766, *, remotes=(), accept_remote=False,
-                 improvement_source=None, release_view=None, deployment_target=None):
+                 improvement_source=None, release_view=None, deployment_target=None, expected_journal=None):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Invalid port")
         self.runner = None
@@ -114,8 +114,16 @@ class StudioServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), StudioHandler)
         try:
             self.db_path = Path(db_path).expanduser().resolve()
-            with TaskStore(self.db_path) as store:
-                self.journal_id = _journal_id(store)
+            if expected_journal is None:
+                with TaskStore(self.db_path) as store:
+                    self.journal_id = _journal_id(store)
+            else:
+                # Restoring a saved Desktop must never initialize a replacement journal.
+                with TaskStore(self.db_path, readonly=True) as store:
+                    row = store.connection.execute("SELECT id FROM studio_identity WHERE singleton=1").fetchone()
+                    if not row or row[0] != validate_id(expected_journal):
+                        raise ValueError("저장된 작업실 저널을 확인하세요.")
+                    self.journal_id = expected_journal
             if self.journal_id in self.remotes:
                 raise ValueError("이 컴퓨터의 저널 ID를 원격 호스트로 등록할 수 없습니다.")
             self.identity = self.db_path.stat()

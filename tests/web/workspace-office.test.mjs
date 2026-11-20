@@ -1,38 +1,6 @@
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
 import test from 'node:test';
-import {JSDOM} from 'jsdom';
-import {mountWorkspaceOffice} from '../../src/agent_office/web/workspace-office.js';
-
-const html = await readFile(new URL('../../src/agent_office/web/workspace-office.html', import.meta.url), 'utf8');
-const remote = 'a'.repeat(32);
-const workspace = {id: 'b'.repeat(32), name: 'AI Agent Office', folders: ['E:/프로젝트', 'E:/문서']};
-const runId = 'c'.repeat(32);
-const skillId = 'd'.repeat(32);
-const hosts = [{id: 'local', name: '이 PC'}, {id: remote, name: '원격 연구실'}];
-const settings = {
-  delegation: true,
-  developer: {name: '서진', engine: 'codex', skills: [skillId]},
-  reviewer: {name: '정희', engine: 'antigravity', skills: []},
-};
-const run = {
-  id: runId, workspace_id: workspace.id, task: '원인 확인', state: 'RUNNING', created_at: '2026-11-19T01:02:03Z',
-  developer_engine: 'codex', reviewer_engine: 'antigravity', allow_edits: true, use_inbox: true, attempts: 1,
-  assignment: {roles: {developer: settings.developer, reviewer: settings.reviewer}, delegation: true, note: '서진에게 작업을 맡겼습니다.'},
-  lines: {developer: '오류 원인을 찾았고 테스트 중입니다.', reviewer: '작업 시작을 기다리고 있습니다.'},
-  pending_count: 0,
-};
-const room = (runs = [run], values = settings) => ({workspace, settings: values, runs, engines: []});
-const base = '/api/rooms/' + workspace.id;
-const runPath = '/api/runs/' + run.id;
-
-async function until(predicate) {
-  for (let i = 0; i < 120; i++) {
-    if (predicate()) return;
-    await new Promise(resolve => setTimeout(resolve, 5));
-  }
-  assert.ok(predicate(), '작업실 응답 대기 시간 초과');
-}
+import {base, hosts, mount, remote, room, run, runId, runPath, settings, skillId, until, workspace} from './workspace-fixture.mjs';
 
 test('pasted code stays out of room, portrait and dialog titles while surrounding prose remains available', async t => {
   const task = '설정을 확인하세요.\n\n```js\nconst saved = option;\n```\n\n재접속도 확인하세요.';
@@ -61,38 +29,6 @@ test('recovery status shows the interrupted stage diagnostic before a previous s
   await until(() => get('chat-log').textContent.includes('timed out'));
   assert.doesNotMatch(get('chat-log').textContent, /수정 완료/);
 });
-
-function mount(t, route, {query = '', storage = {}, preferences = {}} = {}) {
-  const dom = new JSDOM(html, {url: 'http://127.0.0.1:8766/' + query, pretendToBeVisual: true});
-  const {window} = dom;
-  const get = id => window.document.getElementById(id);
-  const person = role => window.document.querySelector('.seat[data-person="' + role + '"]');
-  for (const [key, value] of Object.entries(storage)) window.sessionStorage.setItem(key, value);
-  for (const [key, value] of Object.entries(preferences)) window.localStorage.setItem(key, value);
-  if (!window.HTMLDialogElement.prototype.showModal) {
-    window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
-    window.HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new window.Event('close')); };
-  }
-  const calls = [];
-  window.fetch = async (path, options) => {
-    assert.equal(options.mode, 'same-origin');
-    const body = options.body ? JSON.parse(options.body) : undefined;
-    if (body) assert.equal(options.headers['X-Agent-Office'], 'studio');
-    calls.push({path, body});
-    const result = await route(path, body);
-    if (result !== undefined) return result instanceof Response ? result : Response.json(result);
-    if (path === '/api/hosts') return Response.json({hosts});
-    if (path.endsWith('/workspaces')) return Response.json({workspaces: [workspace]});
-    if (path.endsWith('/inbox')) return Response.json({requests: []});
-    if (path.endsWith('/directions')) return Response.json({directions: []});
-    assert.fail('unexpected fetch ' + path);
-  };
-  const dispose = mountWorkspaceOffice(window);
-  const close = () => { dispose(); window.close(); };
-  t.after(close);
-  const submit = id => get(id).dispatchEvent(new window.Event('submit', {bubbles: true, cancelable: true}));
-  return {window, get, person, calls, submit, close};
-}
 
 test('coordinator assignment uses room defaults and sends a linked follow-up without creating a separate run', async t => {
   let assigned = null, direction = null, mode = 'RUNNING';
@@ -128,8 +64,13 @@ test('coordinator assignment uses room defaults and sends a linked follow-up wit
   assert.ok(get('chat-log').textContent.includes(message));
   assert.equal(get('chat-log').querySelector('img'), null);
   assert.equal(new URLSearchParams(window.location.search).get('run'), assigned.id);
-  get('conversation').close();
-  person('developer').click();
+  assert.equal(get('chat-form').hidden, true);
+  assert.equal(get('assignment-receipt').hidden, false);
+  assert.equal(get('receipt-task').textContent, message);
+  assert.equal(window.document.activeElement, get('receipt-owner'));
+  assert.doesNotMatch(get('chat-log').textContent, /검토 미확인|테스트 미확인/);
+  submit('chat-form');
+  get('receipt-owner').click();
   await until(() => !get('send').disabled);
   assert.equal(get('chat-context').textContent, message);
   get('message').value = 'Windows에서도 확인해 주세요.';
@@ -202,6 +143,37 @@ test('a lost assignment receipt preserves the exact request ID, choices and mess
   second.get('chat-view-controls').querySelector('[data-jump="tests"]').click();
   await until(() => second.get('evidence-tests')?.textContent.includes(posted.test_files[0]));
   assert.equal(attempts, 3);
+  second.get('receipt-new').click();
+  assert.equal(second.get('assignment-receipt').hidden, true);
+  assert.equal(second.get('chat-form').hidden, false);
+  assert.equal(second.get('message').value, '');
+  assert.doesNotMatch(second.get('chat-log').textContent, /저널 경로 설명/);
+  assert.equal(second.get('chat-evidence').hidden, true);
+});
+
+test('receipt follows the accepted queued run even when the developer portrait is busy on another run', async t => {
+  let reserved, started = false;
+  const accepted = () => ({...run, id: reserved, task:'두 번째 업무', state: started ? 'RUNNING' : 'QUEUED',
+    attempts:started ? 1 : 0});
+  const {get, person, submit, window} = mount(t, (path, body) => {
+    if (path === base) return room(reserved ? [run, accepted()] : [run]);
+    if (path === runPath) return {run};
+    if (path === base + '/assignments') { reserved = body.id; return {run:accepted()}; }
+    if (path === '/api/runs/' + reserved) return {run:accepted()};
+  });
+  await until(() => get('ledger-label').textContent === '작업 중');
+  person('coordinator').click();
+  get('message').value = '두 번째 업무';
+  submit('chat-form');
+  await until(() => !get('assignment-receipt').hidden);
+  get('receipt-owner').click();
+  assert.equal(get('chat-context').textContent, '두 번째 업무');
+  assert.equal(new URL(window.location.href).searchParams.get('run'), reserved);
+  assert.equal(get('chat-form').hidden, true);
+  started = true;
+  get('refresh').click();
+  await until(() => !get('chat-form').hidden && !get('send').disabled);
+  assert.equal(get('chat-note').textContent, '');
 });
 
 test('meeting review retains a draft through polling and sends the product choice and edited plan to the selected remote run', async t => {
@@ -243,7 +215,7 @@ test('meeting review retains a draft through polling and sends the product choic
   assert.match(get('meeting-record').textContent, /<img src=x>/);
   assert.equal(get('meeting-record').querySelector('img'), null);
   assert.equal(person('coordinator').querySelector('.seat-line').textContent, lines.coordinator);
-  assert.equal(person('developer').querySelector('.seat-line').textContent, meeting.contributions[0].text);
+  assert.equal(person('developer').querySelector('.seat-line').textContent, lines.developer);
   person('developer').click();
   assert.ok(get('conversation').contains(get('meeting-record')));
   get('chat-view-controls').querySelector('[data-view="simple"]').click();

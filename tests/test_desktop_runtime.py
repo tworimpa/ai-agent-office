@@ -53,13 +53,34 @@ def test_runtime_uses_studio_and_honors_only_its_own_stop(tmp_path):
         (data / f"stop-{first['boot_id']}").touch()
         assert process.wait(timeout=10) == 0
     assert not (data / "runtime.json").exists()
-    with runtime(data) as (process, second):
+    with runtime(data, "--expected-journal", first["journal_id"]) as (process, second):
         assert second["journal_id"] == first["journal_id"]
         assert second["boot_id"] != first["boot_id"]
         assert second["remotes"] == []
         assert request(second, "/api/desktop-runtime") == second
         (data / f"stop-{second['boot_id']}").touch()
         assert process.wait(timeout=10) == 0
+
+
+def test_saved_desktop_refuses_missing_and_replaced_journal(tmp_path):
+    expected = "a" * 32
+    journal = tmp_path / "tasks.sqlite3"
+    for has_other_journal in (False, True):
+        if has_other_journal:
+            with runtime(tmp_path) as (process, receipt):
+                (tmp_path / f"stop-{receipt['boot_id']}").touch()
+                assert process.wait(timeout=10) == 0
+            original = journal.read_bytes()
+        result = subprocess.run(
+            [sys.executable, "-m", "agent_office.desktop_runtime", "--data-dir", str(tmp_path),
+             "--expected-journal", expected], capture_output=True, timeout=10,
+        )
+        assert result.returncode != 0
+        assert not (tmp_path / "runtime.json").exists()
+        if has_other_journal:
+            assert journal.read_bytes() == original
+        else:
+            assert not journal.exists()
 
 
 def test_second_runtime_leaves_live_receipt_and_journal_in_place(tmp_path):

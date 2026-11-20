@@ -59,6 +59,8 @@ async function render(value, initial = false) {
     remotes.value = value.remotes.map(row => `${row.alias} ${row.port} ${row.journalId}`).join('\n')
   }
   if (value.startupError) error.textContent = value.startupError
+  get('retry').hidden = !value.canRetry
+  get('start-options').hidden = value.profileUnreadable
   get('connected').hidden = !value.selected
   if (!value.selected) return
   const local = value.selected.mode === 'local'
@@ -89,7 +91,7 @@ async function perform(message, action, field) {
 
 get('connect').addEventListener('submit', event => {
   event.preventDefault()
-  perform('작업실을 확인하는 중…', async () => render(await call('connect', address.value.trim())), address)
+  perform('작업실을 여는 중…', () => call('connect', address.value.trim()), address)
 })
 address.addEventListener('input', () => address.removeAttribute('aria-invalid'))
 get('local').addEventListener('submit', event => {
@@ -101,9 +103,10 @@ get('local').addEventListener('submit', event => {
       const [alias, port, journalId] = parts
       return { alias, port: Number(port), journalId }
     })
-    await render(await call('start', entries))
+    await call('start', entries)
   })
 })
+get('retry').addEventListener('click', () => perform('저장된 작업실을 다시 여는 중…', async () => render(await call('retry'), true)))
 get('open').addEventListener('click', () => perform('사무실을 여는 중…', () => call('open')))
 get('stop').addEventListener('click', () => perform('로컬 작업실 종료를 확인하는 중…', async () => {
   if (await call('stop')) await render(await call('state'))

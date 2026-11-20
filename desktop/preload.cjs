@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('officeDesktop', {
   connect: address => ipcRenderer.invoke('desktop:connect', address),
   start: remotes => ipcRenderer.invoke('desktop:start', remotes),
   open: () => ipcRenderer.invoke('desktop:open'),
+  retry: () => ipcRenderer.invoke('desktop:retry'),
   stop: () => ipcRenderer.invoke('desktop:stop'),
   tools: () => ipcRenderer.invoke('desktop:tools'),
   docs: engine => ipcRenderer.invoke('desktop:docs', engine),

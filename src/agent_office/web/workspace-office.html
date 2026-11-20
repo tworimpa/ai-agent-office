@@ -55,6 +55,7 @@
         <h1 id="empty-title">작업실</h1>
         <p id="empty-note">작업공간을 불러오는 중입니다.</p>
         <button type="button" id="empty-register" class="primary" hidden>작업공간 등록</button>
+        <button type="button" id="empty-retry" class="secondary" hidden>연결 다시 시도</button>
       </section>
       <section id="room" aria-labelledby="room-title" hidden>
         <div class="room-heading">
@@ -68,6 +69,18 @@
           </div>
         </div>
 
+        <section id="task-summary" class="task-summary" aria-labelledby="summary-title" hidden>
+          <div class="summary-copy">
+            <div class="summary-meta"><span id="summary-state"></span><span id="summary-owner"></span></div>
+            <h2 id="summary-title"></h2>
+            <p id="summary-result" hidden></p>
+            <p id="summary-next"></p>
+            <ul id="summary-facts" hidden></ul>
+          </div>
+          <button type="button" id="summary-action" class="primary"></button>
+          <div id="summary-other" hidden></div>
+        </section>
+
         <div class="room-scene" aria-label="작업실에 있는 에이전트">
           <div class="scene-seats">
             <button type="button" class="seat" data-person="coordinator" aria-haspopup="dialog">
@@ -76,6 +89,7 @@
                 <span class="seat-name">조정자</span>
                 <span class="seat-role">작업 배정 · 기술 위임</span>
                 <span class="seat-line">새 작업을 말씀해 주세요.</span>
+                <strong class="seat-start" hidden>첫 작업 맡기기 <span aria-hidden="true">→</span></strong>
               </span>
               <span class="seat-arrow" aria-hidden="true">›</span>
             </button>
@@ -158,6 +172,12 @@
     <p id="chat-connection" role="status"></p>
     <div id="chat-log" class="chat-log" aria-label="대화 기록" tabindex="0"></div>
     <div id="chat-evidence"></div>
+    <section id="assignment-receipt" aria-label="방금 맡긴 작업" hidden>
+      <span id="receipt-portrait" class="portrait" aria-hidden="true"></span>
+      <div><strong id="receipt-task"></strong><p id="receipt-status" role="status"></p></div>
+      <button id="receipt-owner" type="button" class="primary">담당자와 대화</button>
+      <button id="receipt-new" type="button" class="secondary">새 작업 맡기기</button>
+    </section>
     <button type="button" id="chat-meeting" class="secondary" hidden>기획 회의 열기</button>
     <p id="chat-request-note" class="form-note" role="status"></p>
     <form id="chat-form" class="chat-form">
@@ -189,9 +209,9 @@
       </details>
       <label class="checkbox" id="edit-option"><input type="checkbox" id="allow-edits"> 파일 수정 허용</label>
       <label class="checkbox" id="review-option"><input type="checkbox" id="review-plan" name="review_plan"> 계획을 보고 시작</label>
-      <p id="chat-note" class="form-note" role="status"></p>
       <button type="submit" id="send" class="primary">보내기</button>
     </form>
+    <p id="chat-note" class="form-note" role="status"></p>
   </dialog>
 
   <dialog id="requests" class="dialog" aria-labelledby="requests-title">
@@ -240,11 +260,13 @@
       <form method="dialog"><button type="submit" class="close-button" aria-label="등록 닫기">×</button></form>
     </header>
     <form id="register-form" class="settings-form">
+      <p id="register-host" class="field-help"></p>
+      <button id="pick-folders" type="button" class="secondary" hidden>폴더 선택</button>
+      <label for="workspace-paths">등록할 폴더</label>
+      <textarea id="workspace-paths" rows="3" required aria-describedby="paths-help" spellcheck="false"></textarea>
+      <p id="paths-help" class="field-help"></p>
       <label for="workspace-name">작업공간 이름</label>
       <input id="workspace-name" required>
-      <label for="workspace-paths">호스트의 폴더 경로</label>
-      <textarea id="workspace-paths" rows="4" required aria-describedby="paths-help"></textarea>
-      <p id="paths-help" class="field-help">경로를 한 줄에 하나씩 입력하세요.</p>
       <p id="register-note" class="form-note" role="status"></p>
       <button type="submit" id="save-workspace" class="primary">작업공간 등록</button>
     </form>

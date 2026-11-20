@@ -150,17 +150,23 @@ export class LocalStudio {
     return liveRuntime(this.directory)
   }
 
-  start(remotes = []) {
-    this.starting ??= this.launch(validateRemotes(remotes)).finally(() => { this.starting = null })
-    return this.starting
+  async start(remotes = [], expectedJournal = null) {
+    if (expectedJournal !== null && !ID.test(expectedJournal)) throw new Error('저장된 로컬 저널 ID를 확인하세요.')
+    this.starting ??= this.launch(validateRemotes(remotes), expectedJournal).finally(() => { this.starting = null })
+    const current = await this.starting
+    if (expectedJournal && current.journalId !== expectedJournal) {
+      throw new Error('실행 중인 작업실의 저널 ID가 저장된 로컬 저널과 다릅니다.')
+    }
+    return current
   }
 
-  async launch(remotes) {
+  async launch(remotes, expectedJournal) {
     if (this.stopping) await this.stopping
     await mkdir(this.directory, { recursive: true, mode: 0o700 })
     const active = await this.running()
     if (active) return active
     const args = ['-I', '-B', '-m', 'agent_office.desktop_runtime', '--data-dir', this.directory]
+    if (expectedJournal) args.push('--expected-journal', expectedJournal)
     for (const { alias, port, journalId } of remotes) {
       args.push('--remote', alias, String(port), journalId)
     }
