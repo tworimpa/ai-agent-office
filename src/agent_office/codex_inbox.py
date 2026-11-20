@@ -14,7 +14,7 @@ from .dialogue import (FINAL_MARKER, MAX_QUESTIONS, PRODUCT_DECISION_MARKER, QUE
 from .events import snapshot_request
 from .dialogue import DelegationWithdrawn
 from .models import OfficeError
-from .studio_process import windows_service_session
+from .studio_process import WINDOWS_SERVICE_CODEX_CONTEXT, windows_service_session
 
 
 # These notifications cannot resolve a request, alter a patch or finish a turn.
@@ -44,18 +44,6 @@ _PROVIDER_ERROR_TYPES = {
     "sessionBudgetExceeded", "unauthorized", "usageLimitExceeded",
     "responseStreamDisconnected", "responseTooManyFailedAttempts",
 }
-
-_SERVICE_TOOL_CONTEXT = (
-    "This Codex worker is running in Windows Session 0. Use the native exec_command tool "
-    "with shell set to cmd.exe, login=false and tty=false for commands, file reads and small text edits. "
-    "Discover exec_command through the tool interface if it is not listed at the top level. "
-    "Write commands using cmd.exe syntax and prefer its built-ins (such as type and dir) for inspection. "
-    "Invoke the selected shell directly, without PowerShell or a nested shell. Keep the current sandbox "
-    "and approval policy. Git for Windows can fail to initialize in the Session 0 MXC sandbox. "
-    "Use the Studio coordinator's Git evidence for status and diffs in reviews, and report required "
-    "commands that fail in the sandbox. Studio runs the configured tests after development."
-)
-
 
 class _CodexProtocolError(ProtocolError):
     """Construct only with fixed text and bounded, recognized metadata."""
@@ -314,12 +302,12 @@ class CodexSession:
                 await self.rpc("thread/inject_items", {
                     "threadId": self.thread,
                     "items": [{"type": "message", "role": "developer",
-                               "content": [{"type": "input_text", "text": _SERVICE_TOOL_CONTEXT}]}],
+                               "content": [{"type": "input_text", "text": WINDOWS_SERVICE_CODEX_CONTEXT}]}],
                 })
             except _CodexRPCError as exc:
                 if exc.code != -32601:  # Only a legacy server without this method uses the initial prompt.
                     raise
-                self.initial_context = _SERVICE_TOOL_CONTEXT + "\n\n"
+                self.initial_context = WINDOWS_SERVICE_CODEX_CONTEXT + "\n\n"
 
     async def permission(self, msg, active, files, receipts, denied_commands):
         method, params, rpc_id = msg["method"], msg["params"], msg["id"]

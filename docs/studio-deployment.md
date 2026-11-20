@@ -38,9 +38,9 @@ Windows에서는 `deployment-init`으로 만든 대상 디렉터리 자체에 �
 
 ### Windows 서비스의 Codex 작업
 
-비대화형 Windows Session 0에서 작업실의 Codex app-server 세션은 시작할 때 호환 셸로 `cmd.exe`를 사용하라는 지침을 받는다. 사용자는 작업 내용만 입력하면 된다. Codex가 셸 도구를 호출하며, 서비스 전용 프로필에 설정한 MXC와 기존 요청함 승인 규칙이 적용된다.
+비대화형 Windows Session 0에서 작업실의 Codex는 호환 셸로 `cmd.exe`를 사용하라는 지침을 자동으로 받는다. 요청함 모드에서는 세션 시작 시 앱 지침이 전달되고, 요청함을 끄면 최초 작업 메시지에 같은 안내가 붙는다. Codex가 셸 도구를 호출하며, 서비스 전용 프로필에 설정한 MXC와 해당 실행의 기존 승인 규칙이 적용된다.
 
-Windows 11 빌드 26300에서 MXC를 사용하는 Session 0은 PowerShell과 Git for Windows를 시작할 때 `0xC0000142`를 반환할 수 있다. 작업실 조정자는 테스트가 끝난 작업 트리에서 기존 변경 미리보기를 수집해 Codex 리뷰어에게 전달한다. 리뷰어는 이 미리보기와 테스트 결과를 사용해 검토하며, 미리보기에 없는 근거가 필요하면 작업 트리에서 파일을 직접 확인한다. 샌드박스 안에서 Git 자체를 호출해야 하는 기능에는 이 Windows 제약이 적용된다. [Microsoft MXC 이슈](https://github.com/microsoft/mxc/issues/1465)
+Windows 11 빌드 26300에서 MXC를 사용하는 Session 0은 PowerShell과 Git for Windows를 시작할 때 `0xC0000142`를 반환할 수 있다. 작업실 조정자는 테스트가 끝난 작업 트리에서 기존 변경 미리보기를 5초 제한으로 수집해 Codex 리뷰어에게 전달한다. 리뷰어는 이 미리보기와 테스트 결과를 사용해 검토하며, 미리보기에 없는 근거가 필요하면 작업 트리에서 파일을 직접 확인한다. 샌드박스 안에서 Git 자체를 호출해야 하는 기능에는 이 Windows 제약이 적용된다. [Microsoft MXC 이슈](https://github.com/microsoft/mxc/issues/1465)
 
 ## 검토·배포·복구
 

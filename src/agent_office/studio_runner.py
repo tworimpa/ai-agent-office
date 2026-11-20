@@ -26,6 +26,7 @@ from .studio_catalog import normalize_test_files
 from .studio_diff import changes_in
 from .studio_directions import DirectionChannel, Directions
 from .studio_inbox import Inbox, InboxChannel, expire_requests
+from .studio_process import run_preview
 from .away_evidence import DelegationDeferred, git as evidence_git
 from .away_expert import RULES, in_scope, validate_policy
 from .away_ledger import get_choices, get_policy, get_revision, register_choices, register_policy
@@ -522,13 +523,19 @@ def worker(db_path, run_id):
                 channel.directions = DirectionChannel(db_path, run_id, role, engine)
             return channel
 
+        def studio_preview():
+            if not run_preview(db_path, run_id):
+                return None
+            value = store.connection.execute("SELECT preview FROM studio_runs WHERE id=?", (run_id,)).fetchone()[0]
+            return json.loads(value) if value else None
+
         try:
             execute_run(args, store, run_id, prepared=True, folders=json.loads(row["folders"]),
                         save_stage=save_stage, defer_final=defer_final,
                         base_revision=revision,
                         delegated_questions=tuple(RULES[rule["topic"]] for rule in policy["rules"]) if policy else (),
                         technical_choice_guidance=CHOICE_INSTRUCTIONS if room and get_choices(db_path, run_id) else "",
-                        inbox_factory=inbox_factory if interactive else None)
+                        inbox_factory=inbox_factory if interactive else None, studio_preview=studio_preview)
         except (ValueError, OSError, subprocess.SubprocessError, RuntimeError):
             message = {
                 "QUEUED": "Git 작업 트리 또는 선택한 폴더를 준비하지 못했습니다.",
