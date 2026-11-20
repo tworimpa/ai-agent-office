@@ -107,14 +107,15 @@ async def write_record(process, record, *, inbox, decision_id, deadline, directi
 
 
 class _Session:
-    def __init__(self, engine, process, workspace, allow_edits, strict_completion, inbox, deadline):
+    def __init__(self, engine, process, workspace, allow_edits, strict_completion, inbox, timer, *, prompt_only=False):
         self.engine = engine
         self.process = process
         self.workspace = workspace
         self.strict_completion = strict_completion
+        self.prompt_only = prompt_only
         self.inbox = inbox
         self.directions = getattr(inbox, "directions", None)
-        self.deadline = deadline
+        self.timer = timer
         self.gemini_calls = {}
         self.file_operations = set()
         self.allow_edits = allow_edits
@@ -134,7 +135,7 @@ class _Session:
     async def send(self, *, decision_id=None, direction=None, **message):
         encoded = json.dumps({"jsonrpc": "2.0", **message}, ensure_ascii=False)
         record = (encoded + "\n").encode("utf-8")
-        await write_record(self.process, record, inbox=self.inbox, decision_id=decision_id, deadline=self.deadline,
+        await write_record(self.process, record, inbox=self.inbox, decision_id=decision_id, deadline=self.timer.when(),
                            direction=direction)
 
     async def request(self, request_id, method, *, decision_id=None, direction=None, **params):
@@ -195,6 +196,9 @@ class _Session:
         if type(request_id) not in (int, str) or request_id in self.permission_request_ids:
             raise ProtocolError("invalid permission request ID")
         self.permission_request_ids.add(request_id)
+        if self.prompt_only:
+            await self.send(id=request_id, result={"outcome": {"outcome": "cancelled"}})
+            raise ProtocolError("Meeting consultation requested tool permission")
         if self.engine == "gemini":
             await self.send(id=request_id, result={"outcome": {"outcome": "cancelled"}})
             raise ProtocolError("Gemini requested interactive permission")
@@ -279,6 +283,8 @@ class _Session:
             self.fragments.append(content["text"])
             return
         if kind in ("tool_call", "tool_call_update"):
+            if self.prompt_only:
+                raise ProtocolError("Meeting consultation reported a tool call")
             tool_id = update.get("toolCallId")
             status = update.get("status")
             if not isinstance(tool_id, str) or not tool_id:
@@ -369,7 +375,9 @@ class _Session:
             if not any(isinstance(m, dict) and m.get("id") == self.mode for m in modes["availableModes"]):
                 raise ProtocolError("Gemini does not support the requested session mode")
         await self.request(3, "session/set_mode", sessionId=self.session_id, modeId=self.mode)
-        if self.engine == "cline":
+        if self.prompt_only:
+            instructions = "Use only the supplied project excerpts. Do not use tools."
+        elif self.engine == "cline":
             instructions = "Use read_files with absolute workspace paths for reads."
             if self.allow_edits:
                 instructions += " Use editor for file edits."
@@ -419,16 +427,19 @@ class _Session:
             direction = self.directions.next() if self.directions is not None else None
             if direction is None:
                 break
+            if direction.meeting_seconds:
+                self.timer.reschedule(self.timer.when() + direction.meeting_seconds)
             decision_id = None
             turn_text = direction.prompt + "\n\n" + instructions
-        if self.engine == "gemini" and self.strict_completion:
+        if self.engine == "gemini" and self.strict_completion and not self.prompt_only:
             required = {"read", "edit"} if self.allow_edits else {"read"}
             if not required.issubset(self.file_operations):
                 raise ProtocolError("Gemini did not report the expected workspace file operations")
         return answer, self.session_id
 
 
-async def run_acp(engine, argv, prompt, workspace, allow_edits, env, timeout, strict_completion, inbox=None):
+async def run_acp(engine, argv, prompt, workspace, allow_edits, env, timeout, strict_completion, inbox=None, *,
+                  prompt_only=False):
     if engine == "cline":
         env = {**env, "CLINE_SESSION_BACKEND_MODE": "local"}
     process = await asyncio.create_subprocess_exec(
@@ -438,7 +449,8 @@ async def run_acp(engine, argv, prompt, workspace, allow_edits, env, timeout, st
     )
     try:
         async with asyncio.timeout(timeout) as timer:
-            session = _Session(engine, process, workspace.resolve(), allow_edits, strict_completion, inbox, timer.when())
+            session = _Session(engine, process, workspace.resolve(), allow_edits, strict_completion, inbox, timer,
+                               prompt_only=prompt_only)
             result = await session.run(prompt)
             process.stdin.close()
             # Reject any second terminal result or trailing protocol output.

@@ -1,14 +1,18 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
+import asyncio
 import os
 import platform
 import subprocess
 import sys
+import time
+from types import SimpleNamespace
 import uuid
 
 import pytest
 
 from agent_office.models import OfficeError, OwnerInfo, TaskSpec
+from agent_office import batch_dialogue, studio_directions
 from agent_office.adapters import CLIAdapter
 from agent_office.ownership import RunGuard
 from agent_office.store import TaskStore
@@ -67,6 +71,7 @@ def test_concurrent_submissions_are_idempotent_scoped_and_ordered(direction_run)
     store.submit(run_id, payload("다음 지시"))
     channel = DirectionChannel(path, run_id, "developer", "cline")
     delivery = channel.next()
+    assert delivery.meeting_seconds == 0
     assert "추가 범위를 확인하세요." in delivery.prompt and "다음 지시" in delivery.prompt
     assert delivery.prompt.index("추가 범위를 확인하세요.") < delivery.prompt.index("다음 지시")
     assert [row["delivery"] for row in store.history(run_id)] == ["sending", "sending"]
@@ -78,6 +83,26 @@ def test_concurrent_submissions_are_idempotent_scoped_and_ordered(direction_run)
     with pytest.raises(OfficeError, match="REQUEST_CLOSED"):
         store.submit(run_id, payload())
     assert store.submit(run_id, request)["delivery"] == "delivered"
+
+
+def test_stop_during_meeting_still_closes_delivery(direction_run, monkeypatch):
+    path, run_id = direction_run
+    directions = Directions(path)
+    channel = DirectionChannel(path, run_id, "developer", "cline")
+    directions.submit(run_id, payload())
+    times = iter((5.0, 95.0))
+    monkeypatch.setattr(studio_directions, "time", SimpleNamespace(monotonic=lambda: next(times)))
+
+    def stop_while_waiting(rows):
+        with TaskStore(path, existing=True) as store, store._write():
+            store.connection.execute("UPDATE studio_runs SET stop_requested=1 WHERE id=?", (run_id,))
+        return "기존 계획"
+
+    channel.replan = stop_while_waiting
+    delivery = channel.next()
+    assert delivery.meeting_seconds == 90
+    with pytest.raises(OfficeError, match="REQUEST_CLOSED"), delivery.sending():
+        pytest.fail("Stopped direction reached the provider")
 
 
 def test_uncertain_closed_attempt_cannot_replay(direction_run):
@@ -221,6 +246,7 @@ def test_local_runner_delivers_direction_after_answer_in_same_codex_thread(tmp_p
 
 class FixtureDirections:
     prompt = '중간 지시 & "원문"'
+    meeting_seconds = 0.0
 
     def __init__(self, check_boundary):
         self.check_boundary = check_boundary
@@ -241,6 +267,43 @@ class FixtureDirections:
     def delivered(self):
         assert self.sent == 1
         self.confirmed += 1
+
+
+@pytest.mark.parametrize("engine", ["codex", "cline", "claude"])
+@pytest.mark.parametrize("meeting_seconds", [3600, 0])
+def test_only_server_meeting_time_is_excluded_from_provider_deadline(tmp_path, monkeypatch, engine, meeting_seconds):
+    def advance_clock():
+        if directions.claimed:
+            return
+        # Move the provider clock one hour across the synchronous handoff.
+        # Only the server-measured meeting interval is eligible for exclusion.
+        if engine == "claude":
+            monkeypatch.setattr(batch_dialogue, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + 3600))
+        else:
+            loop = asyncio.get_running_loop()
+            original_time = loop.time
+            monkeypatch.setattr(loop, "time", lambda: original_time() + 3600)
+
+    directions = FixtureDirections(advance_clock)
+    directions.meeting_seconds = meeting_seconds
+    if engine == "codex":
+        operator = codex.Operator()
+        operator.directions = directions
+        _, result = codex.fixture(tmp_path, monkeypatch, "direction", operator=operator)
+    elif engine == "cline":
+        inbox = Answers()
+        inbox.directions = directions
+        result = run_fixture(tmp_path, monkeypatch, engine, "inbox_direction", edit=True, inbox=inbox)
+    else:
+        adapter = CLIAdapter(engine, timeout=15)
+        original = adapter.command("", allow_edits=False)[1:]
+        command = [sys.executable, batch.__file__, engine, str(uuid.uuid4()), "direction", *original]
+        monkeypatch.setattr(adapter, "command", lambda *args, **kwargs: command)
+        operator = batch.Operator()
+        operator.directions = directions
+        result = adapter.execute("Original specification", workspace=tmp_path, allow_edits=False, inbox=operator)
+    assert result.returncode == (0 if meeting_seconds else 124)
+    assert directions.confirmed == (1 if meeting_seconds else 0)
 
 
 @pytest.mark.parametrize("case", ["direction", "direction-lost"])

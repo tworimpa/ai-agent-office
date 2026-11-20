@@ -1,6 +1,7 @@
 """Operator directions scoped to one active Studio role and workflow attempt."""
 from contextlib import contextmanager
 import json
+import time
 from pathlib import Path
 
 from .events import snapshot_request
@@ -151,7 +152,9 @@ class DirectionChannel:
             return None
         delivery = _Delivery(self, rows)
         if self.replan:
+            started = time.monotonic()
             delivery.prompt += "\n\nUpdated meeting plan and decisions:\n" + self.replan(rows)
+            delivery.meeting_seconds = time.monotonic() - started
         return delivery
 
     def close(self):
@@ -166,6 +169,7 @@ class _Delivery:
         self.channel = channel
         self.ids = [(row["run_id"], row["id"]) for row in rows]
         self.started = False
+        self.meeting_seconds = 0.0
         self.prompt = (
             "Continue the assigned work in this same session. The operator added the directions listed below in order. "
             "Apply them within the original role, worktree, task scope and permission limits. "

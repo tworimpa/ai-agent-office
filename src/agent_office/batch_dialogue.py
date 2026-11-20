@@ -114,5 +114,6 @@ def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox):
         direction = directions.next(available=command is not None)
         if direction is None:
             return result
+        deadline += direction.meeting_seconds
         decision = None
         message = direction.prompt + "\n\n" + QUESTION_INSTRUCTIONS

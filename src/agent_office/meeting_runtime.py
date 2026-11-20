@@ -12,7 +12,7 @@ from .meeting import conduct_meeting
 from .meeting_parallel import execute_parallel
 from .models import ACTIVE
 from .store import TaskStore
-from .studio_catalog import verify_worktree_test_files
+from .studio_inbox import InboxChannel
 
 
 class MeetingFailure(RuntimeError):
@@ -75,11 +75,17 @@ class RoomMeeting:
         current = self.snapshot()
         def record(task_id, result):
             self.write(meeting_store.record_work, current["revision"], task_id, self.developer, result)
+
+        def open_inbox():
+            # Keep each child's session approvals separate. Only the primary
+            # developer consumes directions addressed to the overall role.
+            return InboxChannel(self.path, self.run_id, "developer", self.developer)
+
         try:
             self.applied_work = execute_parallel(
                 current["plan"], self.workspace, self.adapters, self.developer,
                 task=self.task + "\n" + role_guidance + "\nAccepted plan and decisions:\n" + self.context(),
-                record=record)
+                record=record, open_inbox=open_inbox)
         except (OSError, ValueError) as exc:
             raise MeetingFailure("병렬 하위 작업을 완료하지 못했습니다. 회의의 하위 작업 기록을 확인하세요.") from exc
 
@@ -105,17 +111,13 @@ class RoomMeeting:
         return self.context()
 
     @contextmanager
-    def test_command(self, argv, selected):
+    def test_command(self, argv):
         with TemporaryDirectory(prefix="office-meeting-tests-") as temp:
             report = Path(temp) / "results.xml"
             index = argv.index("--") if "--" in argv else len(argv)
             command = [*argv[:index], "-o", "junit_family=xunit1", "--junitxml", str(report), *argv[index:]]
             version = self.snapshot()
-            files = list(dict.fromkeys(path for row in version["plan"]["criteria"] for path in row.get("test_files", [])))
             try:
-                if not selected and 0 < len(files) <= 16:
-                    verify_worktree_test_files(self.workspace, files)
-                    command.extend(["--", *files])
                 yield command
             except Exception:
                 self.note_unverified("지정 테스트를 완료하지 못했습니다. 실행의 테스트 결과를 확인하세요.")

@@ -96,14 +96,18 @@ def _changes(initial, final, folders):
     return changes
 
 
-def _worker(adapter, root, item, task, plan):
+def _worker(adapter, root, item, task, plan, open_inbox):
     initial = _contents(root)
     prompt = ("MEETING_IMPLEMENT\nImplement only the assigned task in the listed folders. "
               "Never commit, push, merge, deploy, change security policy, or edit another folder. "
               "Report work performed. If blocked, stop; do not grant yourself permission.\n"
               + json.dumps({"request": task, "assigned": item, "outcome": plan["outcome"],
                             "criteria": plan["criteria"], "rationale": plan["rationale"]}, ensure_ascii=False))
-    result = adapter.execute(prompt, workspace=root, allow_edits=True, strict_completion=True)
+    inbox = open_inbox()
+    try:
+        result = adapter.execute(prompt, workspace=root, allow_edits=True, strict_completion=True, inbox=inbox)
+    finally:
+        inbox.expire()
     if result.returncode or result.truncated or not result.message.strip():
         raise ValueError(f"담당 엔진 실행 실패 (종료 코드 {result.returncode}).")
     if extract_request(result.message):
@@ -168,7 +172,7 @@ def _apply(repo, objects, version, changes, temp, tracked_modes):
     run_git(repo, *config, "apply", "--whitespace=nowarn", "-", data=patch)
 
 
-def execute_parallel(plan, workspace, adapters, developer, *, task, record):
+def execute_parallel(plan, workspace, adapters, developer, *, task, record, open_inbox):
     """Apply one bounded root frontier; all later tasks stay with the primary worker."""
     selected = _frontier(validate_plan(plan))
     if not selected:
@@ -202,7 +206,7 @@ def execute_parallel(plan, workspace, adapters, developer, *, task, record):
                 jobs = []
                 for item, root in zip(selected, roots):
                     record(item["id"], "별도 작업 트리에서 병렬 실행을 시작했습니다.")
-                    jobs.append(workers.submit(_worker, adapters[developer], root, item, task, plan))
+                    jobs.append(workers.submit(_worker, adapters[developer], root, item, task, plan, open_inbox))
                 for item, job in zip(selected, jobs):
                     try:
                         changes[item["id"]] = job.result()

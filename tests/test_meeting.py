@@ -58,8 +58,9 @@ class Worker:
         self.replies = iter(replies)
         self.prompts = []
 
-    def execute(self, prompt, *, workspace, allow_edits, strict_completion):
+    def execute(self, prompt, *, workspace, allow_edits, strict_completion, prompt_only=False):
         assert allow_edits is False and strict_completion is True
+        self.prompt_only = prompt_only
         assert list(Path(workspace).iterdir()) == [workspace / ".git"]
         self.prompts.append(prompt)
         reply = next(self.replies)
@@ -145,6 +146,12 @@ def test_same_engine_selected_for_both_roles_still_requires_two_calls(repo):
     conduct_meeting("합계", repo, "codex", "codex", adapters={"codex": adapter},
                     record=lambda *items: records.append(items))
     assert [row[:2] for row in records] == [("developer", "codex"), ("reviewer", "codex")]
+
+
+def test_acp_meeting_requires_prompt_only_transport(repo):
+    workers = {engine: Worker(contribution(engine)) for engine in ("gemini", "cline")}
+    conduct_meeting("합계", repo, "gemini", "cline", adapters=workers, record=lambda *args: None)
+    assert all(worker.prompt_only for worker in workers.values())
 
 
 def test_moved_project_revision_never_releases_reviewed_plan(repo):

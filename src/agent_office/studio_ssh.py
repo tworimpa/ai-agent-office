@@ -294,6 +294,11 @@ def _check_room_reply(status, data, headers, journal, method, route, payload):
                 or not isinstance(message, str) or row.get("task") != snapshot_request(message)):
             raise RemoteUnavailable()
         _check_assignment(row, required=True)
+        overrides = payload.get("role_engines", {})
+        if not isinstance(overrides, dict) or any(
+                role not in ROLES or row["assignment"]["roles"][role]["engine"] != engine
+                for role, engine in overrides.items()):
+            raise RemoteUnavailable()
         if (bool(row["assignment"].get("meeting")) != bool(payload.get("meeting")) or
                 bool(row["assignment"].get("review_plan")) != bool(payload.get("review_plan"))):
             raise RemoteUnavailable()

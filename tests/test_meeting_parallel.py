@@ -1,12 +1,22 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
 import os
+from pathlib import Path
 import subprocess
 import threading
+import time
+from unittest.mock import Mock
+from uuid import uuid4
 
 import pytest
 
 from agent_office.adapters import AgentResult
 from agent_office.meeting_parallel import execute_parallel
+from agent_office.studio_inbox import Inbox, InboxChannel
+from agent_office.studio_runner import LocalRunner
+from test_studio_inbox import seed
 
 
 def git(repo, *args):
@@ -42,8 +52,9 @@ class Worker:
         self.repo = repo
         self.mutation = mutation
 
-    def execute(self, prompt, *, workspace, allow_edits, strict_completion):
+    def execute(self, prompt, *, workspace, allow_edits, strict_completion, inbox):
         assert allow_edits and strict_completion
+        assert inbox is not None
         item = json.loads(prompt.split("\n")[-1])["assigned"]
         self.roots.append(workspace)
         assert workspace != self.repo and not workspace.is_relative_to(self.repo)
@@ -59,7 +70,53 @@ class Worker:
 
 def execute(repo, plan, worker, logs):
     return execute_parallel(plan, repo, {"codex": worker}, "codex", task="요청 및 선택 답변",
-                            record=lambda *row: logs.append(row))
+                            record=lambda *row: logs.append(row), open_inbox=Mock)
+
+
+def test_parallel_permissions_use_distinct_live_conversations(setup):
+    repo, plan = setup
+    path, run_id = repo.parent / "studio.sqlite3", uuid4().hex
+    with closing(LocalRunner(path)):
+        pass
+    seed(path, run_id)
+    inbox = Inbox(path)
+    channels = []
+
+    def open_inbox():
+        channel = InboxChannel(path, run_id, "developer", "cline")
+        channels.append(channel)
+        return channel
+
+    class RequestingWorker:
+        def execute(self, prompt, *, workspace, allow_edits, strict_completion, inbox):
+            item = json.loads(prompt.splitlines()[-1])["assigned"]
+            target = workspace / item["folders"][0] / "new.py"
+            decision = asyncio.run(asyncio.wait_for(inbox.ask("permission", str(target), item["id"]), 10))
+            with inbox.sending(decision["id"]):
+                if decision["decision"] == "approve":
+                    target.write_text("x = 2")
+            inbox.delivered(decision["id"])
+            return AgentResult(0, "완료")
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        job = pool.submit(execute_parallel, plan, repo, {"cline": RequestingWorker()}, "cline",
+                          task="요청", record=lambda *args: None, open_inbox=open_inbox)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not job.done():
+            requests = inbox.pending()
+            if len(requests) == 2:
+                break
+            time.sleep(.02)
+        else:
+            pytest.fail("Both independent permission requests must arrive")
+        for row in requests:
+            action = "approve" if Path(row["prompt"]).parent.name == "first" else "reject"
+            inbox.decide(run_id, row["id"], {"action": action})
+        with pytest.raises(ValueError, match="병렬"):
+            job.result(timeout=10)
+    assert len({channel.holder for channel in channels}) == 2 and all(channel.closed for channel in channels)
+    assert {row["decision"] for row in inbox.history(run_id) if row["status"] == "delivered"} == {"approve", "reject"}
+    assert not list(repo.rglob("new.py"))
 
 
 def test_imports_both_independent_worktrees_and_hands_off_dependencies(setup):

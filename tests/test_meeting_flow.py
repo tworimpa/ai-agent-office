@@ -87,14 +87,14 @@ def assign(server, folders, monkeypatch, task, *, api="/api", peer=None):
     workspace_id = register(server, folders, api=api)
     room = f"{api}/rooms/{workspace_id}"
     settings = request(server, room)[1]["settings"]
-    settings["developer"]["engine"] = "claude"
-    assert request(server, room, settings)[0] == 200
     key = uuid4().hex
     status, body = request(server, room + "/assignments", {
         "id": key, "meeting": True, "review_plan": False, "allow_edits": True,
-        "message": task, "delegation": False, "test_files": ["web/test_value.py"],
+        "message": task, "delegation": False, "test_files": ["web/test_value.py"], "role_engines": {"developer": "claude"},
     })
     assert status == 202, body
+    assert body["run"]["developer_engine"] == "claude"
+    assert request(server, room)[1]["settings"] == settings
     return key
 
 

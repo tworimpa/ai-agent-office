@@ -484,22 +484,41 @@ export function mountWorkspaceOffice(win = window) {
       const title = make('label', label);
       title.htmlFor = control.id;
       parent.append(title, control);
+      return control;
+    }
+    function pathField(group, name, title, paths, guards) {
+      const control = field(group, name, title + ' (한 줄에 하나씩)', paths.join('\n'));
+      if (!paths.length) return;
+      const box = make('input');
+      box.type = 'checkbox';
+      box.name = 'retain-' + name;
+      const label = make('label', '', 'checkbox');
+      label.append(box, make('span', '수정한 내용에도 기존 ' + title + ' 연결 유지'));
+      label.hidden = true;
+      group.append(label);
+      const changed = () => {
+        label.hidden = control.value !== control.dataset.initial || guards.every(item => item.value === item.dataset.initial);
+        box.checked = false;
+      };
+      for (const input of [control, ...guards]) input.addEventListener('input', changed);
     }
     field(edit, 'outcome', '목표 결과', plan.outcome);
-    field(edit, 'scope', '작업 범위 (한 줄에 하나씩)', plan.scope.join('\n'));
+    const scopeInput = field(edit, 'scope', '작업 범위 (한 줄에 하나씩)', plan.scope.join('\n'));
     plan.tasks.forEach((task, i) => {
       const group = make('fieldset');
       group.append(make('legend', '작업 ' + task.id));
-      field(group, 'task-' + i, '작업 내용', task.description);
-      field(group, 'owner-' + i, '담당', task.owner, Object.entries(roleLabels));
-      field(group, 'dependencies-' + i, '선행 작업 ID (쉼표로 구분)', task.depends_on.join(', '));
+      const description = field(group, 'task-' + i, '작업 내용', task.description);
+      const owner = field(group, 'owner-' + i, '담당', task.owner, Object.entries(roleLabels));
+      const dependencies = field(group, 'dependencies-' + i, '선행 작업 ID (쉼표로 구분)', task.depends_on.join(', '));
+      pathField(group, 'folders-' + i, '작업 폴더', task.folders ?? [], [scopeInput, description, owner, dependencies]);
       edit.append(group);
     });
     plan.criteria.forEach((row, i) => {
       const group = make('fieldset');
       group.append(make('legend', '완료 기준 ' + (i + 1)));
-      field(group, 'criterion-' + i, '완료 기준', row.criterion);
-      field(group, 'verification-' + i, '검증 방법', row.verification);
+      const criterion = field(group, 'criterion-' + i, '완료 기준', row.criterion);
+      const verification = field(group, 'verification-' + i, '검증 방법', row.verification);
+      pathField(group, 'tests-' + i, '테스트 파일', row.test_files ?? [], [criterion, verification]);
       edit.append(group);
     });
     field(edit, 'rationale', '계획 근거 (한 줄에 하나씩)', plan.rationale.join('\n'));
@@ -513,18 +532,30 @@ export function mountWorkspaceOffice(win = window) {
       if (control.value === control.dataset.initial) return original;
       return separator ? control.value.split(separator).map(item => item.trim()).filter(Boolean) : control.value.trim();
     };
+    const paths = (name, original, guardNames) => {
+      const changed = key => {
+        const input = form.elements.namedItem(key);
+        return input.value !== input.dataset.initial;
+      };
+      if (changed(name)) return edit(name, [], '\n');
+      if (original?.length && guardNames.some(changed) && !form.elements.namedItem('retain-' + name).checked) return [];
+      return original;
+    };
     const plan = meeting.plan;
     return {
       revision: meeting.revision,
       plan: {
         ...plan, outcome: edit('outcome', plan.outcome), scope: edit('scope', plan.scope, '\n'), rationale: edit('rationale', plan.rationale, '\n'),
-        tasks: plan.tasks.map((task, i) => ({
-          ...task, description: edit('task-' + i, task.description), owner: edit('owner-' + i, task.owner),
-          depends_on: edit('dependencies-' + i, task.depends_on, ','),
-        })),
-        criteria: plan.criteria.map((row, i) => ({
-          ...row, criterion: edit('criterion-' + i, row.criterion), verification: edit('verification-' + i, row.verification),
-        })),
+        tasks: plan.tasks.map((task, i) => {
+          const folders = paths('folders-' + i, task.folders, ['scope', 'task-' + i, 'owner-' + i, 'dependencies-' + i]);
+          return {...task, description: edit('task-' + i, task.description), owner: edit('owner-' + i, task.owner),
+            depends_on: edit('dependencies-' + i, task.depends_on, ','), ...(folders && {folders})};
+        }),
+        criteria: plan.criteria.map((row, i) => {
+          const files = paths('tests-' + i, row.test_files, ['criterion-' + i, 'verification-' + i]);
+          return {...row, criterion: edit('criterion-' + i, row.criterion), verification: edit('verification-' + i, row.verification),
+            ...(files && {test_files: files})};
+        }),
       },
       answers: Object.fromEntries(meeting.choices.map(choice => [choice.id, form.elements.namedItem(choice.id).value])),
     };

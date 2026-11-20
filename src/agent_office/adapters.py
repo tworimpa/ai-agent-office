@@ -50,9 +50,11 @@ class CLIAdapter:
         ]
 
     def execute(self, prompt: str, *, workspace: Path, allow_edits: bool,
-                strict_completion: bool = False, inbox=None) -> AgentResult:
+                strict_completion: bool = False, inbox=None, prompt_only: bool = False) -> AgentResult:
         # Pass untrusted task text via stdin: safer for Windows .cmd launchers,
         # long prompts, and special characters than putting it in argv.
+        if prompt_only and (self.engine not in ("gemini", "cline") or allow_edits or inbox is not None):
+            raise ValueError("Prompt-only ACP discussions require a read-only role without an inbox.")
         argv = self.command(prompt, allow_edits=allow_edits)
         executable = resolve_executable(argv[0])
         if executable is None:
@@ -71,6 +73,7 @@ class CLIAdapter:
             if self.engine in ("gemini", "cline"):
                 message, session = asyncio.run(run_acp(
                     self.engine, argv, prompt, workspace, allow_edits, env, self.timeout, strict_completion, inbox,
+                    prompt_only=prompt_only,
                 ))
                 return AgentResult(0, message[:12000], session, len(message) > 12000)
             if inbox is not None:

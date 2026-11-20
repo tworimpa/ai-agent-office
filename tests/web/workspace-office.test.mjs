@@ -341,6 +341,42 @@ test('returning to a workspace prioritizes a waiting meeting and reconciles an u
   assert.equal(second.calls.some(call => call.body), false);
 });
 
+test('changed plan semantics clear old folder and test links unless explicitly retained or replaced', async t => {
+  const task = {owner: 'developer', description: '기존 모듈 수정', folders: ['src/original'], depends_on: []};
+  const criterion = {criterion: '기존 동작', verification: '기존 검사', test_files: ['tests/test_old.py']};
+  const plan = {outcome: '동작 확인', scope: ['src'], rationale: ['호환성'], questions: [],
+    tasks: [{...task, id:'A'}, {...task, id:'B'}], criteria: [criterion, {...criterion, criterion:'추가 동작'}],
+    evidence: {revision: '7'.repeat(40), paths: []}};
+  let meeting = {run_id: runId, status: 'awaiting_review', revision: 1, plan, contributions: [], choices: [], answers: {}, verification: [], revisions: []};
+  let posted;
+  const {get, submit, window} = mount(t, (path, body) => {
+    if (path === base) return room();
+    if (path === runPath) return {run: {...run, meeting}};
+    if (path === runPath + '/meeting/decision') {
+      posted = body.plan;
+      meeting = {...meeting, plan: posted, status: 'approved', decision:{revision:1,id:body.id}};
+      return {meeting};
+    }
+  });
+  await until(() => !get('meeting-decision').hidden && !get('approve-plan').disabled);
+  function fill(name, value) {
+    const control = get('meeting-' + name);
+    control.value = value;
+    control.dispatchEvent(new window.Event('input', {bubbles:true}));
+  }
+  fill('scope', '새 범위');
+  const keep = get('meeting-decision').elements.namedItem('retain-folders-1');
+  assert.equal(keep.parentElement.hidden, false);
+  keep.click();
+  fill('criterion-0', '변경한 완료 기준');
+  fill('verification-1', '새 파일로 검증');
+  fill('tests-1', 'tests/test_new.py');
+  submit('meeting-decision');
+  await until(() => posted);
+  assert.deepEqual(posted.tasks.map(row => row.folders), [[], ['src/original']]);
+  assert.deepEqual(posted.criteria.map(row => row.test_files), [[], ['tests/test_new.py']]);
+});
+
 test('inbox distinguishes user-facing decisions, technical questions and tool approvals', async t => {
   const request = (kind, index) => ({
     id: String(index).repeat(32), kind, run_id: runId, role: 'developer', engine: 'codex',

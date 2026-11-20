@@ -101,6 +101,8 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
 
     def develop(state: TaskState) -> dict:
         count = state.get("attempts", 0) + 1
+        if meeting and count > 1:
+            meeting.note_unverified("재작업이 시작되어 이전 결과를 다시 확인해야 합니다.")
         if save_stage and count > 1:
             for column in ("developer_output", "test_output", "review_output"):
                 save_stage(column, "")
@@ -151,7 +153,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             if test_files := state.get("test_files"):
                 verify_worktree_test_files(Path(state["workspace"]), test_files)
             command = state["test_argv"]
-            with meeting.test_command(command, state.get("test_files")) if meeting else nullcontext(command) as argv:
+            with meeting.test_command(command) if meeting else nullcontext(command) as argv:
                 completed = subprocess.run(
                     argv, cwd=state["workspace"],
                     capture_output=True, text=True, encoding="utf-8",
