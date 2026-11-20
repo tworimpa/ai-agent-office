@@ -102,6 +102,14 @@ def test_readonly_codex_handles_status_during_startup(tmp_path, monkeypatch, sce
     assert not operator.requests and not operator.confirmed
 
 
+@pytest.mark.parametrize("scenario", ["late-ok", "late-failed", "late-id", "late-thread", "late-turn",
+                                      "late-permission", "late-no-exit"])
+def test_late_command_receipts_bind_to_the_existing_turn(tmp_path, monkeypatch, scenario):
+    operator, result = fixture(tmp_path, monkeypatch, scenario)
+    assert (result.returncode == 0) == (scenario == "late-ok")
+    assert not operator.requests
+
+
 @pytest.mark.parametrize("scenario", ["service-shell", "service-shell-legacy", "service-shell-rejected"])
 def test_windows_service_supplies_shell_context_and_preserves_approval(tmp_path, monkeypatch, scenario):
     monkeypatch.setattr("agent_office.codex_inbox.windows_service_session", lambda: True)
@@ -315,11 +323,24 @@ def server():
         item("completed", {**data, "status": "completed" if decision == "accept" else "declined"})
     if scenario == "wrong-thread":
         emit(method="item/completed", params={"threadId": "other", "turnId": turn, "item": {}})
+    if scenario.startswith("late-"):
+        item("started", {"id": "pending", "type": "commandExecution", "status": "inProgress"})
     if scenario == "false-marker":
         agent("prefixAGENT_OFFICE_FINAL", None)
     else:
         agent("작업 완료", "commentary" if scenario == "no-final" else "final_answer")
     end()
+    if scenario.startswith("late-"):
+        completed = {"id": "other" if scenario == "late-id" else "pending", "type": "commandExecution",
+                     "status": "completed", "exitCode": 1 if scenario == "late-failed" else 0}
+        if scenario == "late-no-exit":
+            completed.pop("exitCode")
+        payload = {"threadId": "other" if scenario == "late-thread" else "thread",
+                   "turnId": "other" if scenario == "late-turn" else turn, "item": completed}
+        if scenario == "late-permission":
+            emit(id=70, method="item/commandExecution/requestApproval", params=payload)
+        else:
+            emit(method="item/completed", params=payload)
     if scenario in ("direction", "direction-lost", "direction-plan"):
         turn = start_turn(False, direction=True)
         if scenario == "direction-lost":
