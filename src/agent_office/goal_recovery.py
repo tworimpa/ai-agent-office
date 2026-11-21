@@ -91,7 +91,7 @@ def timing(db, run_id, *, at=None):
         add("worker", row["holder"], row["started_at"], row["ended_at"])
     stage_wait = False
     for lower, upper in db.execute("SELECT started_at,ended_at FROM studio_goal_stage_waits WHERE run_id=?", (run_id,)):
-        add("plan", "", lower, upper)
+        add("dependency", "", lower, upper)
         stage_wait |= upper is None
     revisions = list(db.execute("SELECT created_at,approved_at,approved_by FROM studio_meeting_revisions "
                                 "WHERE run_id=? ORDER BY revision", (run_id,)))
@@ -122,10 +122,12 @@ def timing(db, run_id, *, at=None):
             return "offline"
         if "plan" in groups or ("wait" in groups and groups.get("worker", set()) <= groups["wait"]):
             return "wait"
+        if "dependency" in groups:
+            return "dependency"
         return "active"
 
     edges = sorted({start, end, *(t for _, _, a, b in intervals for t in (a, b))})
-    elapsed = {"active": 0., "wait": 0., "offline": 0., "unknown": 0.}
+    elapsed = {"active": 0., "wait": 0., "offline": 0., "unknown": 0., "dependency": 0.}
     for left, right in zip(edges, edges[1:]):
         elapsed[mode(left)] += (datetime.fromisoformat(right) - datetime.fromisoformat(left)).total_seconds()
     # The final interval may end at the time of this sample itself. Check the current gate separately.
@@ -135,8 +137,10 @@ def timing(db, run_id, *, at=None):
         ON q.id=w.request_id WHERE q.run_id=? AND q.status='pending'""", (run_id,))}
     plan = db.execute("SELECT 1 FROM studio_meetings WHERE run_id=? AND status='awaiting_review'", (run_id,)).fetchone()
     return {"active_seconds": round(elapsed["active"], 3), "user_wait_seconds": round(elapsed["wait"], 3),
+            "dependency_wait_seconds": round(elapsed["dependency"], 3),
+            "waiting_for_dependency": bool(not run["ended_at"] and stage_wait),
             "unobserved_seconds": round(elapsed["unknown"], 3),
-            "waiting_for_user": bool(not run["ended_at"] and (stage_wait or plan or waits and workers <= waits))}
+            "waiting_for_user": bool(not run["ended_at"] and (plan or waits and workers <= waits))}
 
 
 def _environment(root, checks, update):

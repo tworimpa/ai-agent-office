@@ -494,6 +494,16 @@ def _check_inbox_reply(status, data, method, route, payload):
                 or not isinstance(row.get("prompt"), str)):
             raise RemoteUnavailable()
         action = row.get("decision")
+        shared = row.get("shared_decision")
+        if shared is not None:
+            if (not isinstance(shared,dict) or action != "answer" or row.get("source") != "operator" or
+                    row["kind"] != "product_decision" or shared.get("answer") != row.get("answer") or
+                    shared.get("prompt") != row["prompt"] or type(shared.get("revision")) is not int or shared["revision"] < 1):
+                raise RemoteUnavailable()
+            validate_id(shared.get("source_run"))
+            source_request = shared.get("request_id")
+            if not isinstance(source_request,str) or not re.fullmatch(r"(?:[0-9a-f]{32}|plan:[1-9][0-9]*:q[1-9][0-9]*)", source_request):
+                raise RemoteUnavailable()
         if row.get("source") == "delegate":
             if row["kind"] != "question" or action != "answer":
                 raise RemoteUnavailable()

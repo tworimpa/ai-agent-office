@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
+import {execFileSync} from 'node:child_process'
 import {randomUUID} from 'node:crypto'
 import {readdir, readFile, writeFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import {setTimeout as delay} from 'node:timers/promises'
 
 const answer = '자동 변환합니다'
+const regression = 'test_windows_legacy_theme_survives_reopen'
 const id = () => randomUUID().replaceAll('-', '')
 
 async function until(read, description, seconds = 180) {
@@ -128,18 +130,26 @@ export async function verifyBriefing(ctx) {
     return r.request().postDataJSON()
   }
   if (after) await page.locator('#brief-questions [data-request="' + choice.id + '"]').waitFor()
-  const secondBody = await direct('#42 잘못된 이전 설정 검증 오류 재현과 수정', after ? dependency : null)
-  const second = secondBody.id, third = (await direct('#43 릴리스 노트 초안을 작성하고 검토하세요')).id
+  const secondBody = await direct('#42 Windows에서 설정 파일을 다시 열면 테마가 초기화되는 오류 재현과 수정', after ? dependency : null)
+  const second = secondBody.id, third = (await direct('#43 GitHub 상태 댓글에서 검증 완료와 사용자 검토 대기를 구분해 주세요')).id
   const goal43 = await completed(third)
-  assert.ok(goal43.candidates.some(c => c.review_status === 'approved' && c.files.includes('release.md')))
+  assert.ok(goal43.candidates.some(c => c.review_status === 'approved' && c.files.includes('status_comment.py') &&
+    c.files.includes('tests/test_status_comment.py')))
+  const thirdTree = (await json(route(third))).run.workspace
+  const python = (cwd, args) => execFileSync(ctx.python, ['-X', 'utf8', ...args], {cwd,encoding:'utf8',windowsHide:true})
+  const comment = python(thirdTree, ['-c', 'from status_comment import render; print(render(43, "ready"))']).trim()
+  assert.equal(comment, '#43 · 후보 검증 완료 · 사용자 검토 대기')
+  const commentCheck = python(thirdTree, ['-m','pytest','-q','tests/test_status_comment.py'])
+  assert.match(commentCheck,/1 passed/)
+  await writeFile(join(evidence,'status-comment.txt'), comment + '\n' + commentCheck)
   const secondDetail = (await json(route(second))).run
   const originalTest = await until(async () => {
     const g = await readGoal(second)
     return g.checks.find(c => c.attempt === 0 && c.status === 'failed' &&
-      c.failed_ids.some(name => name.includes('test_invalid_legacy_setting')))
+      c.failed_ids.some(name => name.includes(regression)))
   }, '#42 did not prove the regression in the original commit')
-  assert.match(await readFile(join(secondDetail.workspace, 'tests/test_invalid_legacy.py'), 'utf8'), /assert valid/)
-  assert.match(await readFile(join(secondDetail.workspace, 'settings.py'), 'utf8'), /return True/)
+  assert.match(await readFile(join(secondDetail.workspace, 'tests/test_windows_restore.py'), 'utf8'), /assert reopen\(path\) == "dark"/)
+  assert.match(await readFile(join(secondDetail.workspace, 'settings.py'), 'utf8'), /def convert\(data\):\s+return data\r?\n/)
   assert.ok((await inbox(first)).some(q => q.id === choice.id && q.status === 'pending'))
   let waiting, board
   if (after) {
@@ -154,6 +164,39 @@ export async function verifyBriefing(ctx) {
     await section.getByText(choice.prompt, {exact:false}).first().waitFor()
     const review = page.locator('#brief-review [data-action="candidate"][data-run="' + third + '"]')
     await review.waitFor()
+    const extraIds = []
+    for (let i = 0; i < 8; i++) {
+      const run = id()
+      const body = assignment(run, '#' + (61 + i) + ' 이후 설정 확인')
+      body.coordination = {priority:0,areas:[],dependencies:[{
+        source_run:first, stage:'start', condition:'completion', reason:'저장 형식 후보를 완성한 뒤 확인합니다.'
+      }]}
+      await post(room + '/assignments', body)
+      extraIds.push(run)
+    }
+    const active = [first, second, ...extraIds]
+    board = await until(async () => {
+      const b = await json(room + '/briefing')
+      const waits = b.work.filter(w => [second,...extraIds].includes(w.run_id) && w.wait_reasons.length)
+      return active.every(run => b.work.some(w => w.run_id === run && w.editable)) && waits.length === 9 && b
+    }, 'The GitHub source, direct dependent and eight queued goals must be present together')
+    assert.equal(board.work.filter(w => w.editable).length, 10)
+    await page.locator('#brief-work [data-run="' + extraIds.at(-1) + '"]').first().waitFor({state:'attached'})
+    await page.evaluate(() => scrollTo(0, 0))
+    const questionButton = page.locator('#brief-questions [data-request="' + choice.id + '"]')
+    const views = []
+    const proof = section.locator('[data-impact-run="' + second + '"] .brief-proof').filter({hasText:regression})
+    await proof.waitFor()
+    async function assertProofVisible() {
+      const box = await proof.boundingBox()
+      const viewport = page.viewportSize()
+      assert.ok(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width && box.y + box.height <= viewport.height,
+        'The measured Windows reopen failure must fit on the initial viewport')
+      const question = await questionButton.boundingBox()
+      assert.ok(question && question.y >= 0 && question.y + question.height <= viewport.height)
+      views.push({...viewport,scrollY:await page.evaluate(() => scrollY),questionButton:question,failureEvidence:box})
+    }
+    await assertProofVisible()
     for (const button of [review, page.locator('#brief-questions [data-request="' + choice.id + '"]')]) {
       const box = await button.boundingBox()
       assert.ok(box && box.y >= 0 && box.y + box.height <= 768, 'Primary action must fit the first desktop screen')
@@ -161,8 +204,31 @@ export async function verifyBriefing(ctx) {
     await screenshot('01-briefing-desktop')
     await page.setViewportSize({width:390,height:844})
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+    await assertProofVisible()
     await screenshot('02-briefing-narrow')
     await page.setViewportSize({width:1366,height:768})
+    const progress = page.locator('#brief-progress')
+    assert.equal(await progress.evaluate(el => el.open), false)
+    await progress.locator(':scope > summary').click()
+    for (const run of active) await progress.locator('[data-action="work"][data-run="' + run + '"]').waitFor()
+    const live = []
+    for (const file of await readdir(ctx.traceDir)) {
+      const trace = JSON.parse(await readFile(join(ctx.traceDir, file),'utf8'))
+      const run = active.find(id => trace.cwd.endsWith('task-' + id))
+      if (!run || trace.ended) continue
+      try { process.kill(trace.pid, 0); live.push({run,engine:trace.engine,pid:trace.pid}) }
+      catch (err) { if (err.code !== 'ESRCH') throw err }
+    }
+    assert.equal(live.length, 1, 'Only the source has an open coding CLI at this observation')
+    assert.equal(live[0].run, first)
+    await writeFile(join(evidence,'ten-goals.json'), JSON.stringify({
+      observed_at:new Date().toISOString(), briefing_observed_at:board.observed_at, source_issue_number:source.number,
+      run_ids:active, registered:active.length, blocked_on_dependency:9, live_fixture_cli_count:live.length,
+      live_fixture_processes:live, views, work:board.work.filter(w => active.includes(w.run_id))
+    }, null, 2))
+    await screenshot('06-ten-goals')
+    await progress.locator(':scope > summary').click()
+    for (const run of extraIds.toReversed()) await post(route(run) + '/stop', {})
     await action('검토 후보 열기', () => review.click())
     await page.locator('[data-goal-attempt="1"][open]').waitFor()
     assert.equal(new URL(page.url()).searchParams.get('run'), third)
@@ -182,7 +248,16 @@ export async function verifyBriefing(ctx) {
   }
   if (!after) await answerRow(second, waiting, false)
   const goal42 = await completed(second)
-  assert.ok(goal42.candidates.some(c => c.review_status === 'approved' && c.files.includes('tests/test_invalid_legacy.py')))
+  assert.ok(goal42.candidates.some(c => c.review_status === 'approved' && c.files.includes('tests/test_windows_restore.py')))
+  const restoration = JSON.parse(python(secondDetail.workspace, ['-c', [
+    'from tempfile import TemporaryDirectory', 'from pathlib import Path', 'from settings import reopen', 'import json',
+    'with TemporaryDirectory() as tmp:', '    path = Path(tmp) / "settings.json"',
+    '    path.write_bytes(b\'\\xef\\xbb\\xbf{\\r\\n  "theme": "dark"\\r\\n}\\r\\n\')',
+    '    initial = reopen(path)', '    saved = json.loads(path.read_text(encoding="utf8"))',
+    '    print(json.dumps({"restored": initial, "persisted": saved, "reopened": reopen(path)}))'
+  ].join('\n')]))
+  assert.deepEqual(restoration,{restored:'dark',persisted:{appearance:{theme:'dark'}},reopened:'dark'})
+  await writeFile(join(evidence,'windows-settings.json'), JSON.stringify(restoration,null,2))
   assert.ok((await inbox(first)).some(q => q.id === permission.id && q.status === 'pending'))
   if (after) {
     const b = await json(room + '/briefing')
@@ -206,11 +281,13 @@ export async function verifyBriefing(ctx) {
   const goals = [goal41, goal42, goal43]
   assert.ok(goals.every(g => g.candidates.length === 1 && g.candidates[0].review_status === 'approved'))
   assert.equal(goal42.checks.filter(c => c.attempt === 0 && c.status === 'failed' &&
-    c.failed_ids.some(name => name.includes('test_invalid_legacy_setting'))).length, 1)
+    c.failed_ids.some(name => name.includes(regression))).length, 1)
   const metrics = {actions:journal, product_answers:journal.filter(a => a.label === '제품 선택 전달').length,
     views_opened:journal.filter(a => !['제품 선택 전달', '파일 변경 1회 승인'].includes(a.label)).length,
     independent_goal_user_wait_seconds:goal43.waiting_seconds,
-    dependent_goal_user_or_stage_wait_seconds:goal42.waiting_seconds,
+    independent_goal_dependency_wait_seconds:goal43.dependency_wait_seconds ?? 0,
+    dependent_goal_user_wait_seconds:goal42.waiting_seconds,
+    dependent_goal_dependency_wait_seconds:goal42.dependency_wait_seconds ?? null,
     regression_failure_at:new Date(Date.parse(originalTest.started_at) + originalTest.elapsed_seconds * 1000).toISOString(),
     independent_candidate_reviewed_at:goal43.candidates[0].review_at,
     primary_question_at:choice.created_at, source_answer_at:(await inbox(first)).find(q => q.id === choice.id).delivered_at,
@@ -231,7 +308,7 @@ export async function verifyBriefing(ctx) {
     assert.notEqual((await studio.running()).bootId, original.bootId)
     assert.equal((await studio.running()).journalId, original.journalId)
     const restored = await json(room)
-    assert.equal(restored.runs.length, 3)
+    assert.equal(restored.runs.length, 11)
     for (const goal of goals) {
       const reopened = await readGoal(goal.run_id)
       assert.deepEqual(reopened.candidates, goal.candidates)
@@ -242,48 +319,6 @@ export async function verifyBriefing(ctx) {
     assert.equal((await inbox(first)).length, 2)
     assert.equal((await json(room + '/github')).issues.find(i => i.number === 41).run_id, first)
     await screenshot('05-restored')
-    await until(async () => {
-      const {engines} = await json('/api/engines')
-      return engines.some(e => e.engine === 'codex' && e.version === '0.169.1') &&
-        engines.some(e => e.engine === 'antigravity' && e.version === '1.0.0-fixture')
-    }, 'Both fixture engines must finish discovery after restarting Studio')
-    const ten = [id()]
-    await post(room + '/assignments', assignment(ten[0], '#51 추가 설정 항목 결정'))
-    const outstanding = await pending(ten[0], 'product_decision')
-    for (let i = 1; i < 10; i++) {
-      const run = id()
-      const body = assignment(run, '#' + (51 + i) + ' 설정 항목 확인')
-      body.coordination = {priority:0,areas:[],dependencies:[{
-        source_run:ten[0],stage:'start',condition:'product_decision',request_id:outstanding.id,
-        reason:'항목을 결정한 뒤 확인합니다.'
-      }]}
-      await post(room + '/assignments', body)
-      ten.push(run)
-    }
-    const brief = await until(async () => {
-      const b = await json(room + '/briefing')
-      return ten.every(run => b.work.some(w => w.run_id === run)) && b
-    }, 'The ten concurrent goals were not present in the workspace briefing')
-    const progress = page.locator('#brief-progress')
-    assert.equal(await progress.evaluate(el => el.open), false)
-    await progress.locator(':scope > summary').click()
-    const more = progress.locator('details').filter({has:page.locator('summary', {hasText:'나머지'})}).first()
-    if (await more.count()) await more.locator(':scope > summary').click()
-    for (const run of ten) await progress.locator('[data-action="work"][data-run="' + run + '"]').waitFor()
-    const fixtureProcesses = []
-    for (const file of await readdir(ctx.traceDir)) {
-      const trace = JSON.parse(await readFile(join(ctx.traceDir, file),'utf8'))
-      if (!ten.some(run => trace.cwd.endsWith('task-' + run)) || trace.ended) continue
-      try { process.kill(trace.pid, 0); fixtureProcesses.push(trace) }
-      catch (err) { if (err.code !== 'ESRCH') throw err }
-    }
-    assert.equal(fixtureProcesses.length, 1, 'Only the source goal has an open coding CLI at this observation')
-    await screenshot('06-ten-goals')
-    await writeFile(join(evidence,'ten-goals.json'), JSON.stringify({
-      observed_at:brief.observed_at, run_ids:ten, registered:ten.length, live_fixture_cli_count:fixtureProcesses.length,
-      live_fixture_pids:fixtureProcesses.map(p => p.pid), work:brief.work.filter(w => ten.includes(w.run_id))
-    }, null, 2))
-    for (const run of ten.toReversed()) await post(route(run) + '/stop', {})
   }
   assert.deepEqual(provider.errors, [])
   record('three_runs', {first,second,third,product_answers:metrics.product_answers})

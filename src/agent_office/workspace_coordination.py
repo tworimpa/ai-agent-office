@@ -91,14 +91,13 @@ def markdown_settings(text):
     fence = None
     result = {}
     for line in text.splitlines():
-        if re.match(r"^ {0,3}(`{3,}|~{3,})",line):
-            marker = line.strip()[0]
-            if fence is None:
-                fence = marker
-            elif fence == marker:
+        if fence:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(len(fence)) + r",}\s*", line):
                 fence = None
             continue
-        if fence:
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if opening:
+            fence = opening[1]
             continue
         if line.startswith("#"):
             section = line.strip().casefold() in ("## 작업 조정","## office coordination")
@@ -145,6 +144,8 @@ def bind_references(db, workspace, spec, origin=None):
         edge = dict(entry)
         ref = edge.get("source_run")
         if isinstance(ref,str) and re.fullmatch(r"#[1-9][0-9]{0,15}",ref):
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='studio_external_origins'").fetchone():
+                raise ValueError("선행 Issue를 작업공간에 연결하세요.")
             query = """SELECT o.run_id,o.goal_id FROM studio_external_origins o JOIN studio_runs s ON
                 s.id=o.run_id WHERE s.workspace_id=? AND o.number=?"""
             params = [workspace,int(ref[1:])]
@@ -334,7 +335,8 @@ def stage_status(db, run_id, stage, attempt, *, _visiting=frozenset(), _completi
         return result
     spec = config(db, run_id)
     result["revision"] = spec["revision"]
-    if not spec["revision"]:
+    if not spec["revision"] and not db.execute("""SELECT 1 FROM workspace_decision_revisions v
+            JOIN studio_requests q ON q.id=v.request_id WHERE q.run_id=? LIMIT 1""", (run_id,)).fetchone():
         return result
     # The source worker is also accountable for a changed decision it received.
     own = db.execute("""SELECT id FROM studio_requests WHERE run_id=? AND decision_type='product_decision'
@@ -394,10 +396,12 @@ def stage_status(db, run_id, stage, attempt, *, _visiting=frozenset(), _completi
                 result["reasons"].append("적용한 제품 결정이 바뀌었습니다. 새 결정으로 구현과 검증이 필요합니다.")
                 break
         if result["ready"]:
-            for row in db.execute("""SELECT q.id,q.answer FROM studio_requests q WHERE q.run_id=? AND q.attempt=?
+            # Legacy attempts have no admission receipt proving they used the corrected answer.
+            for row in db.execute("""SELECT q.id,q.answer FROM studio_requests q WHERE q.run_id=?
+                AND (q.attempt=? OR ?=0)
                 AND q.decision_type='product_decision' AND q.status='delivered' AND NOT EXISTS
                 (SELECT 1 FROM workspace_decision_uses WHERE target_request=q.id) AND EXISTS
-                (SELECT 1 FROM workspace_decision_revisions v WHERE v.request_id=q.id)""", (run_id,attempt)):
+                (SELECT 1 FROM workspace_decision_revisions v WHERE v.request_id=q.id)""", (run_id,attempt,spec["revision"])):
                 if current[(run_id,row["id"])]["answer"] != row["answer"]:
                     result.update(ready=False, stale=True, rework_required=True)
                     result["reasons"].append("담당자가 전달받은 제품 결정이 수정됐습니다.")
@@ -417,17 +421,21 @@ def reuse_product_answer(db, run_id, attempt, target, prompt):
     """Answer only an explicitly shared, still-current product question within this attempt."""
     if not _exists(db):
         return False
-    basis = db.execute("""SELECT decisions FROM workspace_stage_evidence WHERE run_id=? AND attempt=?
+    basis = db.execute("""SELECT decisions, stage FROM workspace_stage_evidence WHERE run_id=? AND attempt=?
         AND stage IN ('start','implement','review') ORDER BY rowid DESC LIMIT 1""", (run_id,attempt)).fetchone()
     if not basis:
+        return False
+    gate = stage_status(db,run_id,basis["stage"],attempt)
+    if not (gate["ready"] or gate["rework_required"]):
         return False
     matches = [d for d in json.loads(basis[0]) if d["prompt"] == prompt]
     if len(matches) != 1:
         return False
-    decision = matches[0]
-    source = _run(db,decision["source_run"])
+    recorded = matches[0]
+    source = _run(db,recorded["source_run"])
+    decision = resolve_decision(db,recorded)
     if (source["state"] in {"CANCELED","RECOVERY_REQUIRED","FAILED"} or source["stop_requested"] or
-            resolve_decision(db,decision) != decision):
+            not decision or decision["prompt"] != prompt):
         return False
     claimed = db.execute("UPDATE studio_requests SET status='decided',decision='answer',answer=?,decided_at=? "
                          "WHERE id=? AND run_id=? AND attempt=? AND prompt=? AND status='pending' "
@@ -449,9 +457,10 @@ def revise(db, workspace_id, request_id, payload):
         raise ValueError("결정 버전을 확인하세요.")
     answer, reason = _text(payload["answer"],8192), _text(payload["reason"],500)
     row = db.execute("""SELECT q.* FROM studio_requests q JOIN studio_runs s ON s.id=q.run_id
-        WHERE q.id=? AND s.workspace_id=? AND q.decision_type='product_decision' AND q.kind='question'
+        JOIN runs r ON r.run_id=s.id WHERE q.id=? AND s.workspace_id=? AND r.host_name=?
+        AND q.decision_type='product_decision' AND q.kind='question'
         AND q.decision='answer' AND q.status IN ('decided','delivered') AND NOT EXISTS
-        (SELECT 1 FROM workspace_decision_uses WHERE target_request=q.id)""", (request_id, workspace_id)).fetchone()
+        (SELECT 1 FROM workspace_decision_uses WHERE target_request=q.id)""", (request_id, workspace_id, platform.node())).fetchone()
     if not row:
         raise OfficeError("REQUEST_CLOSED")
     old = db.execute("SELECT * FROM workspace_decision_revisions WHERE op_id=?", (op,)).fetchone()

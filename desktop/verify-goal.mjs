@@ -48,9 +48,7 @@ function git(...args) {
 git('init', '-q', '-b', 'main')
 if (briefingMode) {
   await writeFile(join(repo, 'briefing-fixture.txt'), 'Disposable workspace briefing fixture\n')
-  await writeFile(join(repo, 'settings.py'), 'def valid(data):\n    return True\n\ndef convert(data):\n    return data\n')
-  await writeFile(join(repo, 'tests/test_settings.py'), 'from settings import valid\n\ndef test_valid_setting():\n    assert valid({"value": "dark"})\n')
-  await writeFile(join(repo, 'tests/test_defaults.py'), 'from settings import convert\n\ndef test_current_setting():\n    assert convert({"value": "dark"}) == {"value": "dark"}\n')
+  execFileSync(python, [fileURLToPath(new URL('fixtures/briefing_worker.py', import.meta.url)), repo])
 } else if (githubMode) await writeFile(join(repo, 'github-journey.txt'), 'GitHub Issue integration fixture\n')
 git('add', '.')
 git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'settings fixture')
@@ -352,7 +350,7 @@ async function verifyJourney() {
     if (briefingMode) {
       const {verifyBriefing} = await import('./verify-briefing.mjs')
       const currentPage = () => page
-      run = await verifyBriefing({currentPage, json, mode, evidence, provider, traceDir, record, screenshot, studio,
+      run = await verifyBriefing({currentPage, json, mode, evidence, provider, python, traceDir, record, screenshot, studio,
         close, launch: async () => { await launch(); origin = (await studio.running()).origin }})
       return
     }

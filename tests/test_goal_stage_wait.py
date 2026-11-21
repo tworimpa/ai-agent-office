@@ -34,7 +34,8 @@ def test_drained_wait_survives_studio_restart_and_never_replays_uncertain_work(g
     finish_drained(store, run_id, worker_succeeded=True, preview_finished=False)
     assert store.get_run(run_id).ended_at is None
     assert goal_recovery.detail(store, run_id)["disposition"] == "waiting_dependency"
-    assert goal_recovery.timing(db, run_id)["waiting_for_user"]
+    clock = goal_recovery.timing(db, run_id)
+    assert clock["waiting_for_dependency"] and not clock["waiting_for_user"]
     runner.close()
     calls = []
     monkeypatch.setattr(LocalRunner, "_start_monitor", lambda _: None)
@@ -180,14 +181,14 @@ def test_real_worker_resumes_after_measured_reproducer_without_rerunning_baselin
     project = Path(store.get_task(store.get_run(source).task_id).project)
     (project / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n")
     (project / "briefing-fixture.txt").write_text("fixture")
-    (project / "settings.py").write_text("def valid(data):\n    return True\n")
     (project / "tests").mkdir()
-    (project / "tests/test_valid.py").write_text("from settings import valid\ndef test_ok(): assert valid({})\n")
+    fixtures = Path(__file__).resolve().parents[1] / "desktop/fixtures"
+    subprocess.run([sys.executable, str(fixtures / "briefing_worker.py"), str(project)], check=True)
     subprocess.run(["git", "add", "."], cwd=project, check=True)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=a@example.invalid", "commit", "-qm",
                     "reproduction fixture"], cwd=project, check=True)
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
-    fake = Path(__file__).resolve().parents[1] / "desktop/fixtures/goal_worker.py"
+    fake = fixtures / "goal_worker.py"
     bin_dir = store.path.parent / "fake-cli"
     bin_dir.mkdir()
     for alias in ("codex", "agy"):
@@ -206,7 +207,7 @@ def test_real_worker_resumes_after_measured_reproducer_without_rerunning_baselin
             "reason": "Missing setting conversion decision"}
     runner.start(target, "room", project, ["."], "#42 reproduce then implement", True, use_inbox=True,
         room_revision=base, coordination={"dependencies": [spec]}, room_assignment={"reproduce_required": True,
-            "goal_policy": default_policy(["tests/test_valid.py"]), "goal_criteria": ["reject invalid settings"]})
+            "goal_policy": default_policy(["tests/test_settings.py"]), "goal_criteria": ["restore the saved Windows theme"]})
 
     def await_state(check):
         deadline = time.monotonic() + 90

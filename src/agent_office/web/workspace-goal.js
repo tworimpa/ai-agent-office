@@ -225,7 +225,8 @@ export function mountGoals({win, get, make, api, refresh, onPolicySaved, context
       ' · 실제 작업 ' +
       elapsed(goal.active_seconds) +
       ' · 사용자 대기 ' +
-      elapsed(goal.waiting_seconds);
+      elapsed(goal.waiting_seconds) +
+      (goal.dependency_wait_seconds ? ' · 선행 작업 대기 ' + elapsed(goal.dependency_wait_seconds) : '');
     const key = JSON.stringify([
       goal.run_id,
       goal.external,

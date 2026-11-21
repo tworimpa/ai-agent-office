@@ -240,7 +240,13 @@ export function mountBriefing({get, make, api, context, refresh, openAction, tas
     const item = card(row.prompt, [labels[row.kind], owner, taskTitle(row.task)].join(' · '));
     if (row.kind !== 'permission' && row.impacts?.length) {
       const list = make('ul', '', 'brief-impact');
-      for (const impact of row.impacts) list.append(make('li', taskTitle(impact.task) + ' · ' + stageName(impact.stage)));
+      for (const impact of row.impacts) {
+        const target = make('li', taskTitle(impact.task) + ' · ' + stageName(impact.stage));
+        target.dataset.impactRun = impact.run_id;
+        if (impact.proof) target.append(make('span', impact.proof, 'brief-proof'));
+        else if (impact.progress) target.append(make('span', impact.progress, 'brief-impact-progress'));
+        list.append(target);
+      }
       item.append(make('small', '영향받는 목표와 단계'), list);
     }
     item.append(action(row, kind, {answer: '질문에 답하기', plan: '계획 확인하기', permission: '권한 범위 확인'}[kind]));

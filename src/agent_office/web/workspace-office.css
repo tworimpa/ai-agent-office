@@ -74,6 +74,8 @@ h1 { font: 700 clamp(1.7rem, 4vw, 3rem)/1.25 var(--serif); overflow-wrap: anywhe
 .brief-card strong { font-size: .94rem; line-height: 1.45; white-space: pre-line; }
 .brief-card p, .brief-empty, .brief-impact, .brief-card details { color: var(--soft); font-size: .81rem; line-height: 1.5; }
 .brief-impact { margin: 0; padding-inline-start: 1.15rem; }
+.brief-proof, .brief-impact-progress { display: block; overflow-wrap: anywhere; }
+.brief-proof { color: #e8d49e; }
 .brief-card .brief-action { margin-top: .2rem; }
 .brief-action { padding: 6px 10px; min-height: 36px; text-align: start; background: #35372c; color: var(--paper); border: 1px solid #847356; border-radius: 3px; font: 650 .82rem/1.4 var(--sans); }
 .brief-action:hover:enabled { background: #474332; }

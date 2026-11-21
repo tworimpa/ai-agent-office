@@ -151,8 +151,13 @@ def report(path, run_id):
         manual = list(dict.fromkeys([criterion for criterion in criteria if criterion not in verified] +
                                     [check["criterion"] for check in meeting_checks if check["status"] != "passed"]))
         next_action = recovery.get("reason")
+        adoption_current = any(c["attempt"] == row["adopted_attempt"] and c["eligible"] and
+                               c["digest"] == row["adopted_digest"] for c in candidates)
         if row["adopted_attempt"] is not None:
-            next_action = "채택한 후보의 남은 수동 확인 항목을 검토하세요." if manual else "채택 이력을 확인하세요."
+            if not adoption_current:
+                next_action = "과거에 채택한 후보의 선행 조건이 바뀌었습니다. 새 근거로 다시 검증하세요."
+            else:
+                next_action = "채택한 후보의 남은 수동 확인 항목을 검토하세요." if manual else "채택 이력을 확인하세요."
         elif run.state not in ACTIVE and run.state != "RECOVERY_REQUIRED":
             next_action = verification.get("stop_reason") or "종료된 실행의 결과와 검증 범위를 확인하세요."
         external = None
@@ -166,7 +171,8 @@ def report(path, run_id):
                     state=run.state, outcome=run.outcome, created_at=row["created_at"], last_progress_at=last, observed_at=observed,
                     progress_uncertain=run.state in ACTIVE and age > 120, events=events, recovery=recovery,
                     active_seconds=recovery.get("active_seconds"), waiting_seconds=recovery.get("user_wait_seconds"),
-                    next_action=next_action, adopted_attempt=row["adopted_attempt"],
+                    dependency_wait_seconds=recovery.get("dependency_wait_seconds", 0),
+                    next_action=next_action, adopted_attempt=row["adopted_attempt"], adoption_current=adoption_current,
                     adopted_digest=row["adopted_digest"], adopted_at=row["adopted_at"],
                     merge_status="not_recorded", deployment_status="not_recorded")
 

@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 
 from agent_office import workspace_coordination as c
-from agent_office.store import TaskStore, now
+from agent_office.store import TaskStore, encode, now
 from agent_office.studio_ssh import _check_reply, is_peer_route
 from test_studio_http import project, request, studio
 from test_workspace_rooms import engine_snapshot
@@ -76,6 +76,9 @@ def test_decision_gates_just_the_selected_stage_and_revisions_invalidate_old_evi
             assert request(server,url,dict(revision,id=uuid4().hex))[0] == 409
             assert request(server,base+"/decision-revisions/"+duplicate,revision)[0] == 409
             assert c.stage_status(db,second,"review",1)["rework_required"]
+            followup = add_request(db, second)
+            assert c.reuse_product_answer(db, second, 1, followup, "이전 설정을 변환할까요?")
+            assert db.execute("SELECT answer FROM studio_requests WHERE id=?", (followup,)).fetchone()[0]=="그대로 유지"
             assert c.try_stage(db,second,"implement",2)["decisions"][0]["revision"]==2
             assert c.try_stage(db,second,"verify",2)["ready"]
             board=request(server,base+"/briefing")[1]
@@ -83,6 +86,31 @@ def test_decision_gates_just_the_selected_stage_and_revisions_invalidate_old_evi
             assert duplicate not in [r["request_id"] for r in board["decision_options"]]
             _check_reply(200,board,[server.journal_id.encode()],server.journal_id,"GET",base[4:]+"/briefing",None)
             assert not is_peer_route("POST",base[4:]+"/briefing")
+
+
+def test_corrected_legacy_decision_invalidates_transitive_completion(tmp_path, monkeypatch):
+    with office(tmp_path, monkeypatch) as (server, ws, base, assign):
+        source = assign("original settings decision")
+        def after(run_id):
+            return dict(dependencies=[dict(source_run=run_id, stage="start",
+                                           condition="completion", reason="verified result")])
+        middle = assign("dependent settings verifier", after(source))
+        downstream = assign("publish verification summary", after(middle))
+        with TaskStore(server.db_path, existing=True) as store:
+            db = store.connection
+            question = add_request(db, source)
+            db.execute("UPDATE studio_requests SET status='delivered',decision='answer',answer='convert' WHERE id=?",
+                       (question,))
+            db.execute("DELETE FROM workspace_coordination_history WHERE run_id=?", (source,))
+            db.execute("DELETE FROM workspace_coordination WHERE run_id=?", (source,))
+            for run_id in (source, middle):
+                db.execute("UPDATE runs SET state='READY_FOR_HUMAN_REVIEW',attempts=2 WHERE run_id=?", (run_id,))
+            assert c.stage_status(db, downstream, "start", 1)["ready"]
+            revision = dict(id=uuid4().hex, revision=1, answer="preserve", reason="preserve old settings")
+            assert request(server, base+"/decision-revisions/"+question, revision)[0] == 200
+            assert c.stage_status(db, source, "review", 2)["rework_required"]
+            assert not c.stage_status(db, middle, "review", 2)["ready"]
+            assert not c.stage_status(db, downstream, "start", 1)["ready"]
 
 
 def test_completion_cycle_is_atomic_and_shared_paths_never_gate_an_independent_goal(tmp_path,monkeypatch):
@@ -117,6 +145,35 @@ def test_structured_issue_metadata_resolves_same_workspace_provider_without_gues
             assert result["areas"] == ["schema"] and result["priority"]==4
             assert result["dependencies"][0]["source_run"]==first
         assert c.markdown_settings("\n```text\n"+md+"\n```") is None
+        assert c.markdown_settings("````md\n```\n"+md+"\n```\n````") is None
+
+
+def test_same_numbered_plan_questions_keep_both_origins_and_reused_answers_keep_version(tmp_path,monkeypatch):
+    with office(tmp_path,monkeypatch) as (server,_,base,assign):
+        sources = [assign("설정 #41"), assign("내보내기 #44")]
+        with TaskStore(server.db_path,existing=True) as store:
+            db = store.connection
+            for rid, prompt in zip(sources,["변환할까요?","내보낼까요?"]):
+                plan = {"questions":[{"question":prompt,"options":["예","아니요"]}]}
+                db.execute("INSERT INTO studio_meetings VALUES(?,1,'awaiting_review',1,NULL)",(rid,))
+                db.execute("INSERT INTO studio_meeting_revisions VALUES(?,1,?,'coordinator','초안',NULL,'{}',NULL,?,NULL)",
+                           (rid,encode(plan),now()))
+            consumer=assign("복원",dict(dependencies=[
+                dict(source_run=sources[0],stage="implement",condition="product_decision",question="변환할까요?",reason="저장"),
+                dict(source_run=sources[1],stage="implement",condition="product_decision",request_id="plan:1:q1",reason="출력")]))
+            for row in request(server,base+"/briefing")[1]["decisions"]:
+                assert consumer in [link["run_id"] for link in row["impacts"]]
+            for rid in sources:
+                db.execute("UPDATE studio_meeting_revisions SET answers=?,approved_by='operator',approved_at=? WHERE run_id=?",
+                           (encode({"q1":"예"}),now(),rid))
+                db.execute("UPDATE studio_meetings SET status='approved' WHERE run_id=?",(rid,))
+            assert len(c.try_stage(db,consumer,"implement",1)["decisions"])==2
+            # An unrelated plan edit retains the original choice.
+            source=sources[0]
+            db.execute("""INSERT INTO studio_meeting_revisions SELECT run_id,2,plan,'direction',reason,NULL,
+                       answers,'coordinator',created_at,approved_at FROM studio_meeting_revisions WHERE run_id=?""",(source,))
+            db.execute("UPDATE studio_meetings SET revision=2 WHERE run_id=?",(source,))
+            assert c.stage_status(db,consumer,"review",1)["ready"]
 
 
 def test_completion_graph_reuses_shared_predecessor_checks(tmp_path,monkeypatch):

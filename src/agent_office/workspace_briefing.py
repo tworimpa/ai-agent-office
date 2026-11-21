@@ -152,7 +152,14 @@ def read(db, workspace):
         progress = {"QUEUED":"작업 시작 대기","RUNNING":"담당자 작업 중","TESTING":"검증 중","REVIEWING":"독립 검토 중",
                     "READY_FOR_HUMAN_REVIEW":"후보 검토 대기","RECOVERY_REQUIRED":"복구 확인 필요","FAILED":"실패",
                     "CANCELED":"취소됨","PLAN_ONLY":"조회 완료","WAITING_USER":"사용자 확인 대기"}.get(state,state)
+        proof = ""
         if _has(db, "studio_goal_checks"):
+            reproduction = db.execute("""SELECT json_extract(receipt,'$.failed_ids[0]') FROM studio_goal_checks
+                WHERE run_id=? AND attempt=0 AND json_extract(receipt,'$.status')='failed'
+                AND json_extract(receipt,'$.failed_ids[0]') IS NOT NULL
+                ORDER BY position DESC LIMIT 1""",(rid,)).fetchone()
+            if reproduction:
+                proof = "원본 실패 재현 · " + _short(reproduction[0].rsplit("::",1)[-1], 85)
             check = db.execute("""SELECT receipt FROM studio_goal_checks WHERE run_id=? ORDER BY attempt DESC,
                 json_extract(receipt,'$.started_at') DESC LIMIT 1""",(rid,)).fetchone()
             if check:
@@ -174,7 +181,7 @@ def read(db, workspace):
         elif admitted:
             last = max(last,admitted["entered_at"])
         work[rid] = dict(run_id=rid, task=_short(row["task"]), role=role, owner=_owner(role,assignment), state=state,
-                         progress=progress, last_progress_at=last, stage=stage, wait_reasons=reasons,
+                         progress=progress, proof=proof, last_progress_at=last, stage=stage, wait_reasons=reasons,
                          decisions=evidence, coordination_revision=spec["revision"], priority=spec["priority"],
                          areas=spec["areas"], dependencies=spec["dependencies"], active_stage=bool(admitted and not wait and not row["ended_at"]),
                          allow_edits=bool(row["allow_edits"]),
@@ -201,7 +208,8 @@ def read(db, workspace):
                                     kind=="plan" and coordination.PLAN_KEY.fullmatch(selected) else None)
                     if (selected == request or pending_plan and not pending_plan["answer"] or
                             not selected and kind=="product" and edge.get("question")==prompt):
-                        link = dict(run_id=rid,task=item["task"],stage=edge["stage"])
+                        link = dict(run_id=rid,task=item["task"],stage=edge["stage"],
+                                    progress=item["progress"],proof=item["proof"])
                         if link not in found:
                             found.append(link)
         return found

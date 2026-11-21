@@ -16,7 +16,9 @@ const snapshot = {
   workspace_id: workspace.id, observed_at: '2026-11-21T03:32:00Z', work, overlaps: [],
   decisions: [product, permission].map(q => ({run_id: q.run_id, request_id: q.id, role: q.role, task: run.task,
     prompt: q.prompt, kind: q === product ? 'product' : 'permission',
-    impacts: q === product ? [{run_id: run.id, task: run.task, stage: 'start'}, {run_id: dependent.id, task: dependent.task, stage: 'implement'}] : []})),
+    impacts: q === product ? [{run_id: run.id, task: run.task, stage: 'start', progress: '작업 시작 대기'},
+      {run_id: dependent.id, task: dependent.task, stage: 'implement', progress: '기준 커밋에서 실패 재현',
+        proof: '원본 커밋에서 tests/test_windows_restore.py::test_windows_legacy_theme_survives_reopen 실패 확인'}] : []})),
   candidates: [{run_id: independent.id, task: independent.task, summary: '노트 작성', attempt: 1, digest,
     checks: [{stage: 'full', status: 'passed'}], manual_count: 1}],
 };
@@ -44,6 +46,13 @@ test('room briefing shows one product question and impacted stages, keeps permis
   assert.equal(get('brief-progress').open, false);
   assert.equal(get('brief-questions').querySelectorAll('article').length, 1);
   assert.match(get('brief-questions').textContent, /저장 형식은.*이전 설정 검증 · 구현/s);
+  const impacts = get('brief-questions').querySelectorAll('[data-impact-run]');
+  assert.equal(impacts[0].querySelector('.brief-proof'), null);
+  assert.equal(impacts[0].querySelector('.brief-impact-progress').textContent, '작업 시작 대기');
+  assert.equal(impacts[1].dataset.impactRun, dependent.id);
+  const proof = impacts[1].querySelector('.brief-proof');
+  assert.match(proof.textContent, /원본 커밋.*test_windows_legacy_theme_survives_reopen 실패 확인/);
+  assert.equal(proof.closest('details:not([open]),[hidden]'), null);
   assert.doesNotMatch(get('brief-questions').textContent, /파일 수정/);
   assert.match(get('brief-review').textContent, /전체 회귀 통과.*수동 확인 1건/);
   go('brief-review','candidate').click();
