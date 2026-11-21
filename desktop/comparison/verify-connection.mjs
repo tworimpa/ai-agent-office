@@ -22,7 +22,9 @@ const python = process.env.OFFICE_COMPARISON_PYTHON || join(dirname(electron),'r
 const serve = [
   'from agent_office.studio_server import StudioServer',
   'from pathlib import Path',
-  'import json, sys, threading',
+  'import json, os, sys, threading',
+  // Connection checks do not run agents. Avoid probing the operator's personal CLI installations.
+  'os.environ["PATH"] = os.defpath',
   'with StudioServer(Path(sys.argv[1]), int(sys.argv[2])) as server:',
   '    thread = threading.Thread(target=server.serve_forever)',
   '    thread.start()',

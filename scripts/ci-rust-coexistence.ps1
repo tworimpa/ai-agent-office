@@ -44,11 +44,24 @@ $roots = @(Get-ItemProperty 'HKCU:/Software/Microsoft/Windows/CurrentVersion/Uni
 if ($roots.Count -ne 1) { throw 'Missing independent Rust app registration' }
 $uninstaller = $roots[0].UninstallString.Trim('"')
 $rust = Join-Path (Split-Path -LiteralPath $uninstaller) 'ai-agent-office-rust.exe'
-$programs = [Environment]::GetFolderPath('Programs')
-$rustLinks = @(Get-ChildItem -LiteralPath $programs -Recurse -File -Filter 'AI Agent Office (Rust 비교판).lnk')
-if ($rustLinks.Count -ne 1 -or (New-Object -ComObject WScript.Shell).CreateShortcut($rustLinks[0].FullName).TargetPath -ne $rust) {
-    throw 'Rust shortcut is missing or targets the wrong binary'
+$menus = @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('CommonPrograms')) | Select-Object -Unique
+$rustLinks = @(Get-ChildItem -LiteralPath $menus -Recurse -File -Filter 'AI Agent Office (Rust 비교판).lnk')
+if ($rustLinks.Count -ne 1) {
+    throw "Expected one Rust shortcut in $($menus -join ', '), found $($rustLinks.Count)"
 }
+# Validate the actual Windows Shell launch. A COM shortcut property can contain
+# an 8.3 alias or a localized path, even when Explorer opens the correct app.
+$probeProfile = Join-Path $env:RUNNER_TEMP ('rust-shortcut-' + [guid]::NewGuid().ToString('n'))
+Start-Process -FilePath $rustLinks[0].FullName -ArgumentList "--profile-dir `"$probeProfile`"" -WindowStyle Normal
+$deadline = (Get-Date).AddSeconds(25)
+do {
+    Start-Sleep -Milliseconds 250
+    $launched = Get-Process -Name 'ai-agent-office-rust' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $rust -and $_.MainWindowHandle }
+} until ($launched -or (Get-Date) -ge $deadline)
+if (!$launched -or !(Test-Path -LiteralPath (Join-Path $probeProfile 'profile.lock'))) {
+    throw "Shortcut $($rustLinks[0].FullName) did not open $rust with its verification profile"
+}
+if (!($launched.CloseMainWindow()) -or !$launched.WaitForExit(20000)) { throw 'Test shortcut window did not close' }
 if (!(Test-Path -LiteralPath $rust) -or !(Test-Path -LiteralPath $electron) -or
     (Split-Path -LiteralPath $rust) -eq (Split-Path -LiteralPath $electron)) { throw 'Installer paths overlap or a binary is missing' }
 node desktop/comparison/verify-connection.mjs connect $electron $rust $identity
