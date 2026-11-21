@@ -10,6 +10,7 @@ from typing import BinaryIO
 
 from .models import validate_id
 from .overnight_goals import criteria_for, goal_route
+from . import github_studio
 from .office_wire import check_office_reply, office_offset
 from .improvement_wire import check_improvement_reply, improvement_route
 from .version_wire import check_version_reply, version_route
@@ -69,7 +70,7 @@ def is_peer_route(method: str, route: str) -> bool:
     if route in ("/engines", "/inbox", "/return-report"):
         return method == "GET"
     if route.startswith("/rooms/"):
-        return room_route(method, route) is not None
+        return github_studio.route(method, route) is not None or room_route(method, route) is not None
     if re.fullmatch(r"/goal-checks/[a-f0-9]{32}", route):
         return True
     if goal_route(method, route) is not None:
@@ -184,8 +185,13 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
             raise RemoteUnavailable()
         if action is None:
             result = data.get("goal")
+            external = result.get("external") if isinstance(result, dict) else None
+            if external is not None and (not isinstance(external, dict) or external.get("run_id") != target or
+                                         not validate_id(external.get("goal_id"))):
+                raise RemoteUnavailable()
             if "goal" not in data or result is not None and (
-                    not isinstance(result, dict) or result.get("id") != target or result.get("run_id") != target
+                    not isinstance(result, dict) or result.get("id") != (external["goal_id"] if external else target)
+                    or result.get("run_id") != target
                     or not isinstance(result.get("events"), list) or not isinstance(result.get("candidates"), list)
                     or not isinstance(result.get("checks"), list) or not isinstance(result.get("request"), str)):
                 raise RemoteUnavailable()
@@ -200,6 +206,9 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
             raise RemoteUnavailable()
         elif action == "recover" and not isinstance(data.get("recovery"), dict):
             raise RemoteUnavailable()
+        return
+    if github_studio.route(method, route):
+        github_studio.check_reply(status, data, method, route)
         return
     if route.startswith("/rooms/"):
         _check_room_reply(status, data, journal_headers, journal_id, method, route, payload)

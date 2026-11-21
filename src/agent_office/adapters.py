@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from .acp import run_acp
+from .github_connection import worker_env
 from .engines import SUPPORTED_ENGINES, codex_backend_args, resolve_executable
 
 
@@ -67,7 +68,7 @@ class CLIAdapter:
         # Python-based tools launched on Windows otherwise inherit a legacy
         # console encoding even though the parent writes UTF-8 to stdin.
         # For Node-based CLIs this has no behavioral effect.
-        env = os.environ.copy()
+        env = worker_env(os.environ)
         env.setdefault("PYTHONUTF8", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
         task_input = json.dumps({"event": "user", "message": {"content": prompt}}, ensure_ascii=False) + "\n" if self.engine == "antigravity" else prompt

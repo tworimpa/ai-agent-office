@@ -30,6 +30,8 @@ from .studio_runner import LocalRunner
 from .away_ledger import return_report, revoke_policy
 from .studio_ssh import RemoteUnavailable, is_peer_route, remote_request
 from .workspace_rooms import WorkspaceRooms, room_route
+from . import github_studio
+from .github_connection import GitHubError
 from . import overnight_goals
 
 ASSETS = {
@@ -37,6 +39,7 @@ ASSETS = {
     "/workspace-office.css": ("workspace-office.css", "text/css"),
     "/workspace-office.js": ("workspace-office.js", "text/javascript"),
     "/workspace-goal.js": ("workspace-goal.js", "text/javascript"),
+    "/workspace-github.js": ("workspace-github.js", "text/javascript"),
     "/office-content.js": ("office-content.js", "text/javascript"),
     "/office-content.css": ("office-content.css", "text/css"),
     "/office-flow.js": ("office-flow.js", "text/javascript"),
@@ -104,6 +107,7 @@ class StudioServer(ThreadingHTTPServer):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Invalid port")
         self.runner = None
+        self.github = None
         self.engines = None
         self.improvements = None
         self.improvement_source = improvement_source
@@ -138,6 +142,7 @@ class StudioServer(ThreadingHTTPServer):
             self.directions = self.runner.directions
             self.rooms = WorkspaceRooms(self.db_path, self.catalog, self.runner, self.engines)
             self.improvements = StudioImprovements(self.db_path, improvement_source)
+            self.github = github_studio.WorkspaceGitHub(self)
         except BaseException:
             self.server_close()
             raise
@@ -149,6 +154,8 @@ class StudioServer(ThreadingHTTPServer):
 
     def server_close(self):
         super().server_close()
+        if self.github is not None:
+            self.github.close()
         if self.improvements is not None:
             self.improvements.close()
         if self.engines is not None:
@@ -267,6 +274,10 @@ class StudioHandler(ObserverHandler):
 
     def _local_api(self, path, data):
         write = data is not None
+        integration = github_studio.route("POST" if write else "GET", path.removeprefix("/api"))
+        if integration:
+            self._reply(*self.server.github.handle(*integration, data))
+            return
         catalog, runner = self.server.catalog, self.server.runner
         peer_check = re.fullmatch(r"/api/goal-checks/([a-f0-9]{32})", path)
         if peer_check:
@@ -433,6 +444,8 @@ class StudioHandler(ObserverHandler):
                                         "message": "원격 작업실과 연결할 수 없습니다. 연결이 복구되면 같은 실행을 확인하세요."}})
         except (ValueError, OverflowError) as exc:
             self._reply(400, {"error": {"code": "INVALID_ARGUMENT", "message": str(exc)[:300]}})
+        except GitHubError as exc:
+            self._reply(503, {"error":{"code": exc.code, "message": "GitHub 연결 오류 · " + exc.code}})
         except KeyError:
             self._error(404, "NOT_FOUND")
         except OfficeError as exc:

@@ -257,7 +257,7 @@ class WorkspaceRooms:
             page = {"runs": runs, "next_cursor": next_cursor}
             if cursor is None:
                 page.update(workspace=workspace, settings=self._settings(db, workspace_id), engines=engines,
-                            meeting_supported=True, goal_supported=True,
+                            meeting_supported=True, goal_supported=True, github_supported=True,
                             goal_default=db.execute("SELECT 1 FROM studio_goal_policies WHERE workspace_id=?",
                                                     (workspace_id,)).fetchone() is not None)
         return page
@@ -266,7 +266,7 @@ class WorkspaceRooms:
         self._workspace(workspace_id)
         return self.runner.inbox.pending(workspace_id=workspace_id)
 
-    def assign(self, workspace_id, data):
+    def assign(self, workspace_id, data, *, pinned_revision=None, origin=None):
         required = {"id", "message", "allow_edits", "delegation"}
         if not required <= data.keys() or data.keys() - required - {"indices", "test_files", "meeting", "review_plan",
                                                                     "role_engines", "goal", "goal_criteria", "reproduce_required"}:
@@ -291,7 +291,10 @@ class WorkspaceRooms:
         test_files = normalize_test_files(data["test_files"]) if "test_files" in data else []
         if test_files and not allow_edits:
             raise ValueError("테스트 파일 지정은 파일 수정을 허용한 작업에 적용됩니다.")
-        digest = "room:" + sha256(encode([workspace_id, data]).encode("utf-8")).hexdigest()
+        digest_parts = [workspace_id, data]
+        if origin is not None:
+            digest_parts.extend([origin, pinned_revision])
+        digest = "room:" + sha256(encode(digest_parts).encode("utf-8")).hexdigest()
         with self.assignments:
             with self.runner.lock, TaskStore(self.path, existing=True) as store:
                 self.runner._refresh(store)
@@ -316,7 +319,7 @@ class WorkspaceRooms:
             engines = self.engines.snapshot()["engines"]
             roles = _assign_roles(settings, engines, allow_edits, meeting, overrides)
             delegated = settings["delegation"] if override is None else override
-            revision = read_workspace_revision(repo)
+            revision = pinned_revision or read_workspace_revision(repo)
             if test_files:
                 verify_committed_test_files(repo, revision, test_files)
             policy = choices = None
@@ -342,4 +345,5 @@ class WorkspaceRooms:
                                      request_digest=digest, developer_engine=roles["developer"]["engine"],
                                      reviewer_engine=roles["reviewer"]["engine"], use_inbox=True,
                                      delegation=policy, role_skills={role: roles[role]["skills"] for role in ROLES},
-                                     room_assignment=assignment, room_revision=revision, room_choices=choices)
+                                     room_assignment=assignment, room_revision=revision, room_choices=choices,
+                                     **({"external_origin":origin} if origin is not None else {}))

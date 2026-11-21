@@ -107,6 +107,13 @@ h1 { font: 700 clamp(1.7rem, 4vw, 3rem)/1.25 var(--serif); overflow-wrap: anywhe
 #goal-record pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: .65rem; background: var(--frame); max-height: 18rem; overflow: auto; }
 #goal-record ol { max-height: 24rem; overflow: auto; padding-inline-start: 1.6rem; }
 #goal-policy { margin: 1rem; }
+#github-settings { margin: 1rem; }
+#github-settings > summary, #github-issues summary { cursor: pointer; padding-block: .45rem; }
+#github-issues article { border-block-start: 1px solid var(--line); margin-block-start: .8rem; padding-block: .5rem; }
+#github-issues article > :is(button, a) { margin: .25rem .5rem .25rem 0; }
+#github-issues .github-owner { display: flex; align-items: center; gap: .6rem; }
+.github-owner .portrait { width: 36px; }
+#github-settings-note, #github-diagnostic { overflow-wrap: anywhere; }
 #goal-check-fields { display: grid; gap: .65rem; }
 #goal-check-fields fieldset { min-width: 0; display: grid; gap: .4rem; }
 .ledger-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; }

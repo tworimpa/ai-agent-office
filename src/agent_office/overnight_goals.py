@@ -155,7 +155,12 @@ def report(path, run_id):
             next_action = "채택한 후보의 남은 수동 확인 항목을 검토하세요." if manual else "채택 이력을 확인하세요."
         elif run.state not in ACTIVE and run.state != "RECOVERY_REQUIRED":
             next_action = verification.get("stop_reason") or "종료된 실행의 결과와 검증 범위를 확인하세요."
-        return dict(verification, id=run_id, run_id=run_id, workspace_id=row["workspace_id"],
+        external = None
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='studio_external_origins'").fetchone():
+            from .github_office import public_origin
+            external = public_origin(db, run_id)
+        return dict(verification, id=external["goal_id"] if external else run_id, external=external,
+                    run_id=run_id, workspace_id=row["workspace_id"],
                     request=row["request"], base_commit=row["base_commit"], scope=json.loads(row["scope_json"]),
                     criteria=criteria, manual_checks=manual, policy=json.loads(row["policy_json"]),
                     state=run.state, outcome=run.outcome, created_at=row["created_at"], last_progress_at=last, observed_at=observed,

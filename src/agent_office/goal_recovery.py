@@ -197,7 +197,10 @@ def _fingerprint(db, run_id):
             != Path(run_git(project, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip()).resolve()):
         raise ValueError("작업 트리 소유 정보를 확인할 수 없습니다.")
     base = goal["base_commit"]
-    if any(run_git(repo, "rev-parse", "--verify", "HEAD").decode().strip() != base for repo in (project, root)):
+    external = (db.execute("SELECT 1 FROM sqlite_master WHERE name='studio_external_origins'").fetchone()
+                and db.execute("SELECT 1 FROM studio_external_origins WHERE run_id=?", (run_id,)).fetchone())
+    if (run_git(root, "rev-parse", "--verify", "HEAD").decode().strip() != base or
+            not external and run_git(project, "rev-parse", "--verify", "HEAD").decode().strip() != base):
         raise ValueError("기준 커밋이 변경되었습니다.")
     digest = hashlib.sha256()
     def update(value):
