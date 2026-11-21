@@ -87,3 +87,9 @@ API 응답이 제공한 링크에서 연속된 다음 쪽 번호만 사용하며
 호스트의 등록된 CA와 프록시를 적용합니다. SSH, credential helper, 리다이렉트, submodule 조회, 원래 저장소의 URL 치환·HTTP 헤더·hooks는 사용하지 않습니다. 요청한 SHA와 Git이 받은 SHA, 전송 후 REST에서 조회한 SHA와 저장소 ID가 일치하면 검증한 객체를 로컬 객체 저장소에 추가합니다. 사용자의 작업 파일, 인덱스, 브랜치, 원격 추적 ref는 보존됩니다. 전송은 120초, 팩은 256 MiB 한도입니다. [Git fetch](https://git-scm.com/docs/git-fetch) · [Git index-pack](https://git-scm.com/docs/git-index-pack)
 
 `git_fetch_failed`이면 실행 계정에서 Git 스마트 HTTPS 접근·CA·프록시·Contents 읽기 권한을 확인하세요. `fetch_scope_unconfirmed`는 GitHub가 요청한 설치 토큰 권한·저장소 한정을 확인해 주지 않은 경우입니다. `fetch_head_changed`이면 다음 동기화가 최신 기준으로 다시 시도합니다. `git_fetch_too_large` 또는 `git_fetch_timeout`이면 운영자가 해당 체크아웃에서 정상적인 Git 클라이언트로 브랜치를 한 번 가져오면 Studio가 로컬 객체부터 재확인합니다.
+
+## 여러 실행 호스트의 저장소 소유권
+
+자동 실행을 명시적으로 활성화하면 Studio가 대상 저장소의 `office:sync-owner` 라벨을 확인합니다. 최초 등록 시에만 이름이 고유한 저장소 라벨을 만들고, GitHub에서 다시 읽은 설명이 이 작업실의 식별값과 일치해야 활성화됩니다. 이미 다른 작업실이 등록한 저장소에서는 `issue_owner_conflict`가 표시됩니다. 연결 진단과 읽기 전용 점검은 소유권 라벨을 생성하지 않습니다. 라벨을 수동으로 삭제하거나 설명을 바꾸면 이후 소유권 확인에 실패하므로 호스트 이전은 이전 작업실의 자동 실행을 중지한 뒤 진행하세요. [GitHub 저장소 라벨 조회·생성 및 권한](https://docs.github.com/en/rest/issues/labels#create-a-label)
+
+작업실은 저장소 이름과 숫자 ID를 함께 대조하고, 일반 동기화 요청에는 해당 ID 하나만 허용하는 설치 토큰을 사용합니다. 앱에 부여된 권한 중 이슈 쓰기, Contents·Pull requests·Checks·Commit statuses·Metadata 읽기까지 요청합니다. 초안 게시를 활성화한 작업실이 후보를 게시할 때만 별도 토큰에 Contents·Pull requests 쓰기를 요청합니다. GitHub 응답의 저장소 목록이나 권한이 요청 범위와 맞지 않으면 발급받은 토큰을 폐기하고 작업을 중지합니다. [GitHub 설치 토큰의 저장소·권한 범위](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app)

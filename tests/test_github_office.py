@@ -7,6 +7,7 @@ import pytest
 
 from agent_office import goal_verification
 from agent_office.github_office import intake_details, remote_name
+from agent_office.github_connection import GitHubError
 from agent_office.github_owner import verify_owner
 from agent_office.github_studio import WorkspaceGitHub, check_reply
 from agent_office.studio_ssh import RemoteUnavailable, is_peer_route
@@ -14,23 +15,41 @@ from agent_office.github_sync import IssueSync
 from agent_office.goal_candidates import capture
 from agent_office.store import TaskStore, encode, now
 from agent_office.workspace import create_worktree
+from helpers.github_owner import OwnerClaims
 from test_studio_http import project, studio, request
 from test_workspace_rooms import engine_snapshot
 
 
-class Client:
+class Client(OwnerClaims):
     web_url = "https://git.example.org"
     app_id = 19
     identity = "test-installation"
     config = SimpleNamespace(owner_journal=None)
 
     def __init__(self, sha):
+        super().__init__()
         self.sha = sha
         self.head = "e"*40
 
     def repository(self, slug):
         assert slug == "team/repo"
         return {"id":35,"full_name":slug}
+
+    def issue(self, slug, number):
+        return dict(self.issue_data, state="open", labels=[{"name":"office:ready"}])
+
+    def timeline(self, slug, number):
+        return [{"event":"labeled","actor":{"id":2,"login":"operator","type":"User"},"label":{"name":"office:ready"}}]
+
+    def permission(self, *args):
+        return "write"
+
+    def is_app_actor(self, event):
+        return False
+
+    def for_repository(self, repo_id, *, publish=False):
+        assert type(repo_id) is int and repo_id > 0
+        return self
 
     def branch_sha(self, slug, branch):
         return self.sha if branch == "main" else self.head
@@ -86,6 +105,7 @@ def test_binding_intake_and_ci_repair_pin_immutable_tree_and_keep_same_goal(tmp_
         assert not is_peer_route("POST", path.removeprefix("/api") + "/issues/123/page/12")
         first = uuid4().hex
         issue = {"id":123,"number":3,"title":"설정 복원","body":"## 완료 기준\n- [ ] 설정을 유지한다", "goal_id":first}
+        client.issue_data = issue
         receipt = office.start(ws,first,issue,cfg)
         assert office.start(ws,first,issue,cfg) == receipt
         with pytest.raises(ValueError):
@@ -118,16 +138,18 @@ def test_binding_intake_and_ci_repair_pin_immutable_tree_and_keep_same_goal(tmp_
             office.rework(ws,first,uuid4().hex,"뒤늦은 CI",cfg,issue,"e"*40)
 
 
-def test_machine_owner_is_persistent_and_explicit_pin_rejects_another_journal(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENT_OFFICE_GITHUB_OWNER_DB",str(tmp_path/"owners.sqlite3"))
+def test_repository_owner_is_persistent_and_explicit_pin_rejects_another_journal():
     client = Client("3"*40)
-    verify_owner("a"*32,client,4,claim=True)
-    verify_owner("a"*32,client,4)
-    with pytest.raises(ValueError):
-        verify_owner("b"*32,client,4,claim=True)
+    with pytest.raises(GitHubError, match="issue_owner_missing"):
+        verify_owner("a"*32,client,4,"example/repo")
+    verify_owner("a"*32,client,4,"example/repo",claim=True)
+    verify_owner("a"*32,client,4,"example/repo")
+    with pytest.raises(GitHubError, match="issue_owner_conflict"):
+        verify_owner("b"*32,client,4,"example/repo",claim=True)
+    assert len(client.owner_markers) == 1
     client.config = SimpleNamespace(owner_journal="a"*32)
-    with pytest.raises(ValueError):
-        verify_owner("b"*32,client,7,claim=True)
+    with pytest.raises(GitHubError, match="owner_journal_mismatch"):
+        verify_owner("b"*32,client,7,"example/other",claim=True)
 
 
 def test_issue_material_and_origin_are_scoped():

@@ -112,8 +112,13 @@ class WorkspaceGitHub:
                 if old and all(old[k] == data[k] for k in required):
                     self.sync.configure(workspace, dict(data, repository=old["repository"]))
                     return 200, self.state(workspace)
-            client = self.registry.client(data["connection_id"])
-            diagnostic = client.diagnose()
+            try:
+                client = self.registry.client(data["connection_id"]).for_repository(data["repository_id"])
+                diagnostic = client.diagnose()
+            except GitHubError as error:
+                if action != "test":
+                    raise
+                return 200, {"diagnostic":{"ok":False, "code":error.code}}
             if diagnostic["ok"]:
                 try:
                     _, repo, sha = resolve_binding(self.catalog, workspace, client, data["repository_id"],

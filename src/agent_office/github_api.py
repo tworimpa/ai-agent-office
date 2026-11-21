@@ -121,7 +121,10 @@ def _next_page(link, api_url, page):
 
 
 class GitHubClient:
-    def __init__(self, config, *, transport=None, clock=time.time):
+    _PERMISSIONS = {"metadata": "read", "contents": "write", "issues": "write", "pull_requests": "write",
+                    "checks": "read", "statuses": "read"}
+
+    def __init__(self, config, *, transport=None, clock=time.time, repository_id=None, publish=False):
         self.config = config
         self.identity = config.identity
         self.web_url = config.web_url
@@ -133,6 +136,25 @@ class GitHubClient:
         self._expires = 0.0
         self._app_slug = None
         self._version = None
+        self._repository_id = repository_id
+        self._publish = publish
+        self._views = {}
+
+    def for_repository(self, repo_id, *, publish=False):
+        positive_id(repo_id)
+        if type(publish) is not bool:
+            raise GitHubError("repository_scope_mismatch")
+        if self._repository_id is not None:
+            if self._repository_id != repo_id or publish and not self._publish:
+                raise GitHubError("repository_scope_mismatch")
+            if publish == self._publish:
+                return self
+        key = (repo_id, publish)
+        with self._lock:
+            if key not in self._views:
+                self._views[key] = GitHubClient(self.config, transport=self._transport, clock=self._clock,
+                                                repository_id=repo_id, publish=publish)
+            return self._views[key]
 
     def _send(self, method, path, auth=None, body=None, etag=None):
         headers = {"User-Agent": "AI-Agent-Office", "Accept": "application/vnd.github+json",
@@ -174,9 +196,34 @@ class GitHubClient:
             if self._token and now + 90 < self._expires:
                 return self._token
             self._token = None
-            token, expires, _ = self._mint({})
+            if self._repository_id is None:
+                permissions = {"metadata": "read"}
+                token, expires, result = self._mint({"permissions": permissions})
+                if result.get("permissions") != permissions:
+                    self._revoke_token(token)
+                    raise GitHubError("discovery_scope_unconfirmed")
+            else:
+                token, expires = self._scoped_token(self._repository_id, self._granted_permissions(),
+                                                    "repository_scope_unconfirmed")
             self._token, self._expires = token, expires
             return token
+
+    def _granted_permissions(self):
+        rid = self.config.installation_id
+        result = self._send("GET", f"/app/installations/{rid}", self.config.jwt(self._clock()))
+        check_status(result, self._clock())
+        installation = _dict(result.data)
+        if installation.get("id") != rid or installation.get("app_id") != self.app_id:
+            raise GitHubError("installation_identity_changed")
+        if installation.get("suspended_at"):
+            raise GitHubError("installation_suspended")
+        grants = _dict(installation.get("permissions"))
+        limits = self._PERMISSIONS if self._publish else {**self._PERMISSIONS, "contents": "read", "pull_requests": "read"}
+        permissions = {"metadata": "read"}
+        for key, maximum in limits.items():
+            if grants.get(key) in ("read", "write"):
+                permissions[key] = "write" if grants[key] == maximum == "write" else "read"
+        return permissions
 
     def _mint(self, scope):
         now = self._clock()
@@ -196,6 +243,24 @@ class GitHubClient:
             raise GitHubError("invalid_installation_token") from None
         return token, expires, data
 
+    def _scoped_token(self, repo_id, permissions, error_code):
+        token, expires, data = self._mint({"repository_ids": [repo_id], "permissions": permissions})
+        actual = data.get("permissions")
+        rows = data.get("repositories")
+        allowed = {"metadata": "read", **permissions}
+        if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+                or type(rows[0].get("id")) is not int or rows[0]["id"] != repo_id
+                or not isinstance(actual, dict) or any(k not in allowed or allowed[k] != v for k, v in actual.items())
+                or any(actual.get(k) != v for k, v in permissions.items())):
+            self._revoke_token(token)
+            raise GitHubError(error_code)
+        return token, expires
+
+    def _revoke_token(self, token):
+        response = self._send("DELETE", "/installation/token", token)
+        if response.status != 401:
+            check_status(response)
+
     @contextmanager
     def git_read_token(self, repo, expected_repo_id=None):
         if not self.app_id:
@@ -207,32 +272,27 @@ class GitHubClient:
         rid = positive_id(row.get("id"))
         if expected_repo_id is not None and rid != positive_id(expected_repo_id):
             raise GitHubError("repository_identity_changed")
-        token, _, result = self._mint({"repository_ids": [rid], "permissions": {"contents": "read"}})
+        token, _ = self._scoped_token(rid, {"contents": "read"}, "fetch_scope_unconfirmed")
         try:
-            permissions = result.get("permissions")
-            if (not isinstance(permissions, dict) or permissions.get("contents") != "read"
-                    or any(k not in {"metadata", "contents"} or v != "read" for k,v in permissions.items())
-                    or [r.get("id") for r in _items(result.get("repositories"))] != [rid]):
-                raise GitHubError("fetch_scope_unconfirmed")
             yield token
         finally:
-            response = self._send("DELETE", "/installation/token", token)
-            if response.status != 401:
-                check_status(response)
+            self._revoke_token(token)
 
     def revoke(self):
         """Revoke the cached token at GitHub without minting one to revoke it."""
         with self._lock:
             token, self._token = self._token, None
             if token:
-                result = self._send("DELETE", "/installation/token", token)
-                if result.status != 401:
-                    check_status(result)
+                self._revoke_token(token)
 
     def _request(self, method, path, body=None, etag=None):
         self._server_version()
         if method != "GET" and not self.app_id:
             raise GitHubError("installation_required")
+        if method != "GET" and self._repository_id is None:
+            raise GitHubError("repository_scope_required")
+        if method != "GET" and not self._publish and re.match(r"/repos/[^/]+/[^/]+/(?:git|pulls)(?:/|$)", path):
+            raise GitHubError("publication_scope_required")
         token = self._access()
         result = self._send(method, path, token, body, etag)
         if token and result.status == 401:
@@ -290,7 +350,46 @@ class GitHubClient:
                  "default_branch": _branch(r.get("default_branch"))} for r in rows]
 
     def repository(self, repo):
-        return _dict(self._request("GET", _repo(repo)).data)
+        result = _dict(self._request("GET", _repo(repo)).data)
+        if self._repository_id is not None and result.get("id") != self._repository_id:
+            raise GitHubError("repository_identity_changed")
+        return result
+
+    def ensure_issue_owner(self, repo, owner_digest, *, claim=False):
+        """Compare the repo-wide marker. Only explicit enrollment may create it."""
+        if type(claim) is not bool or not isinstance(owner_digest, str) or not re.fullmatch("[0-9a-f]{64}", owner_digest):
+            raise GitHubError("invalid_issue_owner")
+        name = "office:sync-owner"
+        description = "Agent Office owner " + owner_digest
+        collection = _repo(repo) + "/labels"
+        path = collection + "/" + quote(name, safe="")
+
+        def read_owner():
+            try:
+                label = _dict(self._request("GET", path).data)
+            except GitHubError as exc:
+                if exc.status == 404:
+                    return False
+                raise
+            if label.get("name") != name or label.get("description") != description:
+                raise GitHubError("issue_owner_conflict")
+            return True
+
+        if read_owner():
+            return True
+        if not claim:
+            raise GitHubError("issue_owner_missing")
+        try:
+            self._request("POST", collection, {"name": name, "description": description, "color": "6e7781"})
+        except GitHubError as exc:
+            # A competing insertion, lost reply or server error may mean the
+            # unique name already exists. Reconcile by reading, never overwrite.
+            uncertain = {"connection_timeout", "network_or_proxy_unavailable", "invalid_response", "response_too_large"}
+            if exc.status not in (409, 422) and exc.status < 500 and exc.code not in uncertain:
+                raise
+        if not read_owner():
+            raise GitHubError("issue_owner_unconfirmed")
+        return True
 
     def issue_page(self, repo, *, labels=(), state="all", since=None, page=1, etag=None):
         if state not in ("all", "open", "closed"):

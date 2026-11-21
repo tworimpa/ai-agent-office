@@ -62,7 +62,6 @@ if (githubMode) {
   const {githubFixture} = await import('./fixtures/github-provider.mjs')
   provider = await githubFixture(root, python, repo, request)
   env.AGENT_OFFICE_GITHUB_CONFIG = provider.config
-  env.AGENT_OFFICE_GITHUB_OWNER_DB = join(root, 'github-owners.sqlite3')
   git('remote', 'add', 'origin', provider.origin + '/fixture/settings.git')
 }
 let app, page, run, origin
@@ -123,6 +122,7 @@ async function githubJourney() {
   assert.equal(await page.locator('#github-draft').isChecked(), false)
   await page.locator('#github-test').click()
   await page.locator('#github-diagnostic').filter({hasText: '연결 확인됨'}).waitFor()
+  assert.ok(!provider.calls.includes('POST /repos/fixture/settings/labels'), 'Testing a connection must not claim a repository')
   await page.locator('#github-settings > summary').evaluate(el => el.scrollIntoView({block: 'start'}))
   await screenshot('01a-github-diagnostic')
   await page.locator('#github-actors').fill('42')
@@ -130,6 +130,7 @@ async function githubJourney() {
   await page.locator('#github-enabled').check()
   await page.locator('#github-save').click()
   await page.locator('#github-settings-note').filter({hasText: '저장했습니다'}).waitFor()
+  assert.equal(provider.calls.filter(c => c === 'POST /repos/fixture/settings/labels').length, 1, 'Explicit intake opt-in registers one ownership label')
   await screenshot('01-github-connection')
   await page.getByRole('button', {name: '설정 닫기'}).click()
   const ws = new URL(page.url()).searchParams.get('workspace'), path = '/api/rooms/' + ws + '/github'
@@ -143,11 +144,14 @@ async function githubJourney() {
   await close()
   await studio.stop(original.bootId)
   assert.equal(await studio.running(), null, 'The desktop host must be stopped before the issue is labelled')
+  record('studio_stopped', {boot_id: original.bootId, journal_id: original.journalId})
   provider.feed()
   await launch()
   const working = await studio.running()
   assert.notEqual(working.bootId, original.bootId)
   origin = working.origin
+  await page.locator('#room-title').filter({hasText: '설정 복원 검증'}).waitFor()
+  record('studio_restarted', {boot_id: working.bootId, journal_id: working.journalId})
   await close()
   const linked = await eventually(async () => { const row = await issue(); return row?.run_id && row }, 'Background polling did not import the issue with the desktop closed')
   run = {id: linked.run_id}
@@ -197,6 +201,7 @@ async function githubJourney() {
   await launch()
   const recovered = await studio.running()
   assert.notEqual(recovered.bootId, working.bootId)
+  record('journal_restored', {boot_id: recovered.bootId, journal_id: recovered.journalId})
   origin = recovered.origin
   await page.locator('[data-issue="107"] button').filter({hasText: '연결된 목표 열기'}).waitFor()
   const restoredCard = page.locator('[data-issue="107"]')

@@ -7,12 +7,13 @@ from agent_office.github_office import GitHubOffice
 from agent_office.github_sync import IssueSync
 from agent_office.release_store import run_git
 from agent_office.store import TaskStore, encode, now
+from helpers.github_owner import OwnerClaims
 from test_github_sync import Remote, check
 from test_studio_http import project, request, studio
 from test_workspace_rooms import engine_snapshot
 
 
-class CandidateProvider(Remote):
+class CandidateProvider(OwnerClaims, Remote):
     def __init__(self, repo):
         super().__init__()
         self.config = SimpleNamespace(owner_journal=None)
@@ -88,7 +89,19 @@ def test_external_rework_starts_at_verified_tree_then_advances_same_pr(tmp_path,
             assert state["status"]["last_error"] is None, state
             return state["issues"][0]
 
+        # On cold startup discovery can run before the engine probe finishes.
+        engines = engine_snapshot("codex", "antigravity")
+        for engine in engines["engines"]:
+            engine["probe_status"] = "pending"
+        monkeypatch.setattr(server.engines, "snapshot", lambda: engines)
+        sync.run_once(ws)
+        waiting = sync.state(ws)["issues"][0]
+        assert waiting["status"] == "starting" and waiting["run_id"] is None
+        assert waiting["goal_id"] and waiting["last_error"]
+        sync = IssueSync(database, provider, GitHubOffice(server, provider))
+        monkeypatch.setattr(server.engines, "snapshot", lambda: engine_snapshot("codex", "antigravity"))
         first = poll()
+        assert first["run_id"] == waiting["goal_id"]
         record_reviewed_candidate(database, first["run_id"], "first.txt")
         published = poll()
         assert published["pr_number"] == 5

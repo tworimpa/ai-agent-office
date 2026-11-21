@@ -44,6 +44,10 @@ class Remote:
     def client(self, connection_id):
         return self
 
+    def for_repository(self, repo_id, *, publish=False):
+        assert repo_id == 99
+        return self
+
     def issue_page(self, repo, **options):
         self.cursors.append(options["since"])
         return SimpleNamespace(items=[self.value], next_page=None)
@@ -524,3 +528,38 @@ def test_answer_allowlist_requires_current_read_access(setup, access, monkeypatc
     remote.permission_value = access
     poll(sync)
     assert len(office.answers) == 1 and office.answers[0][2] == "설명"
+
+
+def test_repository_claim_preflight_and_unrelated_workspace_write_during_rest(setup, monkeypatch):
+    sync, remote, office, cfg = setup
+    calls = []
+    monkeypatch.setattr(remote, "for_repository", lambda repo_id, **options: remote)
+    def claim(ws, _, client):
+        calls.append(ws)
+        # Simulate unrelated Studio work while the ownership POST is in flight.
+        sync.configure("observer", dict(cfg, repository_id=50, repository="owner/other", enabled=False))
+    monkeypatch.setattr(office, "claim_ownership", claim)
+    with pytest.raises(ValueError):
+        sync.configure("conflict", cfg)
+    assert calls == [] and sync.state("conflict")["config"] is None
+    sync.configure("ws", cfg)
+    assert calls == ["ws"]
+    assert sync.state("observer")["config"]["repository_id"] == 50
+
+
+def test_provider_claim_lost_ack_retries_before_binding_commit(setup, monkeypatch):
+    sync, _, office, cfg = setup
+    sync.configure("ws", dict(cfg, enabled=False))
+    owners = {}
+    def claim(ws, config, client):
+        key = (client.web_url, config["repository_id"])
+        assert owners.setdefault(key, ws) == ws
+        if not getattr(claim, "lost", False):
+            claim.lost = True
+            raise TimeoutError()
+    monkeypatch.setattr(office, "claim_ownership", claim)
+    with pytest.raises(TimeoutError):
+        sync.configure("ws", cfg)
+    assert sync.state("ws")["config"]["enabled"] is False
+    assert sync.configure("ws", cfg)["config"]["enabled"] is True
+    assert len(owners) == 1

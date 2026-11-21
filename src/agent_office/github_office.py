@@ -169,14 +169,15 @@ class GitHubOffice:
 
     def verify_ownership(self, workspace, cfg, client):
         from .github_owner import verify_owner
-        verify_owner(self.server.journal_id, client, cfg["repository_id"])
+        verify_owner(self.server.journal_id, client, cfg["repository_id"], cfg["repository"])
 
     def claim_ownership(self, workspace, cfg, client):
         from .github_owner import verify_owner
-        verify_owner(self.server.journal_id, client, cfg["repository_id"], claim=True)
+        verify_owner(self.server.journal_id, client, cfg["repository_id"], cfg["repository"], claim=True)
 
     def _binding(self, workspace, cfg):
-        client = self.registry.client(cfg["connection_id"])
+        client = self.registry.client(cfg["connection_id"]).for_repository(cfg["repository_id"])
+        self.verify_ownership(workspace, cfg, client)
         try:
             root, slug, sha = resolve_binding(self.server.catalog, workspace, client, cfg["repository_id"],
                                              cfg["folder_index"], cfg["branch"])
@@ -203,6 +204,21 @@ class GitHubOffice:
         client, _, slug, sha = self._binding(workspace, cfg)
         return self._assign(workspace, run_id, issue, cfg, client, slug, sha, sha, root_goal=issue.get("goal_id"))
 
+    @staticmethod
+    def _confirm_intake(client, slug, cfg, issue):
+        from .github_sync import IssueSync
+        from .issue_events import snapshot
+        current = client.issue(slug, issue["number"])
+        IssueSync._check_issue(current, issue["id"], issue["number"])
+        if current["state"] != "open":
+            raise WorkspaceGitHubError("issue_closed", "이미 닫힌 Issue입니다.")
+        observed_scope = issue.get("observed_scope_digest") or issue.get("scope_digest")
+        if observed_scope and snapshot(current, issue["url"])["scope_digest"] != observed_scope:
+            raise WorkspaceGitHubError("scope_changed", "Issue 변경 내용을 다시 동기화하세요.")
+        reason = IssueSync._admissible(client, cfg, current, client.timeline(slug, issue["number"]))
+        if reason:
+            raise WorkspaceGitHubError(reason, "실행 라벨과 현재 작업 요청자의 권한을 확인하세요.")
+
     def _assign(self, workspace, run_id, issue, cfg, client, slug, local_sha, head_sha,
                 *, root_goal=None, previous=None, feedback=None):
         if root_goal:
@@ -215,6 +231,9 @@ class GitHubOffice:
                     delegation=None, meeting=True, indices=[cfg["folder_index"]])
         if details["criteria"]:
             data["goal_criteria"] = details["criteria"]
+        # Resolving a missing Git object may take time. Do not submit work against
+        # an issue that was closed, relabelled or edited while fetching its base.
+        self._confirm_intake(client, slug, cfg, issue)
         try:
             self.server.rooms.assign(workspace, data, pinned_revision=local_sha, origin=source)
         except ValueError as error:
@@ -373,9 +392,12 @@ class GitHubOffice:
     def publish(self, workspace, run_id, cfg, client, issue):
         if cfg["draft_pr"] is not True:
             raise ValueError("이 작업공간에서 초안 PR 게시를 사용하지 않습니다.")
+        self.verify_ownership(workspace, cfg, client)
         _, slug, branch_tip = resolve_binding(self.server.catalog, workspace, client, cfg["repository_id"],
                                               cfg["folder_index"], cfg["branch"])
         goal, tree, files, _ = self._candidate(workspace, run_id, cfg, issue)
+        self._confirm_intake(client, slug, cfg, issue)
+        client = self.registry.client(cfg["connection_id"]).for_repository(cfg["repository_id"], publish=True)
         external = goal["external"]
         generation = validate_id(issue.get("generation_id") or external["goal_id"])
         head = "ao/issue-" + str(issue["number"]) + "-" + generation[:12]

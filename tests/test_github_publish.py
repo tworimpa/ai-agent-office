@@ -83,7 +83,7 @@ def app(tmp_path):
     http = GitObjects()
     cfg = GitHubConnection.parse({"id": "app", "kind": "cloud", "app_id": 12, "installation_id": 14,
                                   "private_key_file": str(tmp_path / "unused")})
-    client = GitHubClient(cfg, transport=http, clock=lambda: 5)
+    client = GitHubClient(cfg, transport=http, clock=lambda: 5).for_repository(6, publish=True)
     client._token, client._expires = "mock-installation", 1000
     return http, client
 

@@ -13,7 +13,9 @@ export async function githubFixture(root, python, project, title) {
     '-c', 'user.email=fixture@example.invalid', ...args], {input, encoding: 'utf8', env: {...process.env, GIT_INDEX_FILE: index}}).trim()
   execFileSync(python, [fileURLToPath(new URL('./github_tls.py', import.meta.url)), root])
   const [key, cert, appKey] = await Promise.all(['tls.pem', 'ca.pem', 'app.pem'].map(name => readFile(join(root, name))))
-  const token = 'fixture_' + randomUUID()
+  const tokens = new Map()
+  const grants = {metadata: 'read', contents: 'write', issues: 'write', pull_requests: 'write',
+    checks: 'read', statuses: 'read'}
   const repo = {id: 71, full_name: 'fixture/settings', name: 'settings', default_branch: 'main', owner: {login: 'fixture'}}
   const user = {id: 42, login: 'fixture-owner', type: 'User'}, bot = {id: 550, login: 'office-fixture[bot]', type: 'Bot'}
   const created = new Date().toISOString(), label = {name: 'office:ready'}
@@ -22,7 +24,7 @@ export async function githubFixture(root, python, project, title) {
   const timeline = [{id: 201, event: 'labeled', label, actor: user, created_at: created}]
   const comments = [], calls = [], errors = []
   const head = git(['rev-parse', 'HEAD'])
-  let pull = null, branch = null
+  let pull = null, branch = null, ownerLabel = null
   let origin, feed = false, dropFirstReceipt = true
   const closed = {...issue, id: 108, number: 8, state: 'closed', title: '접수 전 닫힌 이슈'}
   function issueComment(body, author) {
@@ -48,17 +50,44 @@ export async function githubFixture(root, python, project, title) {
       for await (const piece of request) parts.push(piece)
       const data = parts.length ? JSON.parse(Buffer.concat(parts).toString('utf8')) : {}
       if (path === '/meta') return send({installed_version: '3.20.1'})
-      if (path === '/app/installations/72/access_tokens' || path === '/app') {
+      if (['/app/installations/72/access_tokens', '/app/installations/72', '/app'].includes(path)) {
         const jwt = request.headers.authorization?.slice(7).split('.')
         assert.equal(jwt?.length, 3)
         assert.ok(verify('RSA-SHA256', Buffer.from(jwt.slice(0, 2).join('.')), appKey, Buffer.from(jwt[2], 'base64url')))
         assert.equal(JSON.parse(Buffer.from(jwt[1], 'base64url')).iss, '55')
-        return path === '/app' ? send({id: 55, slug: 'office-fixture'}) : send({token, expires_at: new Date(Date.now() + 3600000).toISOString()}, 201)
+        if (path === '/app') return send({id: 55, slug: 'office-fixture'})
+        if (path === '/app/installations/72') return send({id: 72, app_id: 55, permissions: grants})
+        const token = 'fixture_' + randomUUID()
+        const receipt = {token, expires_at: new Date(Date.now() + 3600000).toISOString()}
+        if (data.repository_ids) {
+          assert.deepEqual(data.repository_ids, [repo.id])
+          receipt.repositories = [repo]
+          receipt.permissions = data.permissions ?? grants
+        } else {
+          assert.deepEqual(data.permissions, {metadata: 'read'})
+          receipt.permissions = {metadata: 'read'}
+        }
+        tokens.set(token, receipt.permissions ?? null)
+        return send(receipt, 201)
       }
-      assert.equal(request.headers.authorization === 'Bearer ' + token, true, 'Expected the synthetic installation token')
+      const token = request.headers.authorization?.slice(7)
+      assert.ok(tokens.has(token), 'Expected a synthetic installation token')
+      if (path.startsWith('/repos/') && method !== 'GET') {
+        const permission = route.startsWith('/git/') ? 'contents' : route.startsWith('/pulls') ? 'pull_requests' : 'issues'
+        assert.equal(tokens.get(token)?.[permission], 'write', 'Repository writes require the scoped installation grant')
+      }
       if (path === '/installation/repositories') return send({repositories: [repo], total_count: 1})
-      if (path === '/installation/token' && method === 'DELETE') return send(null, 204)
+      if (path === '/installation/token' && method === 'DELETE') { tokens.delete(token); return send(null, 204) }
       if (path === '/repositories/71' || path === '/repos/fixture/settings') return send(repo)
+      if (decodeURIComponent(route) === '/labels/office:sync-owner' && method === 'GET') {
+        return send(ownerLabel ?? {}, ownerLabel ? 200 : 404)
+      }
+      if (route === '/labels' && method === 'POST') {
+        assert.equal(data.name, 'office:sync-owner')
+        if (ownerLabel) return send({message: 'Label already exists'}, 422)
+        ownerLabel = {id: 411, ...data}
+        return send(ownerLabel, 201)
+      }
       if (route === '/git/ref/heads/main') return send({ref: 'refs/heads/main', object: {sha: head, type: 'commit'}})
       if (route.startsWith('/git/ref/heads/ao/')) {
         const ref = route.slice('/git/ref/'.length)

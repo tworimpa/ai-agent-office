@@ -1,8 +1,7 @@
 """Durable reconciliation of external issues with the local Office goal coordinator."""
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
 import re
-import sqlite3
 import threading
 import time
 from uuid import uuid4
@@ -95,32 +94,47 @@ class IssueSync:
 
     def configure(self, workspace, data):
         cfg = _config(data)
-        client = self.registry.client(cfg["connection_id"])
+        client = self.registry.client(cfg["connection_id"]).for_repository(cfg["repository_id"])
         if (cfg["enabled"] or cfg["draft_pr"]) and not client.app_id:
             raise ValueError("작업 실행에는 GitHub App 연결이 필요합니다.")
         instance = client.web_url.rstrip("/").lower()
-        old = self.journal.bindings(workspace)
-        binding = old[0] if old else dict(instance=instance, repo_id=cfg["repository_id"])
-        try:
-            with self._guard(binding), self.journal.db(write=True) as db:
-                if not old and db.execute("SELECT 1 FROM github_bindings WHERE workspace=?", (workspace,)).fetchone():
+        with ExitStack() as locks:
+            locks.enter_context(RunGuard(self.journal.path, fingerprint("issue-binding", workspace)[:32]))
+            old = next(iter(self.journal.bindings(workspace)), None)
+            targets = {(instance, cfg["repository_id"])}
+            if old:
+                targets.add((old["instance"], old["repo_id"]))
+            for url, repo_id in sorted(targets):
+                locks.enter_context(self._guard(dict(instance=url, repo_id=repo_id)))
+            def preflight(db):
+                current = db.execute("SELECT config,identity,instance,repo_id FROM github_bindings WHERE workspace=?",
+                                     (workspace,)).fetchone()
+                expected = (encode(old["config"]), old["identity"], old["instance"], old["repo_id"]) if old else None
+                if (tuple(current) if current else None) != expected:
                     raise OfficeError("BINDING_CHANGED")
-                if old and any((instance != binding["instance"], cfg["repository_id"] != binding["repo_id"],
-                                client.identity != binding["identity"],
-                                cfg["branch"] != binding["config"]["branch"],
-                                cfg["folder_index"] != binding["config"]["folder_index"])):
+                if old and (instance, cfg["repository_id"], client.identity, cfg["branch"], cfg["folder_index"]) != (
+                        old["instance"], old["repo_id"], old["identity"], old["config"]["branch"], old["config"]["folder_index"]):
                     if db.execute("SELECT 1 FROM github_issues WHERE workspace=? LIMIT 1", (workspace,)).fetchone():
                         raise ValueError("이슈 이력이 있는 작업실의 저장소·공급자·브랜치·폴더 연결은 고정됩니다.")
+                if cfg["enabled"] and db.execute("""SELECT 1 FROM github_bindings
+                        WHERE enabled=1 AND instance=? AND repo_id=? AND workspace<>?""",
+                        (instance, cfg["repository_id"], workspace)).fetchone():
+                    raise ValueError("이 저장소의 자동 실행은 다른 작업실에서 사용 중입니다.")
+
+            with self.journal.db() as db:
+                preflight(db)
+            if cfg["enabled"]:
+                # The remote marker names this journal. A lost response is recoverable
+                # by the same journal even when no local binding has yet committed.
+                self.office.claim_ownership(workspace, cfg, client)
+            with self.journal.db(write=True) as db:
+                preflight(db)
                 db.execute("""INSERT INTO github_bindings(workspace,instance,repo_id,identity,enabled,config)
                     VALUES(?,?,?,?,?,?) ON CONFLICT(workspace) DO UPDATE SET instance=excluded.instance,
                     repo_id=excluded.repo_id,identity=excluded.identity,enabled=excluded.enabled,
                     config=excluded.config,cursor=NULL,last_full=0,retry_at=0""",
                            (workspace, instance, cfg["repository_id"], client.identity, cfg["enabled"], encode(cfg)))
                 db.execute("DELETE FROM github_scans WHERE workspace=?", (workspace,))
-                if cfg["enabled"]:
-                    self.office.claim_ownership(workspace, cfg, client)
-        except sqlite3.IntegrityError:
-            raise ValueError("이 저장소의 자동 실행은 다른 작업실에서 사용 중입니다.") from None
         return self.state(workspace)
 
     def state(self, workspace, cursor=None):
@@ -217,7 +231,7 @@ class IssueSync:
 
     def _client(self, binding):
         cfg = binding["config"]
-        client = self.registry.client(cfg["connection_id"])
+        client = self.registry.client(cfg["connection_id"]).for_repository(cfg["repository_id"])
         if client.identity != binding["identity"] or client.web_url.rstrip("/").lower() != binding["instance"]:
             raise OfficeError("CONNECTION_IDENTITY_CHANGED")
         if cfg["enabled"]:
@@ -312,7 +326,8 @@ class IssueSync:
                 _positive(actor.get("id")) and client.permission(repo, actor["login"], actor["id"]) in
                 {"admin", "maintain", "write"})
 
-    def _admissible(self, client, cfg, issue, timeline):
+    @classmethod
+    def _admissible(cls, client, cfg, issue, timeline):
         label = cfg["label"]
         if not any(v.get("name", "").casefold() == label.casefold() for v in issue.get("labels", [])):
             return "label_missing"
@@ -320,7 +335,7 @@ class IssueSync:
         if actor_id not in cfg["allowed_actors"]:
             return "label_actor_denied"
         actor = next(e["actor"] for e in reversed(timeline) if (e.get("actor") or {}).get("id") == actor_id)
-        if not self._write_actor(client, cfg["repository"], actor):
+        if not cls._write_actor(client, cfg["repository"], actor):
             return "label_actor_denied"
         return None
 
@@ -453,6 +468,7 @@ class IssueSync:
     @staticmethod
     def _payload(r):
         return dict(r["accepted"] or r["observed"], goal_id=r["goal_id"], issue_id=r["issue_id"],
+                    observed_scope_digest=r["observed"]["scope_digest"],
                     pr_number=r["pr_number"], pr_head=r["pr_head"], candidate_sha=r["candidate_sha"],
                     generation_id=r.get("generation_id") or r["goal_id"], base_commit=r["base_commit"])
 

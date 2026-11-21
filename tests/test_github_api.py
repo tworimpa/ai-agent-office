@@ -78,7 +78,16 @@ def test_reject_unpinned_or_inline_configuration(row):
 
 def token_response(value, expiry):
     return ("POST", "/app/installations/12/access_tokens", 201,
-            {"token": value, "expires_at": datetime.fromtimestamp(expiry, timezone.utc).isoformat()})
+            {"token": value, "expires_at": datetime.fromtimestamp(expiry, timezone.utc).isoformat(),
+             "permissions": {"metadata": "read"}})
+
+def grants(**permissions):
+    return ("GET", "/app/installations/12", 200, {"id":12, "app_id":431, "permissions":permissions})
+
+
+def scoped_response(value, expiry, repo_id, **permissions):
+    method, path, status, body = token_response(value, expiry)
+    return method, path, status, dict(body, repositories=[{"id":repo_id}], permissions={"metadata":"read", **permissions})
 
 
 def test_signed_installation_token_refresh_401_revocation_and_no_write_replay(host_key):
@@ -89,7 +98,8 @@ def test_signed_installation_token_refresh_401_revocation_and_no_write_replay(ho
               ("GET", issue, 401, {"message": "sensitive echo"}), token_response("second", now[0] + 3600),
               ("GET", issue, 200, {"id": 1}), token_response("third", now[0] + 7200),
               ("GET", issue, 200, {"id": 1}), ("DELETE", "/installation/token", 204, None),
-              token_response("fourth", now[0] + 7200), ("POST", issue + "/comments", 401, {"message": "fourth"})]
+              grants(issues="write"), scoped_response("fourth", now[0] + 7200, 6, issues="write"),
+              ("POST", issue + "/comments", 401, {"message": "fourth"})]
     wire = FakeTransport(script)
     client = GitHubClient(connection(path), clock=lambda: now[0], transport=wire)
     assert client.issue(REPO, 4)["id"] == 1
@@ -104,9 +114,9 @@ def test_signed_installation_token_refresh_401_revocation_and_no_write_replay(ho
     assert client.issue(REPO, 4)["id"] == 1
     client.revoke()
     with pytest.raises(GitHubError, match="^authentication_rejected$"):
-        client.add_comment(REPO, 4, "public result")
+        client.for_repository(6).add_comment(REPO, 4, "public result")
     assert not wire.scripted
-    assert [wire.requests[i][2]["Authorization"] for i in (1, 4, 6, 7, 9)] == [
+    assert [wire.requests[i][2]["Authorization"] for i in (1, 4, 6, 7, 10)] == [
         "Bearer first", "Bearer second", "Bearer third", "Bearer third", "Bearer fourth"]
 
 
@@ -225,4 +235,147 @@ def test_unexpected_wide_git_scope_is_revoked_before_subprocess(host_key):
     with pytest.raises(GitHubError, match="fetch_scope_unconfirmed"):
         with client.git_read_token(REPO, expected_repo_id=6):
             pytest.fail("Should not release this token")
+    assert not wire.scripted
+
+
+OWNER_DIGEST = "a" * 64
+OWNER_LABELS = "/repos/" + REPO + "/labels"
+OWNER_PATH = OWNER_LABELS + "/office%3Async-owner"
+
+
+def owner_label(digest):
+    return {"name": "office:sync-owner", "description": "Agent Office owner " + digest, "color": "6e7781"}
+
+
+def test_owner_verification_reads_only_and_never_overwrites(host_key):
+    wire = FakeTransport([("GET", OWNER_PATH, 404, {}), ("GET", OWNER_PATH, 200, owner_label(OWNER_DIGEST)),
+                          ("GET", OWNER_PATH, 200, owner_label("b" * 64))])
+    client = GitHubClient(connection(host_key[0]), transport=wire, clock=lambda: 0).for_repository(6)
+    client._token, client._expires = "dummy", 3600
+    with pytest.raises(GitHubError, match="^issue_owner_missing$"):
+        client.ensure_issue_owner(REPO, OWNER_DIGEST)
+    assert client.ensure_issue_owner(REPO, OWNER_DIGEST)
+    with pytest.raises(GitHubError, match="^issue_owner_conflict$"):
+        client.ensure_issue_owner(REPO, OWNER_DIGEST, claim=True)
+    with pytest.raises(GitHubError, match="^invalid_issue_owner$"):
+        client.ensure_issue_owner(REPO, "user text")
+    assert [method for method, *_ in wire.requests] == ["GET"] * 3
+
+
+@pytest.mark.parametrize("status,digest", [(201, OWNER_DIGEST), (422, OWNER_DIGEST), (503, OWNER_DIGEST),
+                                            (422, "b" * 64), (503, None)])
+def test_explicit_owner_claim_reads_authoritative_label_after_insert(host_key, status, digest):
+    wire = FakeTransport([("GET", OWNER_PATH, 404, {}), ("POST", OWNER_LABELS, status, {}),
+                          ("GET", OWNER_PATH, 200 if digest else 404, owner_label(digest) if digest else {})])
+    client = GitHubClient(connection(host_key[0]), transport=wire, clock=lambda: 0).for_repository(6)
+    client._token, client._expires = "dummy", 3600
+    if digest == OWNER_DIGEST:
+        assert client.ensure_issue_owner(REPO, OWNER_DIGEST, claim=True)
+    else:
+        code = "issue_owner_conflict" if digest else "issue_owner_unconfirmed"
+        with pytest.raises(GitHubError, match="^" + code + "$"):
+            client.ensure_issue_owner(REPO, OWNER_DIGEST, claim=True)
+    assert wire.requests[1][3] == owner_label(OWNER_DIGEST)
+    assert not wire.scripted
+
+
+def test_two_independent_hosts_racing_can_only_claim_for_one_owner(host_key):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Lock
+
+    class RepositoryLabels:
+        def __init__(self):
+            self.barrier, self.lock = Barrier(2), Lock()
+            self.label = None
+            self.methods = []
+
+        def send(self, method, path, headers, body):
+            with self.lock:
+                self.methods.append(method)
+                if method == "POST" and path == OWNER_LABELS:
+                    if self.label:
+                        return Response(422, {}, {})
+                    self.label = body.copy()
+                    return Response(201, {}, self.label)
+                assert method == "GET" and path == OWNER_PATH
+                if self.label:
+                    return Response(200, {}, self.label)
+            self.barrier.wait(timeout=10)
+            return Response(404, {}, {})
+
+    wire = RepositoryLabels()
+    def enroll(digest):
+        client = GitHubClient(connection(host_key[0]), transport=wire, clock=lambda: 0).for_repository(6)
+        client._token, client._expires = "dummy", 3600
+        try:
+            return client.ensure_issue_owner(REPO, digest, claim=True)
+        except GitHubError as error:
+            return error.code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(enroll, [OWNER_DIGEST, "b"*64]))
+    assert results.count(True) == 1 and results.count("issue_owner_conflict") == 1
+    assert wire.methods.count("POST") == 2 and set(wire.methods) == {"GET", "POST"}
+
+
+def test_repository_views_cannot_follow_a_recycled_slug_or_escalate(host_key):
+    granted = grants(metadata="read", contents="write", pull_requests="write", issues="write", administration="write")
+    limited = {"metadata":"read", "contents":"read", "pull_requests":"read", "issues":"write"}
+    wire = FakeTransport([granted, scoped_response("repo-six", 5000, 6, **limited),
+                          ("GET", "/repos/" + REPO, 200, {"id":6, "full_name":REPO}),
+                          # GitHub now maps this old name to a different private repository.
+                          ("POST", "/repos/" + REPO + "/issues/1/comments", 403, {}),
+                          ("GET", "/repos/" + REPO, 200, {"id":7, "full_name":REPO})])
+    global_client = GitHubClient(connection(host_key[0]), transport=wire, clock=lambda:0)
+    repo = global_client.for_repository(6)
+    assert repo is global_client.for_repository(6)
+    assert repo is not global_client.for_repository(6, publish=True)
+    assert repo.repository(REPO)["id"] == 6
+    assert wire.requests[1][3] == {"repository_ids":[6], "permissions": limited}
+    with pytest.raises(GitHubError, match="permission_denied"):
+        repo.add_comment(REPO, 1, "verified status")
+    assert wire.requests[-1][2]["Authorization"] == "Bearer repo-six"
+    with pytest.raises(GitHubError, match="repository_identity_changed"):
+        repo.repository(REPO)
+    with pytest.raises(GitHubError, match="repository_scope_required"):
+        global_client.add_comment(REPO, 1, "no")
+    with pytest.raises(GitHubError, match="repository_scope_mismatch"):
+        repo.for_repository(7)
+    with pytest.raises(GitHubError, match="repository_scope_mismatch"):
+        repo.for_repository(6, publish=True)
+    with pytest.raises(GitHubError, match="publication_scope_required"):
+        repo.create_draft(REPO, "ao/test", "main", "test", "body")
+    assert not wire.scripted
+
+
+@pytest.mark.parametrize("extras", [{"repositories":[{"id":6},{"id":7}]}, {"repositories":[]},
+                                    {"repositories":[{"id":7}]}, {"permissions":{"issues":"write","administration":"write"}},
+                                    {"permissions":None}])
+def test_unknown_or_broader_grant_is_never_used_for_repo_work(host_key, extras):
+    method, path, status, data = scoped_response("too-wide", 5000, 6, issues="write")
+    wire = FakeTransport([grants(issues="write"), (method,path,status,{**data, **extras}),
+                          ("DELETE","/installation/token",204,None)])
+    client = GitHubClient(connection(host_key[0]), transport=wire, clock=lambda:0).for_repository(6)
+    with pytest.raises(GitHubError, match="repository_scope_unconfirmed"):
+        client.add_comment(REPO, 1, "no")
+    assert not wire.scripted and client._token is None
+    assert wire.requests[-1][2]["Authorization"] == "Bearer too-wide"
+
+
+def test_draft_scope_requests_only_selected_repo_permissions(host_key):
+    allowed = {"metadata":"read", "contents":"write", "pull_requests":"write", "checks":"read"}
+    wire = FakeTransport([grants(**{**allowed,"checks":"write","actions":"write","administration":"read"}),
+                          scoped_response("six-drafts", 5000, 6, **allowed),
+                          ("POST", "/repos/" + REPO + "/pulls", 201, {"number":2})])
+    client = GitHubClient(connection(host_key[0]), transport=wire, clock=lambda:0).for_repository(6, publish=True)
+    assert client.create_draft(REPO, "ao/candidate", "main", "title", "body")["number"] == 2
+    assert wire.requests[1][3] == {"repository_ids":[6], "permissions":allowed}
+    assert wire.requests[2][2]["Authorization"] == "Bearer six-drafts"
+
+
+def test_discovery_mints_verified_metadata_only(host_key):
+    response = token_response("discovery-mock", 5000)
+    wire = FakeTransport([response, ("GET", "/installation/repositories", 200, {"repositories":[]})])
+    client = GitHubClient(connection(host_key[0]), transport=wire, clock=lambda:0)
+    assert client.repositories() == []
+    assert wire.requests[0][3] == {"permissions":{"metadata":"read"}}
     assert not wire.scripted
