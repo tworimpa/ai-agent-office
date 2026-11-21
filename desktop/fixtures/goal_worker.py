@@ -41,18 +41,33 @@ def server():
     editing = False
     turns = 0
     initial = ""
+    skipped = []
+    selected = "fixture-codex"
     for line in sys.stdin.buffer:
         request = json.loads(line)
         method = request.get("method")
         if method == "initialized":
             continue
         if method == "initialize":
+            skipped = request["params"].get("capabilities", {}).get("optOutNotificationMethods", [])
             result = {"userAgent": "goal-fixture"}
+        elif method == "model/list":
+            result = {"data": [{"model": selected, "displayName": "Fixture Codex", "isDefault": True,
+                                "defaultReasoningEffort": "medium",
+                                "supportedReasoningEfforts": [{"reasoningEffort": name} for name in ("low","medium","high")]}],
+                      "nextCursor": None}
+        elif method == "account/rateLimits/read":
+            controls = Path(__file__).resolve().parent
+            allowed = not (controls/"quota-closed").is_file() or (controls/"quota-grant").is_file()
+            result = {"accountId": "disposable-office-fixture", "ordinaryUsageAllowed": allowed, "rateLimits": {
+                "limitId": "codex", "primary": {"usedPercent": 18 if allowed else 100, "windowDurationMins": 300, "resetsAt": 1990000000}}}
         elif method == "thread/start":
             editing = request["params"]["sandbox"] == "workspace-write"
+            selected = request["params"].get("model", selected)
             sandbox = {"type": "workspaceWrite", "excludeTmpdirEnvVar": True, "excludeSlashTmp": True} if editing else {"type": "readOnly"}
             result = {"thread": {"id": "settings-fixture"}, "cwd": str(Path.cwd()), "approvalsReviewer": "user",
-                      "approvalPolicy": "on-request", "sandbox": sandbox}
+                      "approvalPolicy": "on-request", "sandbox": sandbox, "model": selected, "modelProvider": "openai",
+                      "reasoningEffort": request["params"].get("config", {}).get("model_reasoning_effort", "medium")}
         elif method == "thread/inject_items":
             result = {}
         elif method == "turn/start":
@@ -62,6 +77,9 @@ def server():
             prompt = request["params"]["input"][0]["text"]
             if turns == 1:
                 initial = prompt
+                if "model/rerouted" not in skipped and "재실행하면 설정이 사라지는" in prompt:
+                    send({"method":"model/rerouted","params":{"threadId":"settings-fixture","turnId":turn,
+                          "fromModel":selected,"toModel":"fixture-codex-routed"}})
             if Path("briefing-fixture.txt").is_file():
                 sys.path.insert(0, str(Path(__file__).resolve().parent))
                 from briefing_worker import respond
@@ -80,6 +98,13 @@ def server():
             item = {"id": "reply-" + turn, "type": "agentMessage", "phase": "final_answer", "text": text}
             for phase in ("started", "completed"):
                 send({"method": "item/" + phase, "params": {"threadId": "settings-fixture", "turnId": turn, "item": item}})
+            if "thread/tokenUsage/updated" not in skipped:
+                usage = {"inputTokens":90*turns,"cachedInputTokens":20*turns,"outputTokens":10*turns,
+                         "reasoningOutputTokens":2*turns,"totalTokens":100*turns}
+                notification = {"method":"thread/tokenUsage/updated","params":{"threadId":"settings-fixture","turnId":turn,
+                                "tokenUsage":{"total":usage,"last":{"totalTokens":100},"modelContextWindow":8192}}}
+                send(notification)
+                send(notification)
             send({"method": "turn/completed", "params": {"threadId": "settings-fixture", "turn": {"id": turn, "status": "completed"}}})
             continue
         else:

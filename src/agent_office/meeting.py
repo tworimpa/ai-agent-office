@@ -197,7 +197,7 @@ Each task ID is unique. Dependencies must refer to earlier task IDs. Use at most
 4 questions, 2 to 4 options per question, 1000 characters per text field."""
 
 
-def conduct_meeting(task, workspace, developer, reviewer, *, record, adapters, folders=()):
+def conduct_meeting(task, workspace, developer, reviewer, *, record, adapters, folders=(), workers=None):
     """Return a reviewed plan or fail closed, preserving each valid opinion as it arrives."""
     repo = Path(workspace).resolve()
     if any(engine not in SUPPORTED_ENGINES or engine not in adapters for engine in (developer, reviewer)):
@@ -220,11 +220,14 @@ def conduct_meeting(task, workspace, developer, reviewer, *, record, adapters, f
                                if prior is None else "Revise your proposal to resolve the reviewer's technical issues.")
             prompt = (f"MEETING_{role.upper()}\n{instruction}\n{_INSTRUCTIONS}\n"
                       + json.dumps({"request": task, "evidence": material, "previous": prior}, ensure_ascii=False))
+            actor = workers.bind(role, "meeting", 1) if workers else adapters[engine]
+            if workers:
+                engine = actor.engine
             try:
                 with tempfile.TemporaryDirectory(prefix="office-meeting-") as directory:
                     scratch = Path(directory)
                     git(scratch, "init", "--quiet", "--template=")
-                    result = adapters[engine].execute(prompt, workspace=scratch, allow_edits=False,
+                    result = actor.execute(prompt, workspace=scratch, allow_edits=False,
                                                       strict_completion=True, prompt_only=True)
             except (OSError, ValueError, RuntimeError, DelegationDeferred) as exc:
                 raise ValueError(f"{role} ({engine}) 회의를 실행할 수 없습니다.") from exc

@@ -266,6 +266,9 @@ def supervise(db_path, run_id, payload):
                         timing(store.connection, run_id)["active_seconds"] >= policy["active_seconds"]):
                     message = "목표에 지정한 실제 작업 시간을 모두 사용했습니다."
                     with store._write():
+                        from .goal_workers import hold
+                        hold(store.connection,run_id,"operator","run",store.get_run(run_id).attempts,
+                             "budget_stop",message)
                         from .goal_verification import init_schema
                         init_schema(store.connection)
                         store.connection.execute("UPDATE studio_runs SET diagnostic=?,proposed_state='FAILED',"

@@ -1,3 +1,5 @@
+import {usageActions} from './workspace-profile.js';
+
 const stages = {start: '착수', reproduce: '재현', implement: '구현', verify: '검증', review: '검토'};
 const checks = {quick: '관련 테스트', full: '전체 회귀', journey: '사용자 여정'};
 const checkStatus = {passed: '통과', failed: '실패', unverified: '미검증', skipped: '생략'};
@@ -170,8 +172,11 @@ function buildFields({root, prefix, make, sources, requests}) {
   return {load, value, mode};
 }
 
-export function mountBriefing({get, make, api, context, refresh, openAction, taskTitle, stateName, uuid}) {
+export function mountBriefing({win, get, make, api, context, refresh, openAction, taskTitle, stateName, uuid}) {
   let latest = null, read = 0, fresh = false, loadingFailed = false;
+  let visitKey = null, previousVisit = null;
+  let visitRequest = null;
+  const lastSeen = new Map(), pendingVisits = new Map();
   let editing = null, correcting = null, saving = false;
   const keys = new Map();
   const path = () => '/rooms/' + context().workspaceId;
@@ -196,6 +201,13 @@ export function mountBriefing({get, make, api, context, refresh, openAction, tas
   const section = get('workspace-briefing');
   function reset() {
     ++read; fresh = false; latest = editing = correcting = null; saving = loadingFailed = false; keys.clear();
+    visitKey = previousVisit = null;
+    visitRequest = null;
+    get('brief-visit-note').textContent = '';
+    get('brief-visit-retry').hidden = true;
+    get('brief-visit').hidden = true;
+    get('brief-visit').open = false;
+    get('brief-visit-rows').replaceChildren();
     for (const id of ['brief-questions','brief-permissions','brief-review','brief-work','brief-overlaps']) get(id).replaceChildren();
     for (const id of ['brief-question-count','brief-permission-count','brief-review-count','brief-work-count','brief-time','brief-note']) get(id).textContent = '';
     section.hidden = true; get('brief-progress').open = false;
@@ -266,7 +278,14 @@ export function mountBriefing({get, make, api, context, refresh, openAction, tas
     const profile = context().runs.find(run => run.id === row.run_id)?.assignment?.roles?.[row.role];
     const owner = who(row.role, row.owner || profile?.name);
     const item = card(taskTitle(row.task), [owner, stateName(row.state), stageName(row.stage), '우선순위 ' + row.priority].join(' · '));
+    const waiting = {quota:'공급자 계정 한도 대기',user:'사용자 결정 대기',dependency:'선행 작업 대기',host:'실행 호스트의 작업 시작 대기'};
+    if (waiting[row.wait_kind]) item.append(make('p', waiting[row.wait_kind], 'brief-wait'));
     item.append(make('p', [row.progress, '마지막 진전 ' + when(row.last_progress_at)].filter(Boolean).join(' · ')));
+    if (row.proof) item.append(make('p', row.proof, 'brief-proof'));
+    if (row.usage_hold) item.append(make('p', [usageActions[row.usage_hold.kind] || '한도 조치', row.usage_hold.reason].join(' · '),
+      'brief-wait'), action(row, 'usage', '한도와 재개 기록'));
+    if (row.last_resume_at) item.append(make('p', '마지막 재개 · ' + when(row.last_resume_at)));
+    if (row.assignment_reason) item.append(make('p', '배정 근거 · ' + row.assignment_reason));
     if (row.wait_reasons?.length) item.append(make('p', '대기 사유 · ' + row.wait_reasons.join(' / '), 'brief-wait'));
     if (row.areas?.length) item.append(make('p', '예상 변경 영역 · ' + row.areas.join(', ')));
     for (const dep of row.dependencies || []) {
@@ -352,7 +371,84 @@ export function mountBriefing({get, make, api, context, refresh, openAction, tas
       make('p', '변경 영역 겹침 가능 · ' + left + ' / ' + right + ' · ' + area + (reason ? ' · ' + reason : '') +
         ' · 자동 보류 없음', 'brief-wait'), '');
     get('brief-overlaps').hidden = !overlaps.length;
+    renderVisit();
     controls();
+  }
+  function sharedVisit(id) {
+    const key = visitKey, room = context().workspaceId;
+    const operation = {key, id};
+    visitRequest = operation;
+    pendingVisits.set(key, id);
+    try { win.sessionStorage.setItem(key + ':pending', id); } catch { /* Keep id in this tab. */ }
+    get('brief-visit-retry').hidden = true;
+    get('brief-visit-note').textContent = '실행 호스트의 이전 방문 시각을 확인하고 있습니다.';
+    api(path() + '/visit', {id}).then(result => {
+      if (operation !== visitRequest || key !== visitKey) return;
+      if (result.id !== id || result.workspace_id !== room || !Number.isFinite(Date.parse(result.visited_at)) ||
+          (result.previous_visit !== null && !Number.isFinite(Date.parse(result.previous_visit)))) throw Error();
+      pendingVisits.delete(key);
+      try { win.sessionStorage.removeItem(key + ':pending'); } catch { /* Already acknowledged in memory. */ }
+      previousVisit = result.previous_visit;
+      get('brief-visit-note').textContent = '브라우저와 설치형 앱이 공유하는 방문 기록입니다.';
+      if (latest) renderVisit();
+    }).catch(() => {
+      if (operation !== visitRequest || key !== visitKey) return;
+      get('brief-visit-note').textContent = '공유 방문 시각을 확인하지 못해 이 브라우저의 기록을 표시합니다.';
+      get('brief-visit-retry').hidden = false;
+    });
+  }
+  get('brief-visit-retry').addEventListener('click', () => {
+    const id = pendingVisits.get(visitKey);
+    if (id && writable() && !get('brief-visit-retry').hidden) sharedVisit(id);
+  });
+  function renderVisit() {
+    const scope = context().visitKey;
+    get('brief-visit').hidden = !scope;
+    if (!scope || !Number.isFinite(Date.parse(latest.observed_at))) return;
+    const key = 'office-last-visit:' + scope;
+    if (visitKey !== key) {
+      visitKey = key;
+      let saved = lastSeen.get(key);
+      try { saved = win.localStorage.getItem(key) || saved; } catch { /* This visit still works in memory. */ }
+      previousVisit = Number.isFinite(Date.parse(saved)) ? saved : null;
+      if (context().sharedVisit) {
+        let pending = pendingVisits.get(key);
+        try { pending = win.sessionStorage.getItem(key + ':pending') || pending; } catch { /* Use the in-memory operation. */ }
+        sharedVisit(idOK(pending) ? pending : uuid());
+      }
+    }
+    if (!win.document.hidden) {
+      const observed = latest.observed_at;
+      lastSeen.set(key, observed);
+      try {
+        const saved = win.localStorage.getItem(key);
+        if (!saved || !(Date.parse(saved) >= Date.parse(observed))) win.localStorage.setItem(key, observed);
+      } catch { /* Storage can be unavailable in a private browser. */ }
+    }
+    get('brief-visit-window').textContent = previousVisit ? when(previousVisit) + ' 이후 작업실 기록' : '이전 방문 시각이 없습니다.';
+    const rows = [];
+    const add = (row, at, text, kind, target) => {
+      if (!previousVisit || !idOK(row.run_id) || !(Date.parse(at) > Date.parse(previousVisit)) || Date.parse(at) > Date.parse(latest.observed_at)) return;
+      rows.push({row, at, text, kind, target});
+    };
+    for (const row of latest.decisions) {
+      const perm = row.kind === 'permission', plan = row.kind === 'plan';
+      add(row, row.created_at, (perm ? '새 권한 요청' : plan ? '계획 확인 요청' : '새 질문') + ' · ' + row.prompt,
+        perm ? 'permission' : plan ? 'plan' : 'answer', perm ? '범위 확인' : plan ? '계획 확인' : '질문에 답하기');
+    }
+    for (const row of latest.candidates) add(row, row.reviewed_at, row.attempt + '차 후보 독립 검토 승인', 'candidate', '후보 검증 근거');
+    for (const row of latest.work) {
+      if (row.usage_hold) add(row, row.usage_hold.at, [usageActions[row.usage_hold.kind] || '한도 조치', row.usage_hold.reason].join(' · '), 'usage', '한도 기록');
+      add(row, row.last_resume_at, '작업 재개', 'usage', '재개 기록');
+      if (row.progress) add(row, row.last_progress_at, row.progress, 'work', '진행 기록');
+    }
+    rows.sort((a,b) => Date.parse(b.at) - Date.parse(a.at));
+    get('brief-visit-count').textContent = previousVisit ? rows.length + '건' : '';
+    drawGroup('brief-visit-rows', rows, ({row, at, text, kind, target}) => {
+      const item = card(taskTitle(row.task), text);
+      item.append(make('small', when(at)), action(row, kind, target));
+      return item;
+    }, previousVisit ? '이후에 확인된 변경이 없습니다.' : '', 4);
   }
   async function load() {
     if (!context().supported) return;

@@ -13,6 +13,8 @@ from pathlib import Path
 from .acp import run_acp
 from .github_connection import worker_env
 from .engines import SUPPORTED_ENGINES, codex_backend_args, resolve_executable
+from .provider_profiles import validate_selection
+from .provider_telemetry import exec_usage
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,7 @@ class AgentResult:
     message: str
     session_id: str | None = None
     truncated: bool = False
+    preflight_blocked: bool = False
 
 
 class CLIAdapter:
@@ -30,35 +33,41 @@ class CLIAdapter:
         self.engine = engine
         self.timeout = timeout
 
-    def command(self, prompt: str, *, allow_edits: bool) -> list[str]:
+    def command(self, prompt: str, *, allow_edits: bool, model=None, effort=None) -> list[str]:
+        validate_selection(self.engine, model, effort)
+        selection = ["--model", model] if model else []
+        if effort:
+            selection += (["-c", f"model_reasoning_effort={effort}"] if self.engine == "codex" else ["--effort", effort])
         if self.engine == "gemini":
-            return ["gemini", "--acp", "--approval-mode", "auto_edit" if allow_edits else "plan"]
+            return ["gemini", "--acp", "--approval-mode", "auto_edit" if allow_edits else "plan", *selection]
         if self.engine == "cline":
             return ["cline", "--acp", "--auto-approve", "false"]
         if self.engine == "antigravity":
             return ["agy", "--input-format", "stream-json", "--output-format", "stream-json",
                     "--mode", "accept-edits" if allow_edits else "plan", "--sandbox",
-                    "--disable-slash-commands", "--print-timeout", f"{self.timeout}s"]
+                    "--disable-slash-commands", "--print-timeout", f"{self.timeout}s", *selection]
         if self.engine == "claude":
             return [
                 "claude", "-p", "--output-format", "json",
                 "--permission-mode", "acceptEdits" if allow_edits else "plan",
-                "--max-turns", "16",
+                "--max-turns", "16", *selection,
             ]
         if self.engine != "codex":
             raise ValueError(f"No command configured for {self.engine}")
         return [
             "codex", "exec", "--json", "--sandbox",
-            "workspace-write" if allow_edits else "read-only", "-",
+            "workspace-write" if allow_edits else "read-only", *selection, "-",
         ]
 
     def execute(self, prompt: str, *, workspace: Path, allow_edits: bool,
-                strict_completion: bool = False, inbox=None, prompt_only: bool = False) -> AgentResult:
+                strict_completion: bool = False, inbox=None, prompt_only: bool = False,
+                model=None, effort=None, telemetry=None) -> AgentResult:
         # Pass untrusted task text via stdin: safer for Windows .cmd launchers,
         # long prompts, and special characters than putting it in argv.
         if prompt_only and (allow_edits or inbox is not None):
             raise ValueError("Consultations require a read-only role without an inbox.")
-        argv = self.command(prompt, allow_edits=allow_edits)
+        selection = {key: value for key, value in (("model", model), ("effort", effort)) if value is not None}
+        argv = self.command(prompt, allow_edits=allow_edits, **selection)
         executable = resolve_executable(argv[0])
         if executable is None:
             return AgentResult(127, f"Missing CLI: {argv[0]}. Install and authenticate it first.")
@@ -83,11 +92,13 @@ class CLIAdapter:
                 # Windows launchers may leave a descendant holding a stdio pipe
                 # after exit. A bounded file-backed turn does not await its EOF.
                 from .batch_dialogue import _turn
-                return _turn(self.engine, argv, prompt, workspace, env, time.monotonic() + self.timeout, nullcontext())
+                return _turn(self.engine, argv, prompt, workspace, env, time.monotonic() + self.timeout, nullcontext(),
+                             telemetry=telemetry)
             if inbox is not None:
                 if self.engine == "codex":
                     from .codex_inbox import run_codex_inbox
-                    return run_codex_inbox(executable, prompt, workspace, allow_edits, env, self.timeout, inbox)
+                    return run_codex_inbox(executable, prompt, workspace, allow_edits, env, self.timeout, inbox,
+                                           model=model, effort=effort, telemetry=telemetry)
                 from .batch_dialogue import run_batch_dialogue
                 return run_batch_dialogue(self.engine, argv, prompt, workspace, env, self.timeout, inbox)
             completed = subprocess.run(
@@ -102,6 +113,8 @@ class CLIAdapter:
         except OSError as exc:
             return AgentResult(126, f"Unable to start {self.engine}: {exc}")
 
+        if self.engine == "codex" and telemetry:
+            record_exec_usage(completed.stdout, telemetry)
         if strict_completion and self.engine in ("codex", "claude") and completed.returncode == 0:
             from .fixture_completion import parse_fixture_completion
             return parse_fixture_completion(self.engine, completed.stdout)
@@ -116,6 +129,24 @@ class CLIAdapter:
             error = completed.stderr.strip() or message
             message = f"{self.engine} exited {completed.returncode}: {error[:3000]}"
         return AgentResult(completed.returncode, message[:12000], session_id, len(message) > 12000)
+
+
+def record_exec_usage(output, telemetry):
+    # One exec invocation starts a single turn. An ambiguous terminal receipt cannot establish usage.
+    usage = None
+    completed = False
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except (ValueError, RecursionError):
+            return
+        if isinstance(event, dict) and event.get("type") == "turn.completed":
+            if completed:
+                return
+            completed = True
+            usage = exec_usage(event.get("usage"))
+    if usage:
+        telemetry(usage)
 
 
 def parse_output(engine: str, output: str) -> tuple[str, str | None]:

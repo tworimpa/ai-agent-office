@@ -15,6 +15,7 @@ from .events import snapshot_request
 from .engines import codex_backend_args
 from .dialogue import DelegationWithdrawn
 from .models import OfficeError
+from .provider_telemetry import applicable_limit, depleted, limit_event, model_event, quota_response, usage_event
 from .studio_process import WINDOWS_SERVICE_CODEX_CONTEXT, windows_service_session
 
 
@@ -45,6 +46,7 @@ _PROVIDER_ERROR_TYPES = {
     "sessionBudgetExceeded", "unauthorized", "usageLimitExceeded",
     "responseStreamDisconnected", "responseTooManyFailedAttempts",
 }
+_PROFILE_NOTIFICATIONS = {"account/updated", "account/rateLimits/updated", "thread/tokenUsage/updated", "model/rerouted"}
 
 class _CodexProtocolError(ProtocolError):
     """Construct only with fixed text and bounded, recognized metadata."""
@@ -140,7 +142,7 @@ def _changes(workspace, changes):
 
 
 class CodexSession:
-    def __init__(self, process, workspace, edits, inbox, timer):
+    def __init__(self, process, workspace, edits, inbox, timer, *, model=None, effort=None, telemetry=None):
         self.timer = timer
         self.process = process
         self.workspace = workspace
@@ -157,6 +159,10 @@ class CodexSession:
         self.turn_ids = set()
         self.phase = "initialize"
         self.initial_context = ""
+        self.model, self.effort, self.telemetry = model, effort, telemetry
+        self.account_key = None
+        self.confirmed_model = None
+        self.preflight_blocked = False
 
     async def send(self, message, decision=None, *, direction=None):
         data = (json.dumps(message, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
@@ -187,12 +193,34 @@ class CodexSession:
         if "turnId" in params and params["turnId"] != self.turn:
             raise _CodexProtocolError("wrong Codex turn")
 
+    def observe(self, msg):
+        if self.telemetry is None or "id" in msg:
+            return
+        method, params = msg["method"], msg["params"]
+        event = None
+        if method == "account/updated":
+            self.account_key = None
+        elif method == "account/rateLimits/updated":
+            event = limit_event(params.get("rateLimits"), account_key=self.account_key)
+            if not applicable_limit(event, self.confirmed_model):
+                return
+        elif (method in ("model/rerouted", "thread/tokenUsage/updated") and self.thread and self.turn
+              and params.get("threadId") == self.thread and params.get("turnId") == self.turn):
+            if method == "model/rerouted":
+                event = model_event(params.get("toModel"))
+                self.confirmed_model = event["actual_model"] if event else None
+            else:
+                event = usage_event(params.get("tokenUsage"))
+        if event:
+            self.telemetry(event)
+
     async def event(self):
         while True:
             msg = self.early.popleft()[0] if self.early else await self.read()
             if "method" not in msg:
                 return msg
             self.check_binding(msg)
+            self.observe(msg)
             if "id" in msg or msg["method"] not in INFORMATIONAL:
                 return msg
 
@@ -283,6 +311,7 @@ class CodexSession:
                     or msg["method"] not in INFORMATIONAL | {"thread/closed"}):
                 raise _CodexProtocolError("unexpected Codex shutdown record")
             self.check_binding(msg)
+            self.observe(msg)
             if msg["method"] == "thread/closed" and msg["params"].get("threadId") != self.thread:
                 raise _CodexProtocolError("wrong Codex shutdown thread")
         raise _CodexProtocolError("Codex shutdown record limit exceeded")
@@ -290,18 +319,40 @@ class CodexSession:
     async def start(self):
         # Start confirmations come from the response. Opt out of the redundant
         # notifications, which can arrive on either side of that response.
+        skip = INFORMATIONAL - _PROFILE_NOTIFICATIONS if self.telemetry else INFORMATIONAL
         await self.rpc("initialize", {"clientInfo": {"name": "agent_office", "version": "0.1.0"},
                                       "capabilities": {"optOutNotificationMethods": [
-                                          "thread/started", "turn/started", *sorted(INFORMATIONAL)]}})
+                                          "thread/started", "turn/started", *sorted(skip)]}})
         await self.send({"method": "initialized", "params": {}})
         response = await self.rpc("thread/start", {
             "cwd": str(self.workspace), "sandbox": "workspace-write" if self.edits else "read-only",
             "approvalPolicy": "on-request", "approvalsReviewer": "user", "ephemeral": True,
+            **({"model": self.model} if self.model else {}),
             "config": {"sandbox_workspace_write": {"writable_roots": [], "network_access": False,
-                       "exclude_slash_tmp": True, "exclude_tmpdir_env_var": True}},
+                       "exclude_slash_tmp": True, "exclude_tmpdir_env_var": True},
+                       **({"model_reasoning_effort": self.effort} if self.effort else {})},
         })
         self.check_sandbox(response)
         self.thread = _identifier(_object(response.get("thread")).get("id"))
+        if self.telemetry:
+            event = model_event(response.get("model"), response.get("reasoningEffort"))
+            if event:
+                self.confirmed_model = event["actual_model"]
+                self.telemetry(event)
+            if response.get("modelProvider") == "openai":
+                try:
+                    async with asyncio.timeout(10):
+                        metadata = await self.rpc("account/rateLimits/read", {"excludeResetCreditDetails": True})
+                except _CodexRPCError:
+                    pass  # Optional metadata may be unavailable under this account or server version.
+                else:
+                    self.account_key, limits = quota_response(metadata)
+                    for limit in limits:
+                        if applicable_limit(limit, self.confirmed_model):
+                            self.telemetry(limit)
+                            self.preflight_blocked |= depleted(limit)
+                    if self.preflight_blocked:
+                        return
         if windows_service_session():
             # Add application context without replacing the user's configured developer instructions.
             try:
@@ -481,17 +532,21 @@ class CodexSession:
 
     async def run(self, prompt):
         await self.start()
+        if self.preflight_blocked:
+            self.telemetry({"kind": "usage", "total_tokens": 0})
+            return AgentResult(75, "Codex account limit reached before turn start.", preflight_blocked=True)
         finish_instruction = "For the completed task append a final standalone line " + FINAL_MARKER + "."
         prompt = self.initial_context + prompt + "\n\n" + QUESTION_INSTRUCTIONS + " " + finish_instruction
         decision = kind = direction = None
         questions = 0
+        selection = {key: value for key, value in (("model", self.model), ("effort", self.effort)) if value}
         while True:
             try:
-                response = await self.rpc("turn/start", {"threadId": self.thread, "input": [{"type": "text", "text": prompt}]},
+                response = await self.rpc("turn/start", {"threadId": self.thread, **selection, "input": [{"type": "text", "text": prompt}]},
                                           decision, direction=direction)
             except DelegationWithdrawn:
                 row = await self.wait_decision(self.inbox.await_operator(decision))
-                response = await self.rpc("turn/start", {"threadId": self.thread,
+                response = await self.rpc("turn/start", {"threadId": self.thread, **selection,
                                           "input": [{"type": "text", "text": continuation_prompt(row["answer"], kind=kind)}]},
                                           decision)
             turn = _object(response.get("turn"))
@@ -534,7 +589,7 @@ class CodexSession:
             prompt = direction.prompt + "\n\n" + QUESTION_INSTRUCTIONS + " " + finish_instruction
 
 
-async def _run(executable, prompt, workspace, edits, env, timeout, inbox):
+async def _run(executable, prompt, workspace, edits, env, timeout, inbox, selection):
     deadline = asyncio.get_running_loop().time() + timeout
     session = None
     try:
@@ -544,7 +599,7 @@ async def _run(executable, prompt, workspace, edits, env, timeout, inbox):
                 start_new_session=os.name != "nt", stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=1024 * 1024)
             try:
-                session = CodexSession(process, workspace.resolve(), edits, inbox, timer)
+                session = CodexSession(process, workspace.resolve(), edits, inbox, timer, **selection)
                 result = await session.run(prompt)
                 await session.finish()
                 return result
@@ -554,5 +609,5 @@ async def _run(executable, prompt, workspace, edits, env, timeout, inbox):
         return _failure_result(session.phase if session is not None else "spawn", exc)
 
 
-def run_codex_inbox(executable, prompt, workspace, allow_edits, env, timeout, inbox):
-    return asyncio.run(_run(executable, prompt, workspace, allow_edits, env, timeout, inbox))
+def run_codex_inbox(executable, prompt, workspace, allow_edits, env, timeout, inbox, **selection):
+    return asyncio.run(_run(executable, prompt, workspace, allow_edits, env, timeout, inbox, selection))

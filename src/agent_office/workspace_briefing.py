@@ -116,6 +116,7 @@ def _areas(task, assigned):
 
 
 def read(db, workspace):
+    from . import goal_usage
     observed = now()
     candidates = _candidates(db, workspace)
     rows = db.execute("""SELECT r.run_id,r.state,r.attempts,r.ended_at,r.started_at,t.request_snapshot AS task,
@@ -180,10 +181,21 @@ def read(db, workspace):
                 progress = "선행 조건 충족 · 재개 대기"
         elif admitted:
             last = max(last,admitted["entered_at"])
+        usage = goal_usage.brief(db, rid)
+        if usage["last_progress_at"]:
+            last = max(last, usage["last_progress_at"])
+        if usage["hold"]:
+            progress = usage["hold"]["reason"]
+            reasons = [progress, *reasons]
+        elif usage["last_resume_at"] and not row["ended_at"]:
+            progress = "실행 재개 · " + progress
+        work_profile = assignment.get("work_profile", {})
         work[rid] = dict(run_id=rid, task=_short(row["task"]), role=role, owner=_owner(role,assignment), state=state,
                          progress=progress, proof=proof, last_progress_at=last, stage=stage, wait_reasons=reasons,
                          decisions=evidence, coordination_revision=spec["revision"], priority=spec["priority"],
                          areas=spec["areas"], dependencies=spec["dependencies"], active_stage=bool(admitted and not wait and not row["ended_at"]),
+                         usage_hold=usage["hold"], last_resume_at=usage["last_resume_at"],
+                         work_mode=work_profile.get("mode"), assignment_reason=work_profile.get("reason"),
                          allow_edits=bool(row["allow_edits"]),
                          editable=bool(spec["revision"] and not row["ended_at"] and not row["stop_requested"]))
         if not row["ended_at"]:
@@ -256,6 +268,18 @@ def read(db, workspace):
             decisions.append(dict(run_id=rid,request_id=key,revision=row["revision"],kind="plan",role="coordinator",
                                   owner="조정자",task=work[rid]["task"],prompt=prompt,created_at=row["created_at"],
                                   impacts=impacts(rid,key,prompt,"plan")))
+    user_waits = {d["run_id"] for d in decisions if d["kind"] in {"product","permission","plan"}}
+    for rid,item in work.items():
+        if item["usage_hold"]:
+            item["wait_kind"] = "quota" if item["usage_hold"]["kind"] == "quota_wait" else "stopped"
+        elif rid in user_waits:
+            item["wait_kind"] = "user"
+        elif item["wait_reasons"]:
+            item["wait_kind"] = "dependency"
+        elif item["state"] == "QUEUED":
+            item["wait_kind"] = "host"
+        else:
+            item["wait_kind"] = None
     overlaps = []
     for left,right in combinations(areas,2):
         for key in sorted(areas[left].keys() & areas[right].keys()):

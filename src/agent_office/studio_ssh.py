@@ -25,6 +25,7 @@ from .technical_choices import CHOICE_TOPIC, valid_receipt
 from .team_wire import check_run_features, check_skill_reply
 from .studio_catalog import normalize_test_files
 from .workspace_rooms import CURSOR_PATTERN, ROLES, ROOM_LIMIT, normalize_profiles, normalize_settings, room_route
+from . import work_profiles, work_profile_views
 
 
 _TIMEOUT = 12
@@ -72,7 +73,7 @@ def is_peer_route(method: str, route: str) -> bool:
         return method == "GET"
     if route.startswith("/rooms/"):
         return (workspace_briefing.route(method, route) is not None or github_studio.route(method, route) is not None
-                or room_route(method, route) is not None)
+                or work_profile_views.route(method, route) is not None or room_route(method, route) is not None)
     if re.fullmatch(r"/goal-checks/[a-f0-9]{32}", route):
         return True
     if goal_route(method, route) is not None:
@@ -209,6 +210,10 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
         elif action == "recover" and not isinstance(data.get("recovery"), dict):
             raise RemoteUnavailable()
         return
+    profile = work_profile_views.route(method, route)
+    if profile:
+        work_profile_views.check_reply(profile, status, data, method, payload)
+        return
     briefing = workspace_briefing.route(method, route)
     if briefing:
         workspace_briefing.check_reply(briefing, status, data, payload)
@@ -309,10 +314,19 @@ def _check_assignment(row, required=False):
     if assignment is None and not required:
         return
     goal_fields = {"goal_policy", "goal_criteria", "reproduce_required", "planning_mode"}
-    if (not isinstance(assignment, dict) or set(assignment) - {"test_files", "meeting", "review_plan"} - goal_fields != {"roles", "note", "delegation"}
+    if (not isinstance(assignment, dict) or set(assignment) - {"test_files", "meeting", "review_plan", "work_profile"} - goal_fields != {"roles", "note", "delegation"}
             or type(assignment["delegation"]) is not bool or not isinstance(assignment["note"], str)
             or not 1 <= len(assignment["note"]) <= 520 or row.get("use_inbox") is not True):
         raise RemoteUnavailable()
+    if "work_profile" in assignment:
+        profile = assignment["work_profile"]
+        if not isinstance(profile,dict) or not isinstance(profile.get("reason"),str) or not isinstance(profile.get("role_reasons"),dict):
+            raise RemoteUnavailable()
+        if "retry_effort" in profile and (profile["retry_effort"] not in ("high","xhigh") or profile.get("retry_deep") is not True):
+            raise RemoteUnavailable()
+        body = {k:v for k,v in profile.items() if k not in {"reason","role_reasons","retry_effort"}}
+        if work_profiles.merge(work_profiles.defaults(), body) != body:
+            raise RemoteUnavailable()
     if goal_fields.intersection(assignment):
         from .goal_verification import validate_policy
         if (not goal_fields <= assignment.keys() or row.get("allow_edits") is not True

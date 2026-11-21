@@ -21,7 +21,8 @@ from .workspace import plan_worktree
 
 
 def ensure_schema(db):
-    from . import goal_stage_wait
+    from . import goal_stage_wait, goal_usage
+    goal_usage.schema(db)
     goal_stage_wait.ensure_schema(db)
     db.execute("""CREATE TABLE IF NOT EXISTS studio_goal_checkpoints(
         run_id TEXT PRIMARY KEY REFERENCES runs(run_id), stage TEXT NOT NULL, state_json TEXT NOT NULL,
@@ -165,7 +166,7 @@ def _environment(root, checks, update):
     for name in ("goal_checks.py", "goal_candidates.py", "goal_verification.py", "goal_host_checks.py",
                  "goal_peer.py", "goal_pytest.py", "goal_process.py", "goal_artifact.py",
                  "goal_reproduction.py", "studio_process.py", "workflow.py", "goal_stage_wait.py",
-                 "workspace_coordination.py"):
+                 "workspace_coordination.py", "goal_usage.py", "goal_workers.py"):
         file(host_module / name)
     files = set()
     for check in checks:
@@ -246,7 +247,7 @@ def _fingerprint(db, run_id):
 
 def checkpoint(db, run_id, next_stage, state):
     """Caller has finished and recorded all outputs for the preceding operation."""
-    if next_stage not in ("start_goal", "baseline", "develop", "test", "review"):
+    if next_stage not in ("start_goal", "baseline", "develop", "test", "review", "consultation"):
         raise ValueError("Unknown goal checkpoint stage")
     if not is_goal(db, run_id):
         return
@@ -258,8 +259,8 @@ def checkpoint(db, run_id, next_stage, state):
     except (ValueError, OSError, UnicodeError):
         digest = None
     saved = {key: state[key] for key in ("attempts", "status", "check_index", "feedback", "test_output",
-                                          "developer_output") if key in state}
-    for key in ("feedback", "test_output", "developer_output"):
+                                          "developer_output", "provider_pending", "parallel_output", "retry_allowed") if key in state}
+    for key in ("feedback", "test_output", "developer_output", "parallel_output"):
         if key in saved:
             saved[key] = snapshot_request(saved[key])
     db.execute("INSERT OR REPLACE INTO studio_goal_checkpoints VALUES (?,?,?,?,?,?,?,0)",
@@ -305,7 +306,12 @@ def detail(store, run_id):
     from .goal_stage_wait import waiting
     stage_wait = waiting(db, run_id)
     if stage_wait and run.state in ACTIVE:
-        action, reason = "waiting_dependency", "\n".join(json.loads(stage_wait["reasons"]))
+        from .goal_usage import brief
+        hold = brief(db,run_id)["hold"]
+        if hold and hold["kind"] == "quota_wait":
+            action, reason = "waiting_quota", hold["reason"]
+        else:
+            action, reason = "waiting_dependency", "\n".join(json.loads(stage_wait["reasons"]))
     elif alive:
         action = "working"
         reason = ("작업을 계속하려면 운영자 응답이 필요합니다." if clock["waiting_for_user"] else

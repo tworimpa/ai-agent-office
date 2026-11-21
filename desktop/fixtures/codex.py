@@ -26,20 +26,42 @@ def meeting():
     result = meeting_result(sys.stdin.buffer.read().decode("utf-8"))
     emit(type="turn.started")
     emit(type="item.completed", item={"type": "agent_message", "text": json.dumps(result, ensure_ascii=False)})
-    emit(type="turn.completed")
+    emit(type="turn.completed", usage={"input_tokens": 70, "cached_input_tokens": 10, "output_tokens": 30})
+
+
+def metadata(request):
+    if request["method"] == "account/rateLimits/read":
+        response(request, accountId="desktop-fixture-account", ordinaryUsageAllowed=True,
+                 rateLimits={"limitId": "codex", "primary": {"usedPercent": 20, "windowDurationMins": 300}})
+    elif request["method"] == "model/list":
+        response(request, data=[{"id": "desktop-fixture", "model": "desktop-fixture", "displayName": "Desktop fixture",
+                 "hidden": False, "isDefault": True, "defaultReasoningEffort": "medium",
+                 "supportedReasoningEfforts": [{"reasoningEffort": effort} for effort in ("low", "medium", "high")]}],
+                 nextCursor=None)
+    else:
+        return False
+    return True
 
 
 def app_server():
     response(read(), userAgent="desktop fixture")
     assert read()["method"] == "initialized"
     request = read()
+    while request and metadata(request):
+        request = read()
+    if request is None:
+        return
     assert request["method"] == "thread/start"
     editing = request["params"]["sandbox"] == "workspace-write"
     sandbox = {"type": "workspaceWrite", "excludeTmpdirEnvVar": True, "excludeSlashTmp": True} if editing else {"type": "readOnly"}
     response(request, thread={"id": "desktop-fixture"}, cwd=str(Path.cwd()), approvalsReviewer="user",
-             approvalPolicy="on-request", sandbox=sandbox)
+             approvalPolicy="on-request", sandbox=sandbox, modelProvider="openai",
+             model=request["params"].get("model", "desktop-fixture"),
+             reasoningEffort=request["params"]["config"].get("model_reasoning_effort", "medium"))
     turns = 0
     while request := read():
+        if metadata(request):
+            continue
         if request["method"] == "thread/inject_items":
             response(request)
             continue
@@ -80,6 +102,9 @@ def app_server():
         item = {"id": "reply-" + turn, "type": "agentMessage", "phase": "final_answer", "text": result}
         for phase in ("started", "completed"):
             emit(method="item/" + phase, params={"threadId": "desktop-fixture", "turnId": turn, "item": item})
+        emit(method="thread/tokenUsage/updated", params={"threadId": "desktop-fixture", "turnId": turn, "tokenUsage": {
+            "total": {"inputTokens": 70 * turns, "outputTokens": 30 * turns, "totalTokens": 100 * turns},
+            "last": {"totalTokens": 100}, "modelContextWindow": 4000}})
         emit(method="turn/completed", params={"threadId": "desktop-fixture", "turn": {"id": turn, "status": "completed"}})
 
 
@@ -96,7 +121,11 @@ match arguments:
         print("Logged in using fixture")
     case ["exec", "--help"]:
         print("--json --sandbox")
-    case ["exec", "--json", "--sandbox", "read-only", "-"]:
+    case ["exec", "--json", "--sandbox", "read-only", *selection, "-"]:
+        if selection[:2] == ["--model", "desktop-fixture"]:
+            selection = selection[2:]
+        assert not selection or (len(selection) == 2 and selection[0] == "-c" and
+                                 selection[1] in {"model_reasoning_effort=" + e for e in ("low", "medium", "high")})
         meeting()
     case ["app-server", "--listen", "stdio://"]:
         app_server()

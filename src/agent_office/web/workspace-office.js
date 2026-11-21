@@ -3,6 +3,8 @@ import {planFlow} from './office-flow.js';
 import {mountGoals} from './workspace-goal.js';
 import {mountGithub} from './workspace-github.js';
 import {mountBriefing} from './workspace-briefing.js';
+import {mountWorkProfiles} from './workspace-profile.js';
+import {mountCharacterRecords} from './workspace-character.js';
 
 const roleLabels = {developer: '담당자', reviewer: '검토자'};
 const engines = {codex: 'Codex', antigravity: 'Antigravity', claude: 'Claude Code', gemini: 'Gemini CLI', cline: 'Cline CLI'};
@@ -258,8 +260,14 @@ export function mountWorkspaceOffice(win = window) {
 
   const api = (path, body, timeoutMs) => request(scope(hostId) + path, body, timeoutMs);
   const uuid = () => win.crypto.randomUUID().replaceAll('-', '');
-  const briefing = mountBriefing({get, make, api, taskTitle, stateName, uuid, refresh, openAction: openBriefAction,
+  const profileContext = () => ({workspaceId, runId, identity: [hostId, room?.journal_id, workspaceId].join(':'),
+    supported: room?.work_profiles_supported === true, assignment: selected()?.assignment, settings: room?.settings, writable: canWrite()});
+  const profiles = mountWorkProfiles({get, make, api, context: profileContext});
+  const records = mountCharacterRecords({get, make, api, context: profileContext, openEvidence: openCharacterEvidence});
+  const briefing = mountBriefing({win, get, make, api, taskTitle, stateName, uuid, refresh, openAction: openBriefAction,
     context: () => ({workspaceId, identity: hostId + ':' + workspaceId, runs: roomRuns(),
+      visitKey: room?.work_profiles_supported && validId(room?.journal_id) ? profileContext().identity : null,
+      sharedVisit: room?.shared_visits_supported === true,
       supported: room?.briefing_supported === true, writable: canWrite()})});
   const github = mountGithub({get, make, api, desktop: /\bElectron\//i.test(win.navigator.userAgent),
     uuid, briefing,
@@ -565,6 +573,9 @@ export function mountWorkspaceOffice(win = window) {
       if (!fold || get('goal-report').hidden) return false;
       fold.open = true;
       target = fold.querySelector('[data-goal-diff]');
+    } else if (kind === 'usage' && !get('work-usage').hidden) {
+      get('work-usage').open = true;
+      target = get('work-usage').querySelector('summary');
     } else if (kind === 'work') {
       target = get(get('goal-report').hidden ? 'ledger-heading' : 'goal-title');
     }
@@ -574,12 +585,51 @@ export function mountWorkspaceOffice(win = window) {
     return true;
   }
 
+  async function openCharacterEvidence(fact) {
+    if (!canWrite() || !validId(fact.run_id)) return;
+    get('conversation').close();
+    if (!await openBriefAction('work', fact)) return;
+    const candidate = Number.isInteger(fact.attempt) &&
+      [...get('goal-record').querySelectorAll('[data-goal-attempt]')].find(node => node.dataset.goalAttempt === String(fact.attempt));
+    let target;
+    if (fact.section === 'candidate' && candidate) {
+      candidate.open = true;
+      target = candidate.querySelector('summary');
+    } else if (fact.section === 'checks') {
+      target = [...get('goal-record').querySelectorAll('[data-goal-check]')].find(node =>
+        (!Number.isInteger(fact.attempt) || node.dataset.attempt === String(fact.attempt)) &&
+        (!Number.isInteger(fact.position) || node.dataset.position === String(fact.position)));
+      if (!target) { openEvidence('room', 'tests'); return; }
+      target.open = true;
+      target = target.querySelector('summary') || target;
+    } else if (fact.section === 'review' && candidate?.querySelector('[data-review-kind="review"]')) {
+      candidate.open = true;
+      const review = candidate.querySelector('[data-review-kind="review"]');
+      review.open = true;
+      target = review.querySelector('summary');
+    } else if (fact.section === 'review' || fact.section === 'meeting') {
+      openEvidence('room', fact.section);
+      if (fact.section === 'meeting' && Number.isInteger(fact.revision)) {
+        const version = get('meeting-record').querySelector('[data-revision="' + fact.revision + '"]');
+        if (version) { version.open = true; target = version.querySelector('summary'); }
+      }
+    } else if (fact.section === 'directions' || fact.section === 'requests') {
+      changeView('collaboration', false);
+      const key = fact.direction_id || fact.request_id;
+      target = [...get('office-thread').querySelectorAll('[data-receipt]')].find(node =>
+        key ? node.dataset.receipt === key : node.dataset.section === fact.section);
+    }
+    if (target) { target.tabIndex = -1; target.focus(); }
+  }
+
   get('summary-action').addEventListener('click', () => {
     const run = selected();
     if (run) openSummaryStep(run, nextStep(run));
   });
 
   function renderRoom() {
+    profiles.controls();
+    records.controls();
     get('office-main').dataset.briefing = String(room?.briefing_supported === true);
     get('room').hidden = !room;
     get('empty-room').hidden = !!room;
@@ -1159,6 +1209,7 @@ export function mountWorkspaceOffice(win = window) {
       if (!current()) return;
       await Promise.all([
         detailRequest,
+        records.loadUsage(),
         briefing.load().then(() => github.controls()),
         github.load(),
         loadChat(),
@@ -1255,6 +1306,7 @@ export function mountWorkspaceOffice(win = window) {
     const saved = readRecovery(key)?.body;
     const editor = editors.get(key);
     const assignment = role === 'coordinator';
+    records.portrait(role);
     const name = assignment ? '조정자' : (current?.assignment?.roles?.[role] ?? roomPerson(role)).name;
     say('chat-title', name + '와 대화');
     get('chat-portrait').dataset.person = role;
@@ -1264,7 +1316,7 @@ export function mountWorkspaceOffice(win = window) {
     get('assignment-options').hidden = !assignment;
     get('edit-option').hidden = !assignment;
     get('review-option').hidden = !assignment || !supportsMeetings();
-    get('assignment-options').open = Boolean(saved?.delegation != null || saved?.indices || saved?.test_files || saved?.role_engines || saved?.goal_criteria || saved?.coordination);
+    get('assignment-options').open = Boolean(saved?.delegation != null || saved?.indices || saved?.test_files || saved?.role_engines || saved?.goal_criteria || saved?.coordination || saved?.work_profile);
     get('assignment-engines').hidden = !assignment || !supportsMeetings();
     if (assignment && supportsMeetings()) {
       for (const role of Object.keys(roleLabels)) {
@@ -1281,6 +1333,7 @@ export function mountWorkspaceOffice(win = window) {
     get('review-plan').checked = saved?.review_plan === true;
     get('test-files').value = saved?.test_files?.join('\n') ?? '';
     if (assignment) folderChoices(saved?.indices);
+    if (assignment) profiles.intake(saved?.work_profile);
     if (assignment) briefing.intake.load(null, saved?.coordination, !get('allow-edits').checked);
     get('message').value = saved?.message ?? editor ?? '';
     say('chat-note', saved ? '이전 접수 결과를 확인하지 못했습니다. 같은 요청을 다시 보낼 수 있습니다.' : '');
@@ -1406,21 +1459,27 @@ export function mountWorkspaceOffice(win = window) {
       for (const item of relevant) {
         const label = requestLabels[item.kind];
         if (item.status === 'pending') {
-          events.push([item.created_at, requestItem(item, epoch, id === 'chat-log' ? 'chat' : 'thread')]);
+          const request = requestItem(item, epoch, id === 'chat-log' ? 'chat' : 'thread');
+          request.dataset.receipt = item.id; request.dataset.section = 'requests';
+          events.push([item.created_at, request]);
           continue;
         }
         if (item.shared_decision) {
           const receipt = message('agent', '선행 목표의 사용자 결정 적용', item.shared_decision.answer,
             decisionStatus(item), item.id + '-shared');
+          receipt.dataset.receipt = item.id; receipt.dataset.section = 'requests';
           receipt.append(sharedEvidence(item.shared_decision));
           events.push([item.decided_at || item.created_at, receipt]);
           continue;
         }
         if (simple && item.source === 'delegate') continue;
-        events.push([item.created_at, message('agent', label ?? '요청', item.prompt, stamp(item.created_at), item.id)]);
+        const request = message('agent', label ?? '요청', item.prompt, stamp(item.created_at), item.id);
+        request.dataset.receipt = item.id; request.dataset.section = 'requests';
+        events.push([item.created_at, request]);
         if (item.decision) {
           const delegated = item.source === 'delegate';
           const receipt = message(delegated ? 'agent' : 'user', delegated ? '조정자 대리 결정' : '나', item.answer, decisionStatus(item), item.id + '-answer');
+          receipt.dataset.receipt = item.id; receipt.dataset.section = 'requests';
           const evidence = decisionEvidence(item);
           if (evidence) receipt.append(evidence);
           events.push([item.decided_at, receipt]);
@@ -1429,8 +1488,10 @@ export function mountWorkspaceOffice(win = window) {
         }
       }
       for (const item of directions) {
-        events.push([item.created_at, message('user', '나 → ' + (roleLabels[item.role] ?? '에이전트'), item.message,
-          [deliveryLabels[item.delivery] ?? '전달 상태 확인 필요', item.attempt && item.attempt + '번째 시도', stamp(item.created_at)].filter(Boolean).join(' · '), item.id)]);
+        const direction = message('user', '나 → ' + (roleLabels[item.role] ?? '에이전트'), item.message,
+          [deliveryLabels[item.delivery] ?? '전달 상태 확인 필요', item.attempt && item.attempt + '번째 시도', stamp(item.created_at)].filter(Boolean).join(' · '), item.id);
+        direction.dataset.receipt = item.id; direction.dataset.section = 'directions';
+        events.push([item.created_at, direction]);
       }
       events.sort((a, b) => (Date.parse(a[0]) || 0) - (Date.parse(b[0]) || 0));
       messages.push(...events.map(([, event]) => event));
@@ -1521,6 +1582,7 @@ export function mountWorkspaceOffice(win = window) {
     coordinate.disabled = locked || !enabled || coordinate.hidden;
     if (!coordinate.hidden) briefing.intake.mode(!editAssignment);
     const canAssignGoal = editAssignment && room?.goal_supported === true;
+    profiles.intakeControls(assignment, locked || !enabled, canAssignGoal && get('overnight-goal').checked);
     get('goal-option').hidden = !canAssignGoal;
     get('overnight-goal').disabled = locked || !canAssignGoal;
     get('goal-option-help').hidden = !canAssignGoal || !get('overnight-goal').checked;
@@ -1594,6 +1656,8 @@ export function mountWorkspaceOffice(win = window) {
     if (role !== 'coordinator') return {id, role, attempt: chatAttempt, message: value};
     const mode = get('run-delegation').value;
     const body = {id, message: value, allow_edits: get('allow-edits').checked, delegation: mode === '' ? null : mode === 'true'};
+    const workProfile = profiles.value();
+    if (Object.keys(workProfile).length) body.work_profile = workProfile;
     if (body.allow_edits && room?.goal_supported === true && get('overnight-goal').checked) {
       body.goal = true;
       const criteria = get('goal-criteria').value.split('\n').map(value=>value.trim()).filter(Boolean);
@@ -2017,6 +2081,7 @@ export function mountWorkspaceOffice(win = window) {
     say('settings-note', '');
     openDialog(get('room-settings'), get('room-delegation'));
     goals.settings();
+    profiles.settings();
     github.settings();
     loadSkills();
   });

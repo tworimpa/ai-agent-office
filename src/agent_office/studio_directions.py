@@ -79,7 +79,9 @@ class Directions:
         role = next((role for role, state in ROLE_STATE.items() if run["state"] == state), None)
         if role and _phase_open(db, self.path, run_id, run, role, run["attempts"]):
             _settle(db, run_id, "(role!=? OR attempt!=?)", (role, run["attempts"]))
-        else:
+        elif not db.execute("""SELECT 1 FROM studio_goal_stage_waits w JOIN studio_usage_holds h
+                ON h.run_id=w.run_id WHERE w.run_id=? AND w.ended_at IS NULL AND h.kind='quota_wait'""",
+                (run_id,)).fetchone():
             _settle(db, run_id, "1", ())
         return run
 

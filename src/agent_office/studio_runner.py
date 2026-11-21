@@ -571,6 +571,7 @@ def _worker(db_path, run_id):
     os.environ["PYTHONIOENCODING"] = "utf-8"  # Fixed pytest command writes UTF-8 to captured pipes.
     from .cli import execute_run
     from .meeting_runtime import MeetingFailure
+    from .goal_workers import OperatorStop
 
     with TaskStore(db_path, existing=True) as store:
         run = store.get_run(run_id)
@@ -628,10 +629,16 @@ def _worker(db_path, run_id):
                         delegated_questions=tuple(RULES[rule["topic"]] for rule in policy["rules"]) if policy else (),
                         technical_choice_guidance=CHOICE_INSTRUCTIONS if room and get_choices(db_path, run_id) else "",
                         inbox_factory=inbox_factory if interactive else None, studio_preview=studio_preview,
-                        room_meeting=bool(assignment.get("meeting")),
+                        room_meeting=bool(assignment.get("meeting")), room_assignment=assignment,
                         goal_assignment=assignment if assignment.get("goal_policy") and args.allow_edits else None)
         except goal_stage_wait.Parked:
             return
+        except OperatorStop as exc:
+            with store._write():
+                store.connection.execute("UPDATE studio_runs SET diagnostic=? WHERE id=?", (str(exc), run_id))
+                if goal_recovery.is_goal(store.connection, run_id):
+                    store.connection.execute("INSERT OR REPLACE INTO studio_goal_stops VALUES(?,?)", (run_id,str(exc)))
+                defer_final("FAILED", exc.outcome)
         except MeetingFailure as exc:
             with store._write():
                 meeting_store.fail(store.connection, run_id, str(exc))

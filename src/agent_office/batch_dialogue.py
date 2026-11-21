@@ -7,7 +7,7 @@ import tempfile
 import time
 from uuid import UUID
 
-from .adapters import AgentResult, parse_antigravity, parse_output
+from .adapters import AgentResult, parse_antigravity, parse_output, record_exec_usage
 from .dialogue import DelegationWithdrawn, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_request
 from .fixture_completion import parse_fixture_completion
 
@@ -24,7 +24,7 @@ def _resume_argv(engine, original, session):
     raise ValueError("This engine has no supported continuation command.")
 
 
-def _turn(engine, argv, message, workspace, env, deadline, guard):
+def _turn(engine, argv, message, workspace, env, deadline, guard, *, telemetry=None):
     if engine == "antigravity":
         message = json.dumps({"event": "user", "message": {"content": message}}, ensure_ascii=False) + "\n"
     # The complete input is ready before launch. Only the launch itself needs to
@@ -50,6 +50,8 @@ def _turn(engine, argv, message, workspace, env, deadline, guard):
     if len(raw) > 4_000_000:
         raise ValueError("Inbox turn exceeded the output limit.")
     output = raw.decode("utf-8")
+    if engine == "codex" and telemetry:
+        record_exec_usage(output, telemetry)
     if engine == "antigravity":
         return parse_antigravity(output)
     result = parse_fixture_completion(engine, output)

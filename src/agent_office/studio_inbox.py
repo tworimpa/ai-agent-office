@@ -98,6 +98,14 @@ def _run(db, run_id):
     row = db.execute(RUN, (validate_id(run_id), platform.node())).fetchone()
     if row is None:
         raise OfficeError("NOT_FOUND")
+    from .goal_usage import exists
+    if exists(db):
+        row = dict(row)
+        # The immutable task assignment records the original engine. An active
+        # fallback session owns only its own role and attempt while its call is open.
+        for role, engine in db.execute("SELECT role,engine FROM studio_usage_roles WHERE run_id=? AND attempt=?",
+                                       (run_id,row["attempts"])):
+            row[role + "_engine"] = engine
     return row
 
 
