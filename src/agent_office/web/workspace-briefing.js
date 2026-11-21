@@ -254,11 +254,12 @@ export function mountBriefing({get, make, api, context, refresh, openAction, tas
   }
   function candidate(row) {
     const item = card(taskTitle(row.task), row.attempt + '차 후보 · 독립 검토 승인');
+    item.append(action(row, 'candidate', '후보와 검증 근거 보기'));
     if (row.summary) item.append(make('p', row.summary));
     const evidence = (row.checks || []).map(check => (checks[check.stage] || stageName(check.stage)) + ' ' + (checkStatus[check.status] || check.status));
     if (Number.isInteger(row.manual_count)) evidence.push('수동 확인 ' + row.manual_count + '건');
     if (row.digest) evidence.push('변경 ' + row.digest.slice(0, 12));
-    item.append(make('p', evidence.join(' · ')), action(row, 'candidate', '후보와 검증 근거 보기'));
+    item.append(make('p', evidence.join(' · ')));
     return item;
   }
   function workCard(row) {

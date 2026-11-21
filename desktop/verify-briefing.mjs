@@ -194,13 +194,13 @@ export async function verifyBriefing(ctx) {
         'The measured Windows reopen failure must fit on the initial viewport')
       const question = await questionButton.boundingBox()
       assert.ok(question && question.y >= 0 && question.y + question.height <= viewport.height)
-      views.push({...viewport,scrollY:await page.evaluate(() => scrollY),questionButton:question,failureEvidence:box})
+      const candidate = await review.boundingBox()
+      assert.ok(candidate && candidate.y >= 0 && candidate.y + candidate.height <= viewport.height,
+        'The verified candidate action must fit the initial viewport')
+      assert.equal(await page.evaluate(() => scrollY), 0)
+      views.push({...viewport,scrollY:0,questionButton:question,candidateButton:candidate,failureEvidence:box})
     }
     await assertProofVisible()
-    for (const button of [review, page.locator('#brief-questions [data-request="' + choice.id + '"]')]) {
-      const box = await button.boundingBox()
-      assert.ok(box && box.y >= 0 && box.y + box.height <= 768, 'Primary action must fit the first desktop screen')
-    }
     await screenshot('01-briefing-desktop')
     await page.setViewportSize({width:390,height:844})
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
