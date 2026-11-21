@@ -311,6 +311,13 @@ class GitHubClient:
     def comments(self, repo, number):
         return self._all(f"{_repo(repo)}/issues/{positive_id(number)}/comments")
 
+    def comment_page(self, repo, number, *, since=None, page=1):
+        return self._page(f"{_repo(repo)}/issues/{positive_id(number)}/comments", page,
+                          params={"since": since} if since else None)
+
+    def comment(self, repo, comment_id):
+        return _dict(self._request("GET", f"{_repo(repo)}/issues/comments/{positive_id(comment_id)}").data)
+
     def add_comment(self, repo, number, body):
         return _dict(self._request("POST", f"{_repo(repo)}/issues/{positive_id(number)}/comments", {"body": body}).data)
 

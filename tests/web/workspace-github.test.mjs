@@ -66,10 +66,14 @@ test('범위 검토와 중복 가능성이 있는 댓글 재시도는 별도 사
   const {get, calls} = mount(t, (path, body) => {
     if (path === base) return {...room([]), github_supported: true};
     if (path === base + '/github') return {config: {enabled: true}, status: {}, issues: [issue], connections: []};
+    if (path === base + '/github/issues/29') return {issue, next_cursor: null};
     if (path === base + '/github/decision' && body) return {ok: true};
     if (path === base + '/github/retry-post' && body) return {ok: true};
   });
   const list = get('github-issues');
+  await until(() => list.textContent.includes('이슈 기록 및 최초 요청'));
+  assert.ok(!list.textContent.includes('기존 범위 유지'));
+  [...list.querySelectorAll('button')].find(b => b.textContent === '이슈 기록 및 최초 요청').click();
   await until(() => list.textContent.includes('기존 범위 유지'));
   assert.match(list.textContent, /설정 한 개/);
   assert.match(list.textContent, /<b>전체 설정<\/b>/);
@@ -84,4 +88,32 @@ test('범위 검토와 중복 가능성이 있는 댓글 재시도는 별도 사
   button('원본 확인 후 댓글 게시 재시도').click();
   await until(() => calls.some(c => c.path.endsWith('/retry-post')));
   assert.match(calls.find(c => c.path.endsWith('/retry-post')).body.id, /^[a-f0-9]{32}$/);
+});
+
+test('다른 페이지의 이슈와 과거 이벤트를 보고 원래 목록으로 돌아간다', async t => {
+  const first = {issue_id: 29, number: 6, title: '최근 이슈'};
+  const older = {issue_id: 23, number: 3, title: '이전 이슈'};
+  const state = (issue, next_cursor) => ({config: {enabled: true}, status: {}, issues: [issue], connections: [], next_cursor});
+  const read = (detail, next_cursor) => ({issue: {...older, events: [{id: 'e', kind: 'note', detail}]}, next_cursor});
+  const {get, calls} = mount(t, path => {
+    if (path === base) return {...room([]), github_supported: true};
+    if (path === base + '/github') return state(first, 23);
+    if (path === base + '/github/page/23') return state(older, null);
+    if (path === base + '/github/issues/23') return read('최근 변경', 50);
+    if (path === base + '/github/issues/23/page/50') return read('최초 이벤트', null);
+  });
+  const list = get('github-issues'), button = text => [...list.querySelectorAll('button')].find(b => b.textContent === text);
+  await until(() => list.textContent.includes('최근 이슈'));
+  get('github-next').click();
+  await until(() => list.textContent.includes('이전 이슈'));
+  button('이슈 기록 및 최초 요청').click();
+  await until(() => list.textContent.includes('최근 변경'));
+  button('다음 기록 페이지').click();
+  await until(() => list.textContent.includes('최초 이벤트'));
+  button('이전 기록 페이지').click();
+  await until(() => list.textContent.includes('최근 변경'));
+  get('github-prev').click();
+  await until(() => list.textContent.includes('최근 이슈'));
+  assert.ok(!list.textContent.includes('최근 변경'));
+  assert.equal(calls.some(c => c.body), false);
 });

@@ -208,7 +208,7 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
             raise RemoteUnavailable()
         return
     if github_studio.route(method, route):
-        github_studio.check_reply(status, data, method, route)
+        github_studio.check_reply(status, data, method, route, payload)
         return
     if route.startswith("/rooms/"):
         _check_room_reply(status, data, journal_headers, journal_id, method, route, payload)
@@ -548,7 +548,10 @@ def remote_request(host: RemoteHost, method: str, route: str, payload: dict | No
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                               creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0) as child:
             # Includes a blocked pipe write or a peer that stalls mid-frame.
-            deadline = threading.Timer(_TIMEOUT, child.kill)
+            integration = github_studio.route(method, route)
+            # A named binding may have to fetch the selected branch before it can be verified.
+            bound_check = integration and method == "POST" and integration[1] in {None, "test", "pull"}
+            deadline = threading.Timer(150 if bound_check else _TIMEOUT, child.kill)
             deadline.daemon = True
             deadline.start()
             try:

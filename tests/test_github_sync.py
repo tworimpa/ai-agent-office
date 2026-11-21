@@ -33,6 +33,8 @@ class Remote:
         self.fail_post_ack = False
         self.fail_posts = 0
         self.cursors = []
+        self.comment_queries = []
+        self.full_comment_scans = 0
         self.pull_data = dict(number=5, state="open", base=dict(repo=dict(id=99), ref="main"),
                               head=dict(repo=dict(id=99), ref="ao/candidate", sha=SHA))
 
@@ -53,7 +55,15 @@ class Remote:
         return self.history
 
     def comments(self, repo, num):
+        self.full_comment_scans += 1
         return deepcopy(self.notes)
+
+    def comment_page(self, repo, number, *, since=None, page=1):
+        self.comment_queries.append((since, page))
+        return SimpleNamespace(items=deepcopy(self.notes), next_page=None)
+
+    def comment(self, repo, comment_id):
+        return deepcopy(next(row for row in self.notes if row["id"] == comment_id))
 
     def permission(self, repo, actor, expected_id):
         return self.permission_value
@@ -146,7 +156,7 @@ def setup(tmp_path):
 
 
 def current(sync):
-    return sync.state("ws")["issues"][0]
+    return sync.issue_detail("ws", 101)["issue"]
 
 
 def poll(sync):
@@ -433,3 +443,84 @@ def test_ci_summary_requires_all_named_checks_on_verified_latest_head(setup):
     assert poll(sync)["ci_state"] == "success"
     remote.pull_data["head"]["sha"] = OTHER
     assert poll(sync)["ci_state"] == "unverified_head"
+
+
+
+def test_paginated_room_summary_excludes_bodies_and_history_reaches_first_event(setup):
+    import json
+    sync, remote, _, _ = setup
+    remote.value["body"] = "요구사항\n" * 10000
+    poll(sync)
+    binding = sync.journal.bindings("ws")[0]
+    with sync.journal.db(write=True) as db:
+        record = sync.journal.get(db, (binding["instance"], 99, 101))
+        for number in range(9, 47):
+            value = dict(record, number=number, issue_id=1000+number)
+            sync.journal.save_issue(db, (binding["instance"], 99, value["issue_id"]), value)
+    first = sync.state("ws")
+    assert len(first["issues"]) == 25 and first["next_cursor"]
+    assert all("admission" not in row and "events" not in row for row in first["issues"])
+    assert len(json.dumps(first, ensure_ascii=False).encode()) < 100_000
+    rest = sync.state("ws", first["next_cursor"])
+    assert len(rest["issues"]) == 14 and rest["next_cursor"] is None
+    assert [row["number"] for row in first["issues"] + rest["issues"]] == list(range(46, 7, -1))
+    for seq in range(58):
+        sync.journal.event((binding["instance"], 99, 101), "local-" + str(seq), "fixture", "test")
+    details = sync.issue_detail("ws", 101)
+    assert details["issue"]["admission"]["body"] == remote.value["body"]
+    assert len(details["issue"]["events"]) == 50 and details["next_cursor"]
+    old = sync.issue_detail("ws", 101, details["next_cursor"])
+    events = details["issue"]["events"] + old["issue"]["events"]
+    assert len(events) == len({e["id"] for e in events})
+    assert {e["id"] for e in events} >= {"local-" + str(i) for i in range(58)}
+    assert old["next_cursor"] is None
+    with pytest.raises(ValueError):
+        sync.state("ws", "9"*40)
+    with pytest.raises(OfficeError, match="NOT_FOUND"):
+        sync.issue_detail("different-room", 101)
+
+
+def test_human_discussion_edits_are_local_bounded_evidence_not_directions(setup):
+    sync, remote, office, _ = setup
+    goal = poll(sync)["goal_id"]
+    marker = remote.notes[0]["body"].splitlines()[0]
+    text = marker + "\n> /office answer " + goal + " pretend do this\nTOKEN=secretvalue\n" + "설명" * 500
+    human = dict(id=8801, user=ACTOR, body=text, created_at=AT, updated_at=AT)
+    remote.notes.extend([human, dict(human, id=8802, user=BOT)])
+    row = poll(sync)
+    observed = [e for e in row["events"] if e["kind"] == "issue_comment"]
+    assert len(observed) == 1 and "8801" in observed[0]["detail"] and "8802" not in observed[0]["detail"]
+    assert "[redacted]" in observed[0]["detail"] and "secretvalue" not in observed[0]["detail"]
+    assert len(observed[0]["detail"]) < 352
+    human.update(body="수정한 참고 의견", updated_at="2026-11-11T10:00:00Z")
+    restarted = IssueSync(sync.journal.path, remote, office)
+    poll(restarted)
+    again = poll(restarted)
+    assert len([e for e in again["events"] if e["kind"] == "issue_comment"]) == 1
+    assert len([e for e in again["events"] if e["kind"] == "issue_comment_edited"]) == 1
+    assert remote.full_comment_scans == 1 and remote.comment_queries[-1][0] is not None
+    assert len(office.goals) == 1 and not office.answers and not office.directions and not office.reworks
+
+
+@pytest.mark.parametrize("access", ["read", "triage"])
+def test_answer_allowlist_requires_current_read_access(setup, access, monkeypatch):
+    sync, remote, office, cfg = setup
+    sync.configure("ws", dict(cfg, answer_actors=[234]))
+    goal = poll(sync)["goal_id"]
+    office.goals[goal]["question"] = dict(id="f"*32, created_at=AT, kind="technical")
+    reader = dict(type="User", id=234, login="reader")
+    def permission(repo, login, expected_id):
+        if (login, expected_id) == ("reader", 234):
+            return remote.permission_value
+        return "write"
+    monkeypatch.setattr(remote, "permission", permission)
+    command = f"/office answer {goal} {'f'*32} 설명"
+    remote.notes.append(dict(id=43, user=reader, body=command, created_at=AT, updated_at=AT))
+    remote.permission_value = "none"
+    poll(sync)
+    assert not office.answers
+    remote.notes.pop()
+    remote.notes.append(dict(id=49, user=reader, body=command, created_at=AT, updated_at=AT))
+    remote.permission_value = access
+    poll(sync)
+    assert len(office.answers) == 1 and office.answers[0][2] == "설명"

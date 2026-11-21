@@ -6,9 +6,10 @@ import subprocess
 import pytest
 
 from agent_office import goal_verification
-from agent_office.github_office import GitHubOffice, intake_details, remote_name
+from agent_office.github_office import intake_details, remote_name
 from agent_office.github_owner import verify_owner
-from agent_office.github_studio import WorkspaceGitHub
+from agent_office.github_studio import WorkspaceGitHub, check_reply
+from agent_office.studio_ssh import RemoteUnavailable, is_peer_route
 from agent_office.github_sync import IssueSync
 from agent_office.goal_candidates import capture
 from agent_office.store import TaskStore, encode, now
@@ -78,6 +79,11 @@ def test_binding_intake_and_ci_repair_pin_immutable_tree_and_keep_same_goal(tmp_
         status, data = request(server,path,dict(binding,allowed_actors=[2],enabled=True,draft_pr=True))
         assert status == 200, data
         cfg = data["config"]
+        check_reply(200, data, "POST", path.removeprefix("/api"))
+        with pytest.raises(RemoteUnavailable):
+            check_reply(200, dict(data,workspace_id=uuid4().hex), "GET", path.removeprefix("/api"))
+        assert is_peer_route("GET", path.removeprefix("/api") + "/issues/123/page/12")
+        assert not is_peer_route("POST", path.removeprefix("/api") + "/issues/123/page/12")
         first = uuid4().hex
         issue = {"id":123,"number":3,"title":"설정 복원","body":"## 완료 기준\n- [ ] 설정을 유지한다", "goal_id":first}
         receipt = office.start(ws,first,issue,cfg)

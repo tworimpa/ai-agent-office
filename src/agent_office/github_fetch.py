@@ -114,10 +114,17 @@ def ensure_base(root, slug, branch, sha, client, *, expected_repo_id=None):
     if not git:
         raise GitHubError("git_unavailable")
     env = _environment()
-    if _local(git, root, "rev-parse", "--verify", sha + "^{commit}", env=env, optional=True).stdout.strip() == sha.encode():
+    # Local metadata reads must honor the service account's already configured
+    # safe.directory entries. The network fetch runs only in a private repository
+    # with the isolated config above, never with the source checkout's settings.
+    source_env = {key: value for key, value in env.items() if key not in {"GIT_CONFIG_GLOBAL","GIT_CONFIG_NOSYSTEM"}}
+    for key in ("HOME", "USERPROFILE", "PROGRAMDATA", "XDG_CONFIG_HOME", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL"):
+        if key in os.environ:
+            source_env[key] = os.environ[key]
+    if _local(git, root, "rev-parse", "--verify", sha + "^{commit}", env=source_env, optional=True).stdout.strip() == sha.encode():
         return sha
     objects = Path(os.fsdecode(_local(git, root, "rev-parse", "--path-format=absolute",
-                                      "--git-path", "objects", env=env).stdout.rstrip(b"\r\n")))
+                                      "--git-path", "objects", env=source_env).stdout.rstrip(b"\r\n")))
     if not objects.is_absolute() or not objects.is_dir() or any(c in str(objects) for c in "\r\n"):
         raise GitHubError("git_objects_unavailable")
     url = client.web_url + "/" + slug + ".git"
@@ -126,8 +133,8 @@ def ensure_base(root, slug, branch, sha, client, *, expected_repo_id=None):
         _local(git, temp, "init", "--bare", "--template=", str(private), env=env)
         # Advertise an existing commit for negotiation. A shallow checkout may
         # lack its ancestors; fetch a complete history in that case.
-        shallow = _local(git, root, "rev-parse", "--is-shallow-repository", env=env).stdout.strip()
-        local_tip = _local(git, root, "rev-parse", "--verify", "HEAD^{commit}", env=env, optional=True)
+        shallow = _local(git, root, "rev-parse", "--is-shallow-repository", env=source_env).stdout.strip()
+        local_tip = _local(git, root, "rev-parse", "--verify", "HEAD^{commit}", env=source_env, optional=True)
         if shallow == b"false" and local_tip.returncode == 0:
             (private / "objects" / "info" / "alternates").write_bytes(os.fsencode(objects.as_posix()) + b"\n")
             _local(git, private, "update-ref", "refs/heads/known", _sha(local_tip.stdout.decode().strip()), env=env)
@@ -148,6 +155,6 @@ def ensure_base(root, slug, branch, sha, client, *, expected_repo_id=None):
             # runs in our bare repo with only the object's destination overridden.
             _local(git, private, "index-pack", "--strict", "--stdin", "--fix-thin",
                    env={**env, "GIT_OBJECT_DIRECTORY": str(objects)}, stdin=pack)
-    if _local(git, root, "rev-parse", "--verify", sha + "^{commit}", env=env).stdout.strip() != sha.encode():
+    if _local(git, root, "rev-parse", "--verify", sha + "^{commit}", env=source_env).stdout.strip() != sha.encode():
         raise GitHubError("git_objects_unavailable")
     return sha

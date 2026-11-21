@@ -8,6 +8,15 @@ const names = {
   scope_accepted_restart_required: '범위 변경 후 재시작 대기', success: '통과', failure: '실패',
   pull_closed: 'PR 닫힘', merged: '병합됨', canceled: '중지됨', recovery_required: '복구 확인 필요',
   stale: '이전 후보', infrastructure_or_cancelled: '인프라 실패 또는 취소', untrusted_or_stale: '권한 또는 커밋 불일치',
+  checkout_mismatch: '작업 폴더의 origin과 브랜치 확인', goal_intake_blocked: '실행 호스트의 엔진·폴더·검증 설정 확인',
+  manual_workflow_review: 'CI 실행 정의는 별도 게시 검토 필요', manual_pr_publication: '사용자가 연결한 PR의 게시 확인 필요',
+  base_branch_changed: '검증 뒤 대상 브랜치 변경', permission_denied: '저장소 권한 부족', rate_limited: 'API 요청 한도 대기',
+  tls_verification_failed: '서버 인증서 및 사내 CA 확인', authentication_rejected: 'GitHub App 인증 확인',
+  issue_comment: '이슈 댓글', issue_comment_edited: '이슈 댓글 수정',
+  goal_changed: '목표 변경', goal_restarted: '목표 재시작', review_observed: 'PR 리뷰',
+  ci_result: 'CI 결과', pull_linked: 'PR 연결', feedback_obsolete: '이전 피드백',
+  question_answered: '질문에 답변', comment_retry: '댓글 게시 재시도',
+  observed: '확인됨', accepted: '접수됨', needs_decision: '결정 필요',
 };
 const label = value => names[value] ?? value;
 const localTime = value => {
@@ -15,13 +24,16 @@ const localTime = value => {
   return Number.isNaN(date.getTime()) ? '시간 미확인' : date.toLocaleString('ko-KR');
 };
 
-export function mountGithub({get, make, api, context, openGoal, uuid}) {
+export function mountGithub({get, make, api, context, openGoal, uuid, desktop}) {
   const field = key => get('github-' + key);
   const note = (key, value) => { field(key).textContent = value; };
   const roomKey = () => JSON.stringify([context().host, context().id]);
   const path = () => '/rooms/' + context().id + '/github';
   let latest = null, viewKey = '', read = 0, formRead = 0, repoRead = 0, busy = false;
   let repositories = [];
+  let cursor = null, previousPages = [], changingPage = false, selectedIssue = null, eventCursor = null, previousEvents = [];
+  let detail = null, detailError = '', detailRead = 0;
+  const cursorPath = value => value == null ? '' : '/page/' + encodeURIComponent(value);
   const option = (value, title) => {
     const node = make('option', title);
     node.value = String(value);
@@ -30,6 +42,7 @@ export function mountGithub({get, make, api, context, openGoal, uuid}) {
   function reset() {
     ++read; ++formRead; ++repoRead;
     latest = null;
+    cursor = null; previousPages = []; changingPage = false; resetDetail();
     busy = false;
     viewKey = '';
     field('issues').replaceChildren();
@@ -38,6 +51,53 @@ export function mountGithub({get, make, api, context, openGoal, uuid}) {
     note('action-note', '');
     note('settings-note', '');
     note('diagnostic', '');
+  }
+  function resetDetail() {
+    ++detailRead;
+    selectedIssue = eventCursor = detail = null;
+    previousEvents = [];
+    detailError = '';
+  }
+  async function loadDetail() {
+    const id = selectedIssue, serial = ++detailRead, identity = roomKey();
+    if (!id) return;
+    try {
+      const result = await api(path() + '/issues/' + id + cursorPath(eventCursor));
+      if (serial !== detailRead || identity !== roomKey()) return;
+      if (result.issue?.issue_id !== id) throw Error('이슈 ID가 일치하지 않습니다.');
+      detail = result;
+      detailError = '';
+    } catch {
+      if (serial !== detailRead || identity !== roomKey()) return;
+      detail = null;
+      detailError = '이슈 기록을 불러올 수 없습니다.';
+    }
+    if (latest) render();
+  }
+  async function changePage(next, backwards) {
+    if (changingPage || !context().writable || (backwards ? !previousPages.length : next == null)) return;
+    const identity = roomKey();
+    changingPage = true;
+    if (backwards) cursor = previousPages.pop();
+    else { previousPages.push(cursor); cursor = next; }
+    resetDetail();
+    controls();
+    try { await load(); }
+    finally { if (identity === roomKey()) { changingPage = false; controls(); } }
+  }
+  function selectIssue(id) {
+    const closing = selectedIssue === id;
+    resetDetail();
+    if (!closing) selectedIssue = id;
+    render();
+    if (!closing) loadDetail();
+  }
+  function changeEvents(next, backwards) {
+    if (backwards) eventCursor = previousEvents.pop();
+    else { previousEvents.push(eventCursor); eventCursor = next; }
+    detail = null;
+    render();
+    loadDetail();
   }
   function addButton(parent, title, callback) {
     const button = make('button', title, 'secondary');
@@ -94,6 +154,16 @@ export function mountGithub({get, make, api, context, openGoal, uuid}) {
       try {
         const target = new URL(url), origin = new URL(connection.web_url);
         if (target.protocol !== 'https:' || target.origin !== origin.origin || target.username || target.password) continue;
+        if (desktop) {
+          const address = make('details'), summary = make('summary', title + ' 주소 보기'), input = make('input');
+          input.readOnly = true;
+          input.value = target.href;
+          input.setAttribute('aria-label', title + ' 주소');
+          input.addEventListener('focus', () => input.select());
+          address.append(summary, input);
+          card.append(address);
+          continue;
+        }
         const link = make('a', title, 'quiet');
         link.href = target.href;
         link.target = '_blank';
@@ -102,7 +172,7 @@ export function mountGithub({get, make, api, context, openGoal, uuid}) {
       } catch { /* An absent or invalid URL does not hide the local issue record. */ }
     }
     card.append(make('p', [label(row.state), label(row.status), row.publish_state && '게시 ' + label(row.publish_state),
-      row.ci_state && 'CI ' + label(row.ci_state), row.last_error].filter(Boolean).join(' · ')));
+      row.ci_state && 'CI ' + label(row.ci_state), row.last_error && label(row.last_error)].filter(Boolean).join(' · ')));
     if (row.run_id) {
       if (desk) {
         const owner = make('p', '', 'github-owner'), portrait = make('span', '', 'portrait');
@@ -120,9 +190,19 @@ export function mountGithub({get, make, api, context, openGoal, uuid}) {
       addButton(details, '원본 확인 후 댓글 게시 재시도', () => action('/retry-post', {issue_id: row.issue_id, id: uuid()}, '댓글 게시 재확인을 요청했습니다.'));
       card.append(details);
     }
+    const reviewing = selectedIssue === row.issue_id;
+    const loaded = reviewing && detail?.issue;
+    addButton(card, reviewing ? '이슈 기록 접기' : '이슈 기록 및 최초 요청', () => selectIssue(row.issue_id));
+    if (reviewing && !loaded) card.append(make('p', detailError || '이슈 기록을 불러오는 중입니다.'));
+    if (loaded?.admission) {
+      card.append(make('strong', '최초 요청'), make('pre', [loaded.admission.title, loaded.admission.body].filter(Boolean).join('\n')));
+      if (loaded.initial_base) card.append(make('p', '최초 기준 커밋 · ' + loaded.initial_base));
+    }
     if (row.scope_pending) {
       card.append(make('p', '목표 범위 변경을 검토하세요.'));
-      for (const [title, scope] of [['현재 범위', row.previous_scope], ['제안된 범위', row.proposed_scope]]) {
+    }
+    if (row.scope_pending && loaded?.scope_pending === row.scope_pending && loaded.previous_scope && loaded.proposed_scope) {
+      for (const [title, scope] of [['현재 범위', loaded.previous_scope], ['제안된 범위', loaded.proposed_scope]]) {
         if (scope) card.append(make('strong', title), make('pre', [scope.title, scope.body].filter(Boolean).join('\n')));
       }
       for (const [value, title] of [['accept', '범위 변경 수락'], ['reject', '기존 범위 유지']]) {
@@ -132,44 +212,50 @@ export function mountGithub({get, make, api, context, openGoal, uuid}) {
     if (row.state === 'open' && (row.restart_required || ['failed', 'canceled', 'recovery_required', 'plan_only'].includes(row.status))) {
       addButton(card, '새 목표로 다시 시작', () => action('/restart', {issue_id: row.issue_id, id: uuid()}, '새 목표를 요청했습니다.'));
     }
-    if (row.events?.length) {
-      const history = make('details');
-      history.append(make('summary', '이슈 기록 ' + row.events.length + '건'));
+    if (loaded) {
+      const history = make('section');
+      history.append(make('strong', '이슈 기록'));
       const list = make('ol');
-      for (const event of row.events) list.append(make('li', [event.at, label(event.kind), event.detail, label(event.status)].filter(Boolean).join(' · ')));
+      for (const event of loaded.events ?? []) list.append(make('li', [event.at, label(event.kind), event.detail, label(event.status)].filter(Boolean).join(' · ')));
       history.append(list);
+      if (!list.children.length) history.append(make('p', '기록이 없습니다.'));
+      if (previousEvents.length) addButton(history, '이전 기록 페이지', () => changeEvents(null, true));
+      if (detail.next_cursor != null) addButton(history, '다음 기록 페이지', () => changeEvents(detail.next_cursor, false));
       card.append(history);
     }
     return card;
   }
   function controls() {
-    const blocked = busy || !context().writable || !latest;
+    const blocked = busy || changingPage || !context().writable || !latest;
     const retryAt = latest?.status?.retry_at;
     const retryTime = typeof retryAt === 'number' ? retryAt * 1000 : Date.parse(retryAt);
     field('sync').disabled = blocked || !latest?.config || latest.status?.queued || retryTime > Date.now();
+    field('prev').disabled = changingPage || !context().writable || !previousPages.length;
+    field('next').disabled = blocked || latest?.next_cursor == null;
     for (const node of field('issues').querySelectorAll('button')) node.disabled = blocked;
   }
   function render() {
     const {config, status = {}, issues = [], connections = []} = latest;
     field('settings').hidden = false;
     field('inbox').hidden = !config && !issues.length;
-    note('status', [config?.full_name || config?.repository, config?.enabled ? '자동 동기화 켜짐' : '자동 동기화 꺼짐',
+    field('pages').hidden = !previousPages.length && latest.next_cursor == null;
+    note('status', [config?.full_name || config?.repository, config?.enabled ? '목표 자동 접수 켜짐' : '이슈 관찰 중 · 자동 접수 꺼짐',
       status.queued && '가져오기 요청 처리 중', status.last_sync ? '최근 동기화 ' + localTime(status.last_sync) : '동기화 기록 없음',
-      status.retry_at && '다시 시도할 시각 ' + localTime(status.retry_at), status.last_error && '최근 오류 ' + status.last_error].filter(Boolean).join(' · '));
+      status.retry_at && '다시 시도할 시각 ' + localTime(status.retry_at), status.last_error && '최근 오류 ' + label(status.last_error)].filter(Boolean).join(' · '));
     const desks = new Map(context().runs.map(run => {
       const role = run.state === 'REVIEWING' ? 'reviewer' : 'developer';
       const profile = run.assignment?.roles?.[role];
       const name = [role === 'reviewer' ? '검토자' : '담당자', profile?.name, run[role + '_engine'] ?? profile?.engine].filter(Boolean).join(' · ');
       return [run.id, {role, label: name}];
     }));
-    const key = JSON.stringify([issues, config?.connection_id, issues.map(row => desks.get(row.run_id))]);
+    const key = JSON.stringify([issues, config?.connection_id, issues.map(row => desks.get(row.run_id)), selectedIssue, detail, detailError]);
     if (key !== viewKey) {
       const connection = connections.find(item => item.id === config?.connection_id);
       const list = field('issues');
       const old = new Map([...list.children].map(card => [card.dataset.issue, card]));
       for (const row of issues) {
         const desk = desks.get(row.run_id);
-        const stamp = JSON.stringify([row, connection?.web_url, desk]);
+        const stamp = JSON.stringify([row, connection?.web_url, desk, selectedIssue === row.issue_id ? [detail, detailError] : false]);
         const previous = old.get(String(row.issue_id));
         old.delete(String(row.issue_id));
         if (previous?.githubStamp === stamp) continue;
@@ -200,10 +286,12 @@ export function mountGithub({get, make, api, context, openGoal, uuid}) {
     if (!context().supported) return;
     const sequence = ++read, identity = roomKey();
     try {
-      const result = await api(path());
+      const result = await api(path() + cursorPath(cursor));
       if (identity !== roomKey() || sequence !== read) return;
       latest = result;
+      if (selectedIssue && !result.issues.some(row => row.issue_id === selectedIssue)) resetDetail();
       render();
+      if (selectedIssue) await loadDetail();
     } catch {
       if (identity !== roomKey() || sequence !== read) return;
       field('settings').hidden = false;
@@ -256,7 +344,7 @@ export function mountGithub({get, make, api, context, openGoal, uuid}) {
     const {config, connections = []} = latest;
     if (!connections.length) {
       note('settings-note', '이 실행 호스트에 GitHub 연결이 없습니다. 호스트의 GitHub App 연결 설정을 확인하세요.' +
-        (latest.status?.last_error ? ' · ' + latest.status.last_error : ''));
+        (latest.status?.last_error ? ' · ' + label(latest.status.last_error) : ''));
       return;
     }
     const choice = field('connection');
@@ -305,7 +393,8 @@ export function mountGithub({get, make, api, context, openGoal, uuid}) {
     button.disabled = true;
     note(target, testOnly ? '선택한 연결과 저장소를 검사하는 중입니다.' : '저장 중입니다.');
     try {
-      const result = await api(path() + (testOnly ? '/test' : ''), body);
+      // A verified binding can fetch a missing branch commit on the selected host (up to 120s).
+      const result = await api(path() + (testOnly ? '/test' : ''), body, 150000);
       if (!current()) return;
       if (testOnly) {
         if (JSON.stringify(body) !== JSON.stringify(binding())) { note(target, '변경한 설정으로 다시 테스트하세요.'); return; }
@@ -327,5 +416,7 @@ export function mountGithub({get, make, api, context, openGoal, uuid}) {
   field('form').addEventListener('submit', event => { event.preventDefault(); submit(false); });
   field('test').addEventListener('click', () => submit(true));
   field('sync').addEventListener('click', () => action('/sync', {}, '가져오기를 요청했습니다.'));
+  field('prev').addEventListener('click', () => changePage(null, true));
+  field('next').addEventListener('click', () => changePage(latest?.next_cursor, false));
   return {load, settings, reset, controls};
 }

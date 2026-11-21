@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
@@ -13,6 +14,12 @@ from .models import OfficeError, validate_id
 from .release_store import run_git
 from .store import TaskStore, now
 from .studio_catalog import _git, _local_git_environment
+
+
+class WorkspaceGitHubError(ValueError):
+    def __init__(self, code, message):
+        self.code = code
+        super().__init__(message)
 
 
 def ensure_schema(db):
@@ -78,6 +85,11 @@ def resolve_binding(catalog, workspace, client, repo_id, index, branch):
     if not isinstance(branch, str) or not branch or branch.startswith("-") or len(branch) > 250:
         raise ValueError("대상 브랜치를 확인하세요.")
     root, _ = catalog.select(workspace, [index])
+    connection = getattr(client, "config", None)
+    for private_path in (getattr(connection, "private_key_file", None),
+                         os.environ.get("AGENT_OFFICE_GITHUB_CONFIG")):
+        if private_path and Path(private_path).resolve().is_relative_to(root):
+            raise ValueError("GitHub App 키와 연결 레지스트리를 작업 저장소 밖으로 옮겨 주세요.")
     git_read(root, "check-ref-format", "--branch", branch)
     origin = git_read(root, "config", "--local", "--get-all", "remote.origin.url")
     slug = remote_name(origin, client.web_url)
@@ -165,8 +177,11 @@ class GitHubOffice:
 
     def _binding(self, workspace, cfg):
         client = self.registry.client(cfg["connection_id"])
-        root, slug, sha = resolve_binding(self.server.catalog, workspace, client, cfg["repository_id"],
-                                          cfg["folder_index"], cfg["branch"])
+        try:
+            root, slug, sha = resolve_binding(self.server.catalog, workspace, client, cfg["repository_id"],
+                                             cfg["folder_index"], cfg["branch"])
+        except ValueError as error:
+            raise WorkspaceGitHubError("checkout_mismatch", "등록한 폴더의 Git origin과 브랜치를 확인하세요.") from error
         return client, root, slug, sha
 
     def _prior(self, workspace, run_id, cfg, issue):
@@ -200,12 +215,15 @@ class GitHubOffice:
                     delegation=None, meeting=True, indices=[cfg["folder_index"]])
         if details["criteria"]:
             data["goal_criteria"] = details["criteria"]
-        self.server.rooms.assign(workspace, data, pinned_revision=local_sha, origin=source)
+        try:
+            self.server.rooms.assign(workspace, data, pinned_revision=local_sha, origin=source)
+        except ValueError as error:
+            raise WorkspaceGitHubError("goal_intake_blocked", "실행 호스트의 엔진·작업 폴더·검증 설정을 확인하세요.") from error
         return dict(id=run_id, base_commit=local_sha, goal_id=source["goal_id"])
 
-    def _question_kind(self, row):
+    def _question(self, row):
         if row["kind"] != "question":
-            return {"permission":"permission", "product_decision":"product"}.get(row["kind"])
+            return {"permission":"permission", "product_decision":"product"}.get(row["kind"]), None
         from .away_expert import RULES
         from .technical_choices import parse_choice
         with TaskStore(self.path, readonly=True) as store:
@@ -213,11 +231,13 @@ class GitHubOffice:
                                           (row["run_id"],row["id"])).fetchone()
         if raw:
             try:
-                if raw[0] in RULES.values() or parse_choice(raw[0]):
-                    return "technical"
-            except (ValueError, TypeError):
+                choice = parse_choice(raw[0])
+                if choice or raw[0] in RULES.values():
+                    return "technical", choice
+            except (ValueError, TypeError, RecursionError):
                 pass
-        return "product"
+        # Free-form provider text cannot extend the technical responder's authority.
+        return "product", None
 
     def status(self, run_id):
         run = self.server.runner.detail(run_id)
@@ -228,21 +248,32 @@ class GitHubOffice:
         candidate = next((c for c in goal["candidates"] if c["attempt"] == attempt), {})
         validated = (candidate.get("eligible") is True and candidate.get("status") == "passed"
                      and candidate.get("review_status") == "approved" and run["state"] == "READY_FOR_HUMAN_REVIEW")
-        waiting = next((row for row in self.server.runner.inbox.history(run_id) if row["status"] == "pending"), None)
+        pending = [row for row in self.server.runner.inbox.history(run_id) if row["status"] == "pending"]
+        permissions = sum(row["kind"] == "permission" for row in pending)
+        waiting = next((row for row in pending if row["kind"] != "permission"), pending[0] if pending else None)
         question = None
         if waiting:
-            kind = self._question_kind(waiting)
+            kind, choice = self._question(waiting)
             if kind:
                 prompt = waiting.get("prompt", "")
                 public = (_bounded_text(prompt, 600) if snapshot_request(prompt) == prompt and
                           not re.search(r"[/\\`]|https?:|[\w.-]+@[\w.-]+", prompt) and kind != "permission"
                           else "작업실 요청함에서 세부 내용을 확인하세요.")
+                if choice:
+                    from .technical_choices import PURPOSES
+                    options = [f"{i}. {Path(opt['path']).name} {opt['line']}행"
+                               for i, opt in enumerate(choice["options"], 1)]
+                    public = PURPOSES[choice["purpose"]][0] + " · " + " · ".join(options)
                 question = dict(id=waiting["id"], kind=kind, created_at=waiting["created_at"], prompt=public)
+        if question is None and (run.get("meeting") or {}).get("status") == "awaiting_review":
+            question = dict(kind="plan", prompt="작업실 요청함에서 계획과 제품 결정을 확인하세요.")
         checks = [dict(stage=c["stage"], status=c["status"], counts=c.get("counts", {}))
                   for c in goal["checks"] if c["attempt"] == attempt]
-        return dict(id=run_id, state=run["state"], role="reviewer" if run["state"]=="REVIEWING" else "developer",
+        role = {"QUEUED":"coordinator", "TESTING":"tester", "REVIEWING":"reviewer",
+                "READY_FOR_HUMAN_REVIEW":"reviewer"}.get(run["state"], "developer")
+        return dict(id=run_id, state=run["state"], role=role,
                     attempts=run["attempts"], base_commit=goal["base_commit"], validated=validated,
-                    candidate_digest=candidate.get("digest"), checks=checks, question=question,
+                    candidate_digest=candidate.get("digest"), checks=checks, question=question, permission_count=permissions,
                     manual_count=len(goal["manual_checks"]))
 
     def stop(self, run_id):
@@ -250,8 +281,11 @@ class GitHubOffice:
 
     def answer(self, run_id, question_id, text, key, kind):
         row = next((item for item in self.server.runner.inbox.history(run_id) if item["id"] == question_id), None)
-        if not row or kind not in ("technical","product") or self._question_kind(row) != kind or row["run_id"] != run_id:
+        actual, choice = self._question(row) if row else (None, None)
+        if actual != kind or kind not in ("technical","product") or not row or row["run_id"] != run_id:
             raise OfficeError("REQUEST_CONFLICT")
+        if choice and text.strip() not in {str(i) for i in range(1, len(choice["options"])+1)}:
+            raise ValueError("기술 선택지의 번호 하나로 답하세요.")
         # The inbox transaction compares the exact answer on retry and refuses
         # any attempt to turn an answer into a permission decision.
         return self.server.runner.inbox.decide(run_id, question_id, {"action":"answer", "answer":text})
@@ -299,6 +333,8 @@ class GitHubOffice:
             files = {}
             total = 0
             for name in names:
+                if name.casefold().startswith((".github/workflows/", ".github/actions/")):
+                    raise WorkspaceGitHubError("manual_workflow_review", "CI 실행 정의의 변경은 운영자가 별도로 검토해 게시하세요.")
                 item = run_git(private, "--literal-pathspecs", "ls-tree", "-z", tree, "--", name, env=env)
                 if not item:
                     files[name] = None
@@ -346,13 +382,13 @@ class GitHubOffice:
         title = "Office: " + _bounded_text(issue["title"], 180)
         if external["previous_run"]:
             if not issue.get("pr_number") or issue.get("pr_head") != head:
-                raise ValueError("연결한 PR은 Office가 만든 초안 브랜치가 아닙니다.")
+                raise WorkspaceGitHubError("manual_pr_publication", "연결한 PR은 Office가 만든 초안 브랜치가 아닙니다.")
             result = client.advance_candidate(slug, base_branch=cfg["branch"], head_branch=head,
                          expected_head=external["head_sha"], pr_number=issue["pr_number"], files=files,
                          expected_tree=tree, title=title)
         else:
             if branch_tip != goal["base_commit"]:
-                raise ValueError("검증 후 대상 브랜치가 변경됐습니다. 새 기준의 검증이 필요합니다.")
+                raise WorkspaceGitHubError("base_branch_changed", "검증 후 대상 브랜치가 변경됐습니다. 새 기준의 검증이 필요합니다.")
             result = client.publish_candidate(slug, base_branch=cfg["branch"], base_sha=branch_tip, head_branch=head,
                          files=files, expected_tree=tree, title=title,
                          body=f"관련 Issue #{issue['number']}\n\nOffice 목표 `{external['goal_id']}`에서 검증한 후보입니다.")

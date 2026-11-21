@@ -109,7 +109,7 @@ export async function githubFixture(root, python, project, title) {
       if (route === '/issues') return send(feed ? [issue, closed] : [])
       if (route === '/issues/7') return send(issue)
       if (route === '/issues/8') return send(closed)
-      if (route === '/issues/8/timeline') return send([timeline[0], {id: 202, event: 'closed', actor: user, created_at: created}])
+      if (route === '/issues/8/timeline') return send([timeline[0], {id: 202, event: 'closed', actor: user, created_at: closed.closed_at}])
       if (route === '/issues/7/timeline') return send(timeline)
       if (route === '/issues/7/comments') {
         if (method !== 'POST') return send(comments)
@@ -150,7 +150,12 @@ export async function githubFixture(root, python, project, title) {
   const config = join(root, 'github.json')
   await writeFile(config, JSON.stringify({connections: [{id: 'fixture', name: '검증용 GitHub', kind: 'ghes', web_url: origin,
     app_id: 55, installation_id: 72, private_key_file: join(root, 'app.pem'), ca_file: join(root, 'ca.pem'), proxy: 'direct'}]}), {mode: 0o600})
-  return {config, origin, calls, errors, issue, comments, feed: () => { feed = true },
+  return {config, origin, calls, errors, issue, comments, feed: () => {
+    const stamp = new Date().toISOString()
+    issue.updated_at = timeline[0].created_at = stamp
+    closed.updated_at = closed.closed_at = stamp
+    feed = true
+  },
     draft: () => pull,
     reply: body => issueComment(body, user),
     close: () => new Promise(resolve => server.close(resolve))}

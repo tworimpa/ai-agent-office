@@ -7,7 +7,7 @@ import threading
 import time
 from uuid import uuid4
 
-from .github_journal import IssueJournal
+from .github_journal import IssueJournal, SUMMARY_KEYS
 from .issue_events import answer_text, check_observation, external_text, fingerprint, label_actor, snapshot
 from .models import ACTIVE, OfficeError, validate_id
 from .ownership import RunGuard, RunBusyError
@@ -23,6 +23,14 @@ def _code(error):
 
 def _positive(value):
     return type(value) is int and 0 < value < 2**63
+
+
+def _cursor(value):
+    if value is None:
+        return None
+    if not isinstance(value, str) or not re.fullmatch("[1-9][0-9]{0,18}", value) or not _positive(int(value)):
+        raise ValueError("GitHub 기록의 조회 위치를 확인하세요.")
+    return int(value)
 
 
 def _config(data):
@@ -115,31 +123,30 @@ class IssueSync:
             raise ValueError("이 저장소의 자동 실행은 다른 작업실에서 사용 중입니다.") from None
         return self.state(workspace)
 
-    def state(self, workspace):
+    def state(self, workspace, cursor=None):
+        cursor = _cursor(cursor)
         bindings = self.journal.bindings(workspace)
         with self.wake:
             queued = workspace in self.queued or workspace in self.running
         status = dict(last_sync=None, last_error=None, retry_at=None, queued=queued)
         if not bindings:
-            return dict(config=None, status=status, issues=[])
+            return dict(config=None, status=status, issues=[], next_cursor=None)
         binding = bindings[0]
         retry = binding["retry_at"]
         status.update(last_sync=binding["last_sync"], last_error=binding["last_error"],
                       retry_at=datetime.fromtimestamp(retry, timezone.utc).isoformat() if retry else None)
-        issues = []
-        for r in self.journal.records(binding):
-            if r["workspace_id"] != workspace:
-                continue
-            keys = ("issue_id", "number", "title", "url", "state", "status", "run_id", "goal_id", "pr_number",
-                    "pr_url", "comment_id", "publish_state", "ci_state", "scope_pending", "last_error",
-                    "base_commit", "restart_required", "candidate_sha", "retries")
-            public = {k: r[k] for k in keys}
-            public.update(admission=r["admission"], initial_base=r.get("initial_base"),
-                          events=self.journal.events(_key(binding, r["issue_id"])))
-            if r["scope_pending"]:
-                public.update(previous_scope=r["accepted"], proposed_scope=r["observed"])
-            issues.append(public)
-        return dict(config=binding["config"], status=status, issues=issues)
+        issues, next_cursor = self.journal.issue_page(binding, cursor)
+        return dict(config=binding["config"], status=status, issues=issues, next_cursor=next_cursor)
+
+    def issue_detail(self, workspace, issue_id, cursor=None):
+        binding, key = self._target(workspace, issue_id)
+        r = self._record(binding, issue_id)
+        events, next_cursor = self.journal.events(key, _cursor(cursor))
+        public = {k: r[k] for k in SUMMARY_KEYS}
+        public.update(admission=r["admission"], initial_base=r.get("initial_base"), events=events)
+        if r["scope_pending"]:
+            public.update(previous_scope=r["accepted"], proposed_scope=r["observed"])
+        return dict(issue=public, next_cursor=next_cursor)
 
     def sync(self, workspace):
         if not self.journal.bindings(workspace):
@@ -224,37 +231,36 @@ class IssueSync:
         cfg = binding["config"]
         client = self._client(binding)
         workspace = binding["workspace"]
-        records = {r["issue_id"]: r for r in self.journal.records(binding)}
         with self.journal.db() as db:
             scan = db.execute("SELECT * FROM github_scans WHERE workspace=?", (workspace,)).fetchone()
         full = bool(scan["full"]) if scan else time.time() - binding["last_full"] >= 3600
         since = scan["since"] if scan else None if full else binding["cursor"]
         cutoff = scan["cutoff"] if scan else (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
         page = scan["page"] if scan else 1
-        seen = set()
         for _ in range(PAGES_PER_POLL):
             if self.closed:
                 return
             result = client.issue_page(cfg["repository"], labels=[cfg["label"]], state="all", page=page,
                                        since=since)
-            for row in result.items:
-                if "pull_request" in row or not _positive(row.get("id")) or not _positive(row.get("number")):
-                    continue
-                self._check_issue(row, row["id"], row["number"])
-                record = records.get(row["id"])
-                if record and record["workspace_id"] != workspace:
-                    if record["goal_id"] or not cfg["enabled"]:
+            with self.journal.db(write=True) as db:
+                for row in result.items:
+                    if "pull_request" in row or not _positive(row.get("id")) or not _positive(row.get("number")):
                         continue
-                    record["workspace_id"] = workspace
-                if record is None:
-                    url = f"{client.web_url.rstrip('/')}/{cfg['repository']}/issues/{row['number']}"
-                    record = _fresh(binding, row, url)
-                if (record["observed"].get("updated_at") != row.get("updated_at") or
-                        record["state"] != row["state"]):
+                    self._check_issue(row, row["id"], row["number"])
+                    key = _key(binding, row["id"])
+                    record = self.journal.get(db, key)
+                    if record is None:
+                        url = f"{client.web_url.rstrip('/')}/{cfg['repository']}/issues/{row['number']}"
+                        record = _fresh(binding, row, url)
+                    elif record["workspace_id"] != workspace:
+                        if record["goal_id"] or not cfg["enabled"]:
+                            continue
+                        record["workspace_id"] = workspace
+                    elif (record["observed"].get("updated_at") == row.get("updated_at") and
+                          record["state"] == row["state"]):
+                        continue
                     record["needs_check"] = True
-                records[row["id"]] = record
-                seen.add(row["id"])
-                self.journal.save(_key(binding, row["id"]), record)
+                    self.journal.save_issue(db, key, record)
             if result.next_page is not None and result.next_page <= page:
                 raise OfficeError("INVALID_PAGINATION")
             page = result.next_page
@@ -270,11 +276,7 @@ class IssueSync:
                 db.execute("DELETE FROM github_scans WHERE workspace=?", (workspace,))
                 db.execute("UPDATE github_bindings SET cursor=?,last_full=? WHERE workspace=?",
                            (cutoff, time.time() if full else binding["last_full"], workspace))
-        scheduled = sorted((r for r in records.values() if r["workspace_id"] == workspace and
-                           (r["state"] != "closed" or r["issue_id"] in seen or r.get("needs_check") or
-                            time.time() - r.get("last_checked", 0) >= 3600 or r.get("last_error") or
-                            r["publish_state"] in {"comment_pending", "comment_ack_pending"})),
-                           key=lambda r: (r.get("last_checked", 0), r["number"]))[:ISSUES_PER_POLL]
+        scheduled = self.journal.scheduled(binding, time.time(), ISSUES_PER_POLL)
         error = None
         for record in scheduled:
             if self.closed:
@@ -346,6 +348,8 @@ class IssueSync:
                       old_state == "closed" and issue["state"] == "open" or r.get("lifecycle_pending"))
         if not cfg["enabled"]:
             r.update(status="observing", lifecycle_pending=bool(needs_stop))
+            if r["goal_id"]:
+                self._discussions(key, cfg, client, r)
             return
         if needs_stop:
             r["restart_required"] = True
@@ -359,6 +363,7 @@ class IssueSync:
             elif r["status"] not in {"merged", "pull_closed", "scope_accepted_restart_required"}:
                 r["status"] = "restart_required"
             if cfg["enabled"] and r["goal_id"]:
+                self._discussions(key, cfg, client, r)
                 self._comment(key, cfg, client, r, {})
             return
 
@@ -395,13 +400,13 @@ class IssueSync:
             self._check_pull(cfg, r, pull)
             if pull.get("merged_at") or pull.get("merged") or pull.get("state") == "closed":
                 self._halt(key, r, "merged" if pull.get("merged_at") or pull.get("merged") else "pull_closed")
+                self._discussions(key, cfg, client, r)
                 self._comment(key, cfg, client, r, {})
                 return
         run = self.office.status(r["run_id"])
         state = run.get("state", "unknown")
         r["status"] = ("waiting_for_user" if run.get("question") else
                        "running" if state in ACTIVE else state.lower())
-        comments = client.comments(repo, r["number"])
         if r["scope_pending"]:
             r["status"] = "waiting_for_user"
         elif r["scope_delivery"]:
@@ -413,10 +418,10 @@ class IssueSync:
             r["scope_delivery"] = None
             self.journal.save(key, r)
             if r["restart_required"]:
-                self._comment(key, cfg, client, r, run, comments)
+                self._discussions(key, cfg, client, r)
+                self._comment(key, cfg, client, r, run)
                 return
-        if not r["scope_pending"]:
-            self._answers(key, cfg, client, r, comments, run.get("question"))
+        self._discussions(key, cfg, client, r, None if r["scope_pending"] else run.get("question"))
 
         if pull:
             self._pull_feedback(binding, key, client, r, pull, run)
@@ -439,7 +444,7 @@ class IssueSync:
             r["published_run"] = r["run_id"]
             r["office_draft"] = True
             self._link(key, cfg, r, receipt["number"], receipt["head"], receipt["head_sha"])
-        self._comment(key, cfg, client, r, run, comments)
+        self._comment(key, cfg, client, r, run)
 
     @staticmethod
     def _scope_text(scope):
@@ -491,18 +496,56 @@ class IssueSync:
         events.append(("run:" + r["run_id"], "goal_run", r["run_id"], "started"))
         self.journal.save(key, r, events)
 
+    def _discussions(self, key, cfg, client, r, question=None):
+        # Only the initial import walks old comments. Hold the same since value
+        # across pages and save the next position after any answer is acknowledged.
+        page = r.get("discussion_page", 1)
+        cutoff = r.get("discussion_cutoff") or (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        result = client.comment_page(cfg["repository"], r["number"], since=r.get("discussion_since"), page=page)
+        events = []
+        people = []
+        for comment in result.items:
+            actor = comment.get("user") or {}
+            cid = comment.get("id")
+            body = comment.get("body")
+            if (actor.get("type") != "User" or not _positive(actor.get("id")) or not _positive(cid)
+                    or not isinstance(body, str) or client.is_app_actor(comment)):
+                continue
+            people.append(comment)
+            if body.startswith("/office answer "):
+                continue
+            updated = comment.get("updated_at")
+            edited = updated and updated != comment.get("created_at")
+            identity = fingerprint("discussion", cid, updated, body)
+            preview = " ".join(external_text(body).split())
+            preview = "".join(c for c in preview if c.isprintable())
+            if len(preview) > 300:
+                preview = preview[:299] + "…"
+            detail = f"#{cid} · 작성자 {actor['id']} · {preview}"
+            events.append((identity, "issue_comment_edited" if edited else "issue_comment", detail, "observed"))
+        self._answers(key, cfg, client, r, people, question)
+        if result.next_page is None:
+            r.update(discussion_since=cutoff, discussion_cutoff=None, discussion_page=1)
+        elif result.next_page == page + 1:
+            r.update(discussion_cutoff=cutoff, discussion_page=result.next_page)
+        else:
+            raise OfficeError("INVALID_PAGINATION")
+        self.journal.save(key, r, events)
+
     def _answers(self, key, cfg, client, r, comments, question):
-        if not question:
+        if not question or question.get("kind") not in {"technical", "product"}:
             return
         actors = cfg["answer_actors"] if question.get("kind") == "technical" else cfg["product_actors"]
         for comment in comments:
             actor = comment.get("user") or {}
-            if (actor.get("type") != "User" or actor.get("id") not in actors or client.is_app_actor(comment)
-                    or not _positive(comment.get("id"))):
+            if actor.get("id") not in actors or not actor.get("login"):
                 continue
             answer = answer_text(comment, r["goal_id"], question)
             event = fingerprint("answer", comment["id"], question["id"])
             if answer and not self.journal.has(key, event):
+                if client.permission(cfg["repository"], actor["login"], actor["id"]) not in {
+                        "read", "triage", "write", "maintain", "admin"}:
+                    continue
                 self.office.answer(r["run_id"], question["id"], answer, event[:32], question["kind"])
                 self.journal.event(key, event, "question_answered", str(comment["id"]), "accepted")
                 break
@@ -616,7 +659,7 @@ class IssueSync:
         r.update(pr_number=number, pr_url=url, pr_head=branch, candidate_sha=sha)
         self.journal.save(key, r, [(fingerprint("pull", number, sha), "pull_linked", f"#{number} · {sha}", "observed")])
 
-    def _comment(self, key, cfg, client, r, run, comments=None):
+    def _comment(self, key, cfg, client, r, run):
         if not client.app_id:
             return
         marker = "<!-- agent-office:" + fingerprint(*key) + " -->"
@@ -641,6 +684,10 @@ class IssueSync:
         if r.get("ci_state") in {"failure", "success", "pending"}:
             lines.append("CI `" + r["ci_state"] + "`")
         question = run.get("question")
+        if type(run.get("permission_count")) is int and run["permission_count"] > 0:
+            lines.append(f"권한 승인 요청 {run['permission_count']}건 · 작업실 요청함에서만 결정할 수 있습니다.")
+        if question and question.get("kind") == "plan":
+            lines.append("계획 확인 대기 · 작업실 요청함에서 계획과 제품 선택을 확인하세요.")
         if question and question.get("kind") in {"technical", "product"} and re.fullmatch(
                 "[a-f0-9]{32}", str(question.get("id", ""))):
             prompt = question.get("prompt")
@@ -653,7 +700,19 @@ class IssueSync:
         body = "\n\n".join(lines)
         r["publish_state"] = "comment_pending"
         self.journal.save(key, r)
-        comments = comments if comments is not None else client.comments(cfg["repository"], r["number"])
+        if r["comment_id"]:
+            try:
+                recorded = client.comment(cfg["repository"], r["comment_id"])
+            except Exception as exc:
+                if getattr(exc, "status", None) != 404:
+                    raise
+                comments = client.comments(cfg["repository"], r["number"])
+            else:
+                if recorded.get("id") != r["comment_id"] or not self._owned(client, [recorded], marker):
+                    raise OfficeError("COMMENT_IDENTITY_CHANGED")
+                comments = [recorded]
+        else:
+            comments = client.comments(cfg["repository"], r["number"])
         owned = self._owned(client, comments, marker)
         if len(owned) > 1:
             raise OfficeError("MULTIPLE_STATUS_COMMENTS")
@@ -719,9 +778,10 @@ class IssueSync:
         return bindings[0], _key(bindings[0], issue_id)
 
     def _record(self, binding, issue_id):
-        for record in self.journal.records(binding):
-            if record["workspace_id"] == binding["workspace"] and record["issue_id"] == issue_id:
-                return record
+        with self.journal.db() as db:
+            record = self.journal.get(db, _key(binding, issue_id))
+        if record and record["workspace_id"] == binding["workspace"]:
+            return record
         raise OfficeError("NOT_FOUND")
 
     def decide(self, workspace, issue_id, event_id, action):

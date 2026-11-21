@@ -231,9 +231,9 @@ export function mountWorkspaceOffice(win = window) {
   const canWrite = () => !closed && roomOnline && !!room;
   const supportsMeetings = () => hostId === 'local' || room?.meeting_supported === true;
 
-  async function request(path, body) {
+  async function request(path, body, timeoutMs = 15000) {
     const controller = new win.AbortController();
-    const timeout = win.setTimeout(() => controller.abort(), 15000);
+    const timeout = win.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await win.fetch(path, {
         mode: 'same-origin', redirect: 'error', cache: 'no-store', signal: controller.signal,
@@ -255,8 +255,9 @@ export function mountWorkspaceOffice(win = window) {
     }
   }
 
-  const api = (path, body) => request(scope(hostId) + path, body);
-  const github = mountGithub({get, make, api, uuid: () => win.crypto.randomUUID().replaceAll('-', ''),
+  const api = (path, body, timeoutMs) => request(scope(hostId) + path, body, timeoutMs);
+  const github = mountGithub({get, make, api, desktop: /\bElectron\//i.test(win.navigator.userAgent),
+    uuid: () => win.crypto.randomUUID().replaceAll('-', ''),
     openGoal: id => { if (validId(id)) navigation(hostId, workspaceId, id); },
     context: () => ({id: workspaceId, host: hostId, supported: room?.github_supported === true,
       folders: room?.workspace.folders ?? [], runs: roomRuns(), writable: canWrite(), name: directory.find(host => host.id === hostId)?.name ?? hostId})});
