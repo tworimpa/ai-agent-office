@@ -21,6 +21,8 @@ from .workspace import plan_worktree
 
 
 def ensure_schema(db):
+    from . import goal_stage_wait
+    goal_stage_wait.ensure_schema(db)
     db.execute("""CREATE TABLE IF NOT EXISTS studio_goal_checkpoints(
         run_id TEXT PRIMARY KEY REFERENCES runs(run_id), stage TEXT NOT NULL, state_json TEXT NOT NULL,
         resume_phase TEXT NOT NULL, seq INTEGER NOT NULL, digest TEXT, created_at TEXT NOT NULL,
@@ -87,6 +89,10 @@ def timing(db, run_id, *, at=None):
         add("wait", row["holder"], row["started_at"], row["decided_at"] or row["expired_at"])
     for row in db.execute("SELECT * FROM studio_goal_workers WHERE run_id=?", (run_id,)):
         add("worker", row["holder"], row["started_at"], row["ended_at"])
+    stage_wait = False
+    for lower, upper in db.execute("SELECT started_at,ended_at FROM studio_goal_stage_waits WHERE run_id=?", (run_id,)):
+        add("plan", "", lower, upper)
+        stage_wait |= upper is None
     revisions = list(db.execute("SELECT created_at,approved_at,approved_by FROM studio_meeting_revisions "
                                 "WHERE run_id=? ORDER BY revision", (run_id,)))
     for index, row in enumerate(revisions):
@@ -130,7 +136,7 @@ def timing(db, run_id, *, at=None):
     plan = db.execute("SELECT 1 FROM studio_meetings WHERE run_id=? AND status='awaiting_review'", (run_id,)).fetchone()
     return {"active_seconds": round(elapsed["active"], 3), "user_wait_seconds": round(elapsed["wait"], 3),
             "unobserved_seconds": round(elapsed["unknown"], 3),
-            "waiting_for_user": bool(not run["ended_at"] and (plan or waits and workers <= waits))}
+            "waiting_for_user": bool(not run["ended_at"] and (stage_wait or plan or waits and workers <= waits))}
 
 
 def _environment(root, checks, update):
@@ -154,7 +160,8 @@ def _environment(root, checks, update):
     host_module = Path(__file__).parent
     for name in ("goal_checks.py", "goal_candidates.py", "goal_verification.py", "goal_host_checks.py",
                  "goal_peer.py", "goal_pytest.py", "goal_process.py", "goal_artifact.py",
-                 "goal_reproduction.py", "studio_process.py", "workflow.py"):
+                 "goal_reproduction.py", "studio_process.py", "workflow.py", "goal_stage_wait.py",
+                 "workspace_coordination.py"):
         file(host_module / name)
     files = set()
     for check in checks:
@@ -235,7 +242,7 @@ def _fingerprint(db, run_id):
 
 def checkpoint(db, run_id, next_stage, state):
     """Caller has finished and recorded all outputs for the preceding operation."""
-    if next_stage not in ("test", "review"):
+    if next_stage not in ("start_goal", "baseline", "develop", "test", "review"):
         raise ValueError("Unknown goal checkpoint stage")
     if not is_goal(db, run_id):
         return
@@ -291,7 +298,11 @@ def detail(store, run_id):
     public = {"stage": cp["stage"], "created_at": cp["created_at"], "digest": cp["digest"]} if cp else None
     clock = timing(db, run_id)
     stopped = db.execute("SELECT stop_requested FROM studio_runs WHERE id=?", (run_id,)).fetchone()[0]
-    if alive:
+    from .goal_stage_wait import waiting
+    stage_wait = waiting(db, run_id)
+    if stage_wait and run.state in ACTIVE:
+        action, reason = "waiting_dependency", "\n".join(json.loads(stage_wait["reasons"]))
+    elif alive:
         action = "working"
         reason = ("작업을 계속하려면 운영자 응답이 필요합니다." if clock["waiting_for_user"] else
                   "일부 작업은 운영자 응답을 기다리고 다른 담당자는 실행 중입니다." if decisions else

@@ -28,11 +28,12 @@
 
   <main id="office-main" class="shell">
     <aside class="sidebar" aria-label="작업공간과 기록">
-      <div class="sidebar-head">
+      <button type="button" id="mobile-navigation" class="secondary" aria-controls="host-choice workspaces-section history" aria-expanded="false">작업공간·기록 열기</button>
+      <div class="sidebar-head" id="host-choice">
         <label for="host">실행 호스트</label>
         <select id="host" disabled><option>불러오는 중</option></select>
       </div>
-      <section class="sidebar-section" aria-labelledby="workspace-heading">
+      <section class="sidebar-section" id="workspaces-section" aria-labelledby="workspace-heading">
         <div class="section-title">
           <h2 id="workspace-heading">작업공간</h2>
           <button type="button" id="register" class="icon-button" aria-label="작업공간 등록" title="작업공간 등록" disabled>+</button>
@@ -69,6 +70,33 @@
           </div>
         </div>
 
+        <section id="workspace-briefing" class="briefing" aria-labelledby="brief-title" hidden>
+          <header class="brief-heading">
+            <h2 id="brief-title" tabindex="-1">조정자 브리핑</h2>
+            <p id="brief-time"></p>
+          </header>
+          <p id="brief-note" role="status"></p>
+          <div class="brief-columns">
+            <section aria-labelledby="brief-question-title">
+              <h3 id="brief-question-title">답변과 결정 <span id="brief-question-count"></span></h3>
+              <div id="brief-questions"></div>
+            </section>
+            <section aria-labelledby="brief-permission-title">
+              <h3 id="brief-permission-title">권한 확인 <span id="brief-permission-count"></span></h3>
+              <div id="brief-permissions"></div>
+            </section>
+            <section aria-labelledby="brief-review-title">
+              <h3 id="brief-review-title">검토할 후보 <span id="brief-review-count"></span></h3>
+              <div id="brief-review"></div>
+            </section>
+          </div>
+          <details id="brief-progress">
+            <summary>목표별 진행과 기록 <span id="brief-work-count"></span></summary>
+            <div id="brief-overlaps"></div>
+            <div id="brief-work"></div>
+          </details>
+        </section>
+
         <section id="task-summary" class="task-summary" aria-labelledby="summary-title" hidden>
           <div class="summary-copy">
             <div class="summary-meta"><span id="summary-state"></span><span id="summary-owner"></span></div>
@@ -81,25 +109,6 @@
           <div id="summary-other" hidden></div>
         </section>
 
-        <section id="goal-report" class="goal-report" aria-labelledby="goal-title" hidden>
-          <h2 id="goal-title">목표 보고서</h2>
-          <p id="goal-progress"></p>
-          <p id="goal-next"></p>
-          <p id="goal-activity"></p>
-          <div id="goal-record"></div>
-          <p id="goal-note" role="status"></p>
-        </section>
-        <section id="github-inbox" class="goal-report" aria-labelledby="github-heading" hidden>
-          <h2 id="github-heading">GitHub 이슈</h2>
-          <p id="github-status"></p>
-          <button id="github-sync" type="button" class="secondary">지금 가져오기</button>
-          <p id="github-action-note" role="status"></p>
-          <div id="github-issues"></div>
-          <nav id="github-pages" aria-label="GitHub 이슈 목록 페이지" hidden>
-            <button id="github-prev" type="button" class="secondary">이전 이슈 목록</button>
-            <button id="github-next" type="button" class="secondary">다음 이슈 목록</button>
-          </nav>
-        </section>
         <div class="room-scene" aria-label="작업실에 있는 에이전트">
           <div class="scene-seats">
             <button type="button" class="seat" data-person="coordinator" aria-haspopup="dialog">
@@ -135,6 +144,25 @@
           </div>
         </div>
 
+        <section id="goal-report" class="goal-report" aria-labelledby="goal-title" hidden>
+          <h2 id="goal-title">목표 보고서</h2>
+          <p id="goal-progress"></p>
+          <p id="goal-next"></p>
+          <p id="goal-activity"></p>
+          <div id="goal-record"></div>
+          <p id="goal-note" role="status"></p>
+        </section>
+        <section id="github-inbox" class="goal-report" aria-labelledby="github-heading" hidden>
+          <h2 id="github-heading">GitHub 이슈</h2>
+          <p id="github-status"></p>
+          <button id="github-sync" type="button" class="secondary">지금 가져오기</button>
+          <p id="github-action-note" role="status"></p>
+          <div id="github-issues"></div>
+          <nav id="github-pages" aria-label="GitHub 이슈 목록 페이지" hidden>
+            <button id="github-prev" type="button" class="secondary">이전 이슈 목록</button>
+            <button id="github-next" type="button" class="secondary">다음 이슈 목록</button>
+          </nav>
+        </section>
         <section class="ledger" aria-labelledby="ledger-heading">
           <div class="ledger-heading">
             <div>
@@ -147,6 +175,7 @@
             </div>
           </div>
           <p id="ledger-note">조정자에게 요청을 보내 작업을 시작할 수 있습니다.</p>
+          <details id="selected-summary" hidden><summary>선택한 작업의 요약과 다음 행동</summary></details>
           <div id="room-view-controls"></div>
           <div id="office-thread" class="office-thread" aria-label="작업 대화" tabindex="-1"></div>
           <p id="thread-read-note" class="form-note" role="status"></p>
@@ -225,6 +254,7 @@
                     autocorrect="off" autocapitalize="none" spellcheck="false"></textarea>
           <p id="test-files-help" class="field-help">저장소 기준 경로를 한 줄에 하나씩 입력하세요. 예: <code>tests/test_cli.py</code>. 비우면 전체 테스트를 실행합니다.</p>
         </fieldset>
+        <fieldset id="assignment-coordination" hidden><legend>목표 조정</legend></fieldset>
         <fieldset id="assignment-goal-criteria" hidden>
           <legend>목표 완료 기준</legend>
           <label for="goal-criteria">확인할 결과(선택)</label>
@@ -239,6 +269,32 @@
       <button type="submit" id="send" class="primary">보내기</button>
     </form>
     <p id="chat-note" class="form-note" role="status"></p>
+  </dialog>
+
+  <dialog id="coordination-dialog" class="dialog" aria-labelledby="coordination-title">
+    <header class="dialog-header">
+      <div><h2 id="coordination-title">목표 조정</h2><p id="coordination-task"></p></div>
+      <form method="dialog"><button type="submit" class="close-button" aria-label="목표 조정 닫기">×</button></form>
+    </header>
+    <form id="coordination-form" class="settings-form" method="post">
+      <div id="coordination-fields"></div>
+      <p id="coordination-note" role="status"></p>
+      <button id="coordination-save" type="submit" class="primary">조정 내용 저장</button>
+    </form>
+  </dialog>
+
+  <dialog id="decision-revision-dialog" class="dialog" aria-labelledby="revision-title">
+    <header class="dialog-header">
+      <h2 id="revision-title">제품 결정 수정</h2>
+      <form method="dialog"><button type="submit" class="close-button" aria-label="결정 수정 닫기">×</button></form>
+    </header>
+    <form id="decision-revision-form" class="settings-form" method="post">
+      <strong id="revision-prompt"></strong><p id="revision-before"></p>
+      <label for="revision-answer">바꿀 답변</label><textarea id="revision-answer" required rows="3"></textarea>
+      <label for="revision-reason">수정 이유</label><textarea id="revision-reason" required rows="2"></textarea>
+      <p id="revision-impact"></p><p id="revision-note" role="status"></p>
+      <button id="revision-save" type="submit" class="primary">새 결정 기록</button>
+    </form>
   </dialog>
 
   <dialog id="requests" class="dialog" aria-labelledby="requests-title">

@@ -8,6 +8,7 @@ import threading
 from hashlib import sha256
 
 from . import overnight_goals, role_skills
+from . import workspace_coordination
 from . import meeting_store
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .models import OfficeError, validate_id
@@ -175,6 +176,7 @@ class WorkspaceRooms:
         self.assignments = threading.Lock()
         with TaskStore(db_path, existing=True) as store, store._write():
             overnight_goals.ensure_schema(store.connection)
+            workspace_coordination.ensure_schema(store.connection)
             store.connection.execute("""CREATE TABLE IF NOT EXISTS studio_room_settings(
                 workspace_id TEXT PRIMARY KEY, settings_json TEXT NOT NULL)""")
             store.connection.execute("CREATE INDEX IF NOT EXISTS studio_runs_workspace ON studio_runs(workspace_id)")
@@ -257,7 +259,7 @@ class WorkspaceRooms:
             page = {"runs": runs, "next_cursor": next_cursor}
             if cursor is None:
                 page.update(workspace=workspace, settings=self._settings(db, workspace_id), engines=engines,
-                            meeting_supported=True, goal_supported=True, github_supported=True,
+                            meeting_supported=True, goal_supported=True, github_supported=True, briefing_supported=True,
                             goal_default=db.execute("SELECT 1 FROM studio_goal_policies WHERE workspace_id=?",
                                                     (workspace_id,)).fetchone() is not None)
         return page
@@ -269,11 +271,19 @@ class WorkspaceRooms:
     def assign(self, workspace_id, data, *, pinned_revision=None, origin=None):
         required = {"id", "message", "allow_edits", "delegation"}
         if not required <= data.keys() or data.keys() - required - {"indices", "test_files", "meeting", "review_plan",
-                                                                    "role_engines", "goal", "goal_criteria", "reproduce_required"}:
+                                                                    "role_engines", "goal", "goal_criteria", "reproduce_required", "coordination"}:
             raise ValueError("조정자에게 보낼 요청을 확인하세요.")
         meeting = data.get("meeting", False)
         review_plan = data.get("review_plan", False)
         goal = data.get("goal", False)
+        coordination = None
+        specification = data.get("coordination")
+        if "coordination" in data and not isinstance(specification,dict):
+            raise ValueError("작업 조정 설정을 확인하세요.")
+        if specification is None and origin is None and isinstance(data["message"],str):
+            specification = workspace_coordination.markdown_settings(data["message"])
+        if specification is not None and type(goal) is bool and data["allow_edits"] is True:
+            goal = True
         if (type(goal) is not bool or goal and data["allow_edits"] is not True or
                 not goal and ("goal_criteria" in data or "reproduce_required" in data)):
             raise ValueError("개발 목표의 실행 범위를 확인하세요.")
@@ -302,6 +312,9 @@ class WorkspaceRooms:
                 if prior:
                     return prior
                 settings = self._settings(store.connection, workspace_id)
+                if specification is not None:
+                    coordination = workspace_coordination.bind_references(
+                        store.connection, workspace_id, specification, origin)
                 if goal:
                     criteria = overnight_goals.criteria_for(task, data.get("goal_criteria"))
                     goal_policy = overnight_goals.workspace_policy(store.connection, workspace_id, test_files)
@@ -351,4 +364,5 @@ class WorkspaceRooms:
                                      reviewer_engine=roles["reviewer"]["engine"], use_inbox=True,
                                      delegation=policy, role_skills={role: roles[role]["skills"] for role in ROLES},
                                      room_assignment=assignment, room_revision=revision, room_choices=choices,
+                                     **({"coordination":coordination} if coordination is not None else {}),
                                      **({"external_origin":origin} if origin is not None else {}))

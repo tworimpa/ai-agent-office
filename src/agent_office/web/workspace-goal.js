@@ -50,7 +50,7 @@ const formatted = (value) => {
 };
 const active = new Set(['QUEUED', 'RUNNING', 'WAITING_USER', 'TESTING', 'REVIEWING', 'STOP_REQUESTED']);
 const canAdoptCandidate = (candidate) =>
-  candidate?.eligible === true && candidate.status === 'passed' && candidate.review_status === 'approved';
+  candidate?.eligible === true && !candidate.coordination_note && candidate.status === 'passed' && candidate.review_status === 'approved';
 
 export function mountGoals({win, get, make, api, refresh, onPolicySaved, context, openInbox, openMeeting, openRun}) {
   let latest = null,
@@ -176,11 +176,13 @@ export function mountGoals({win, get, make, api, refresh, onPolicySaved, context
       }
     };
     const recent = events.at(-1);
-    const best = candidates.find((candidate) => candidate.attempt === goal.best_attempt);
+    const best = candidates.find(candidate => candidate.attempt === goal.best_attempt && !candidate.coordination_note);
+    const adopted = candidates.find(candidate => candidate.attempt === goal.adopted_attempt);
+    const superseded = candidates.findLast(candidate => candidate.coordination_note);
     get('goal-progress').textContent =
       (goal.progress_uncertain ? '진행 불확실 · ' : '') +
       (goal.adopted_attempt != null
-        ? attemptLabel(goal.adopted_attempt) + '의 후보 채택을 기록했습니다.'
+        ? attemptLabel(goal.adopted_attempt) + (adopted?.coordination_note ? '에 채택한 후보의 선행 조건이 바뀌었습니다.' : '의 후보 채택을 기록했습니다.')
         : running
           ? attemptLabel(running.attempt) +
             ' · ' +
@@ -193,7 +195,9 @@ export function mountGoals({win, get, make, api, refresh, onPolicySaved, context
               goal.outcome ||
               (recent ? label(stages[recent.stage] ?? recent.stage) + ' · ' + label(recent.kind) : '접수됨'));
     let next = goal.next_action || '실행 호스트의 다음 기록을 기다립니다.';
-    if (goal.recovery?.disposition === 'closed') {
+    if ((adopted?.coordination_note || (!best && superseded)) && !active.has(goal.state)) {
+      next = '변경된 선행 조건을 반영한 뒤 다시 검증하세요.';
+    } else if (goal.recovery?.disposition === 'closed') {
       next =
         goal.adopted_attempt != null
           ? '채택한 후보의 남은 수동 확인 항목을 검토하세요.'
@@ -306,7 +310,7 @@ export function mountGoals({win, get, make, api, refresh, onPolicySaved, context
     revisions.append(
       make(
         'p',
-        goal.best_attempt != null
+        best
           ? '검토할 최선 후보 · ' +
               attemptLabel(goal.best_attempt) +
               (canAdoptCandidate(best) ? ' · 독립 검토 승인' : ' · 미검증 또는 보완 항목 있음')
@@ -317,11 +321,14 @@ export function mountGoals({win, get, make, api, refresh, onPolicySaved, context
       const node = fold(
         attemptLabel(candidate.attempt) +
           ' · ' +
-          label(candidate.status) +
-          (candidate.attempt === goal.best_attempt ? ' · 최선 후보' : '') +
-          (candidate.attempt === goal.adopted_attempt ? ' · 채택됨' : '')
+          (candidate.coordination_note ? '이전 검사 ' + label(candidate.status) + ' · 선행 조건 재확인 필요' : label(candidate.status)) +
+          (candidate === best ? ' · 최선 후보' : '') +
+          (candidate.attempt === goal.adopted_attempt ? (candidate.coordination_note ? ' · 이전 채택 기록' : ' · 채택됨') : '')
       );
       node.dataset.goalAttempt = candidate.attempt;
+      node.dataset.digest = candidate.digest;
+      node.dataset.current = String(canAdoptCandidate(candidate));
+      if (candidate.coordination_note) node.append(make('p', candidate.coordination_note));
       for (const [name, value] of [
         ['가설', candidate.hypothesis],
         ['변경', candidate.change],

@@ -326,7 +326,7 @@ try {
   }
   await window.getByRole('button', { name: '대화 닫기' }).click()
   if (!live) {
-    const planAction = window.locator('#summary-action').filter({ hasText: '계획 확인하기' })
+    const planAction = window.locator(`#brief-questions [data-action="plan"][data-run="${run.id}"]`)
     await planAction.focus()
     await window.keyboard.press('Enter')
     assert.equal(await window.locator('#meeting-inputs input[type=radio]').first().evaluate(el => el === document.activeElement), true)
@@ -351,7 +351,7 @@ try {
 
   window = await launch()
   await window.waitForURL(url => url.searchParams.get('run') === run.id)
-  const question = window.locator('#summary-action').filter({ hasText: '질문에 답하기' })
+  const question = window.locator(`#brief-questions [data-action="answer"][data-run="${run.id}"]`)
   await question.waitFor()
   await capture(window, '07-question')
   await question.focus()
@@ -363,7 +363,7 @@ try {
   if (!live) {
     const approved = await approvePlan(window, 3, false)
     assert.equal(approved.revisions.at(-1).source, 'direction')
-    const permission = window.locator('#summary-action').filter({ hasText: '권한 요청 확인' })
+    const permission = window.locator(`#brief-permissions [data-action="permission"][data-run="${run.id}"]`)
     await permission.focus()
     await window.keyboard.press('Enter')
     const pending = (await read(local.origin, '/api/runs/' + run.id + '/inbox')).requests

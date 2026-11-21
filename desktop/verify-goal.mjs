@@ -10,9 +10,10 @@ import {LocalStudio} from './studio.mjs'
 import {closeDesktop, finishVerification} from './verify-lifecycle.mjs'
 
 const [target, output, mode] = process.argv.slice(2)
-const githubMode = ['github', 'github-gate'].includes(mode)
-if (!target || !output || !['before', 'after', 'privilege-gate', 'github', 'github-gate'].includes(mode))
-  throw Error('Usage: node verify-goal.mjs INSTALLED_EXECUTABLE EVIDENCE_DIRECTORY before|after|privilege-gate|github|github-gate')
+const briefingMode = ['briefing-before', 'briefing-after'].includes(mode)
+const githubMode = ['github', 'github-gate'].includes(mode) || briefingMode
+if (!target || !output || !['before', 'after', 'privilege-gate', 'github', 'github-gate'].includes(mode) && !briefingMode)
+  throw Error('Usage: node verify-goal.mjs INSTALLED_EXECUTABLE EVIDENCE_DIRECTORY before|after|privilege-gate|github|github-gate|briefing-before|briefing-after')
 const executable = await realpath(target)
 const started = Date.now()
 const windows = process.platform === 'win32'
@@ -22,7 +23,7 @@ const profile = join(root, 'profile'),
   bin = join(root, 'bin')
 const python = join(dirname(executable), 'resources', 'runtime', windows ? 'python.exe' : 'bin/python3')
 const studio = new LocalStudio(join(profile, 'local-studio'), python)
-const request =
+const request = briefingMode ? '저장 설정 형식 변경' :
   'Windows에서 설정이 사라지는 문제를 재현하고 수정한 뒤, 관련 테스트와 전체 회귀 검증을 실행해 아침에 검토할 후보를 남겨줘'
 const events = []
 const record = (action, detail) => events.push({elapsed_seconds: (Date.now() - started) / 1000, action, detail})
@@ -45,15 +46,23 @@ function git(...args) {
   return execFileSync('git', args, {cwd: repo, encoding: 'utf8'})
 }
 git('init', '-q', '-b', 'main')
-if (githubMode) await writeFile(join(repo, 'github-journey.txt'), 'GitHub Issue integration fixture\n')
+if (briefingMode) {
+  await writeFile(join(repo, 'briefing-fixture.txt'), 'Disposable workspace briefing fixture\n')
+  await writeFile(join(repo, 'settings.py'), 'def valid(data):\n    return True\n\ndef convert(data):\n    return data\n')
+  await writeFile(join(repo, 'tests/test_settings.py'), 'from settings import valid\n\ndef test_valid_setting():\n    assert valid({"value": "dark"})\n')
+  await writeFile(join(repo, 'tests/test_defaults.py'), 'from settings import convert\n\ndef test_current_setting():\n    assert convert({"value": "dark"}) == {"value": "dark"}\n')
+} else if (githubMode) await writeFile(join(repo, 'github-journey.txt'), 'GitHub Issue integration fixture\n')
 git('add', '.')
 git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'settings fixture')
 const source = fileURLToPath(new URL('fixtures/goal_worker.py', import.meta.url))
 const shquote = (value) => "'" + value.replaceAll("'", "'\"'\"'") + "'"
+const traceDir = join(root, 'fixture-processes')
+if (briefingMode) await mkdir(traceDir)
 for (const engine of ['codex', 'agy']) {
+  const trace = briefingMode ? ' --fixture-trace ' + (windows ? '"' + traceDir + '"' : shquote(traceDir)) : ''
   const script = windows
-    ? '@"' + python + '" "' + source + '" ' + engine + ' %*\r\n'
-    : '#!/bin/sh\nexec ' + shquote(python) + ' ' + shquote(source) + ' ' + engine + ' "$@"\n'
+    ? '@"' + python + '" "' + source + '" ' + engine + trace + ' %*\r\n'
+    : '#!/bin/sh\nexec ' + shquote(python) + ' ' + shquote(source) + ' ' + engine + trace + ' "$@"\n'
   await writeFile(join(bin, engine + (windows ? '.cmd' : '')), script, {mode: 0o700})
 }
 const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH'
@@ -61,7 +70,8 @@ const env = {...process.env, [pathKey]: bin + delimiter + process.env[pathKey]}
 let provider
 if (githubMode) {
   const {githubFixture} = await import('./fixtures/github-provider.mjs')
-  provider = await githubFixture(root, python, repo, request)
+  provider = await githubFixture(root, python, repo, request, briefingMode ? 41 : 7)
+  if (briefingMode) provider.issue.body = '## 완료 기준\n- 기존 설정을 새 형식으로 읽는 방식을 제품 결정에 따라 구현하세요.'
   env.AGENT_OFFICE_GITHUB_CONFIG = provider.config
   git('remote', 'add', 'origin', provider.origin + '/fixture/settings.git')
 }
@@ -339,6 +349,13 @@ async function verifyJourney() {
     await page.getByRole('button', {name: '설정 닫기'}).click()
   }
   if (githubMode) {
+    if (briefingMode) {
+      const {verifyBriefing} = await import('./verify-briefing.mjs')
+      const currentPage = () => page
+      run = await verifyBriefing({currentPage, json, mode, evidence, provider, traceDir, record, screenshot, studio,
+        close, launch: async () => { await launch(); origin = (await studio.running()).origin }})
+      return
+    }
     await githubJourney()
     return
   }
@@ -412,7 +429,7 @@ async function verifyJourney() {
     record('privilege-gate', '관리자 세션의 저장소 테스트를 실행하지 않고 미검증으로 기록')
   } else {
     await waitForQuestion(run.id)
-    await page.locator('#summary-action').filter({hasText: '질문에 답하기'}).click()
+    await page.locator('#brief-questions [data-action="answer"][data-run="' + run.id + '"]').click()
     const editor = page.locator('#office-thread .request-item textarea')
     await editor.fill('밝게')
     await screenshot('02-product-choice')

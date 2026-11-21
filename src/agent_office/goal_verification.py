@@ -83,6 +83,10 @@ def describe(db, run_id):
     if not (checks or candidates or stop):
         return None
     for candidate in candidates:
+        from .workspace_coordination import stage_status
+        basis = stage_status(db, run_id, "review", candidate["attempt"])
+        if not basis["ready"]:
+            candidate.update(eligible=False, coordination_note=" ".join(basis["reasons"]))
         candidate.update(review_status="pending", review_output="")
         for kind, status, output, at in db.execute(
                 "SELECT kind,status,output,at FROM studio_goal_reviews WHERE run_id=? AND attempt=? AND digest=?",

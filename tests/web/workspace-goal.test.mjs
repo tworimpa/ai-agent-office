@@ -71,6 +71,19 @@ function fixture(route) {
   };
 }
 
+test('historical test and review evidence cannot present an invalidated candidate as current or adoptable', async t => {
+  const note = '적용한 제품 결정이 바뀌었습니다. 새 결정으로 구현과 검증이 필요합니다.';
+  const {get} = mount(t, fixture(path => path === runPath + '/goal' ? {goal: {...goal, best_attempt: null,
+    candidates: [{...candidate, eligible: false, coordination_note: note}], recovery: {disposition: 'closed'}}} : undefined));
+  await until(() => get('goal-record').textContent.includes(note));
+  const card = get('goal-record').querySelector('[data-goal-attempt]');
+  assert.match(card.querySelector('summary').textContent, /이전 검사 통과 · 선행 조건 재확인 필요/);
+  assert.ok(!card.querySelector('summary').textContent.includes('최선 후보'));
+  assert.match(get('goal-next').textContent, /다시 검증/);
+  assert.equal(card.dataset.current, 'false');
+  assert.equal(card.querySelector('[data-goal-adopt]'), null);
+});
+
 test('overnight settings save the user-selected scope to the workspace, separately from ordinary assignments', async (t) => {
   let saved, assignment, releaseRefresh;
   const {get, person, window, submit} = mount(

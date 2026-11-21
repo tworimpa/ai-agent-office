@@ -11,6 +11,7 @@ from typing import BinaryIO
 from .models import validate_id
 from .overnight_goals import criteria_for, goal_route
 from . import github_studio
+from . import workspace_briefing
 from .office_wire import check_office_reply, office_offset
 from .improvement_wire import check_improvement_reply, improvement_route
 from .version_wire import check_version_reply, version_route
@@ -70,7 +71,8 @@ def is_peer_route(method: str, route: str) -> bool:
     if route in ("/engines", "/inbox", "/return-report"):
         return method == "GET"
     if route.startswith("/rooms/"):
-        return github_studio.route(method, route) is not None or room_route(method, route) is not None
+        return (workspace_briefing.route(method, route) is not None or github_studio.route(method, route) is not None
+                or room_route(method, route) is not None)
     if re.fullmatch(r"/goal-checks/[a-f0-9]{32}", route):
         return True
     if goal_route(method, route) is not None:
@@ -206,6 +208,10 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
             raise RemoteUnavailable()
         elif action == "recover" and not isinstance(data.get("recovery"), dict):
             raise RemoteUnavailable()
+        return
+    briefing = workspace_briefing.route(method, route)
+    if briefing:
+        workspace_briefing.check_reply(briefing, status, data, payload)
         return
     if github_studio.route(method, route):
         github_studio.check_reply(status, data, method, route, payload)
@@ -356,8 +362,11 @@ def _check_room_reply(status, data, headers, journal, method, route, payload):
                 role not in ROLES or row["assignment"]["roles"][role]["engine"] != engine
                 for role, engine in overrides.items()):
             raise RemoteUnavailable()
-        if (bool(row["assignment"].get("goal_policy")) != bool(payload.get("goal")) or
-                (not payload.get("goal") and bool(row["assignment"].get("meeting")) != bool(payload.get("meeting"))) or
+        from .workspace_coordination import markdown_settings
+        goal = bool(payload.get("goal")) or (payload.get("allow_edits") is True and
+               ("coordination" in payload or bool(markdown_settings(payload["message"]))))
+        if (bool(row["assignment"].get("goal_policy")) != goal or
+                (not goal and bool(row["assignment"].get("meeting")) != bool(payload.get("meeting"))) or
                 bool(row["assignment"].get("review_plan")) != bool(payload.get("review_plan"))):
             raise RemoteUnavailable()
         if row["assignment"].get("test_files") != payload.get("test_files"):

@@ -232,6 +232,10 @@ class GitHubOffice:
                     delegation=None, meeting=True, indices=[cfg["folder_index"]])
         if details["criteria"]:
             data["goal_criteria"] = details["criteria"]
+        from .workspace_coordination import markdown_settings
+        coordination = markdown_settings(issue.get("body") or "")
+        if coordination is not None:
+            data["coordination"] = coordination
         if feedback:
             data["reproduce_required"] = issue.get("feedback_kind") == "ci"
             data.setdefault("goal_criteria", [_bounded_text(feedback, 2000)])

@@ -78,6 +78,12 @@ def _public(db, row):
         result["prompt"] = public_prompt(result["prompt"])
     check = db.execute("SELECT * FROM studio_away_checks WHERE request_id=?", (row["id"],)).fetchone()
     result["source"] = "operator" if row["decision"] is not None else None
+    if row["decision_type"] == PRODUCT_DECISION and row["decision"] == "answer":
+        from .workspace_coordination import _exists
+        if _exists(db):
+            shared = db.execute("SELECT evidence FROM workspace_decision_uses WHERE target_request=?", (row["id"],)).fetchone()
+            if shared:
+                result["shared_decision"] = json.loads(shared[0])
     result["delegation_reason"] = check["reason"] if check else None
     result["delegation_in_progress"] = bool(check and row["status"] == "pending"
                                             and check["reason"] is None and check["evidence"] is None)
@@ -272,7 +278,9 @@ class InboxChannel:
                             PRODUCT_DECISION if kind == PRODUCT_DECISION else None, prompt, now()))
                 plan = (away_ledger.begin_question(db, _request(db, self.run_id, request_id))
                         if kind == "question" else None)
-                if plan is None:
+                from .workspace_coordination import reuse_product_answer
+                shared = kind == PRODUCT_DECISION and reuse_product_answer(db,self.run_id,run["attempts"],request_id,prompt)
+                if plan is None and not shared:
                     from .goal_recovery import note_wait
                     note_wait(db, request_id)
             consultation = (asyncio.create_task(self._consult(store, request_id, plan)) if plan else None)

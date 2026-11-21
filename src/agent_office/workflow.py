@@ -12,6 +12,7 @@ from typing import Protocol, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from .adapters import AgentResult
+from .goal_stage_wait import ReworkRequired, decision_context
 from .studio_catalog import verify_worktree_test_files
 from .studio_process import WINDOWS_SERVICE_CODEX_CONTEXT, windows_service_session
 from .workspace import git_summary, read_git_prefix
@@ -50,7 +51,7 @@ def parse_review_verdict(output: str) -> str:
 
 def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=None, save_stage=None, inbox_factory=None,
                 delegated_questions=(), skill_guidance=None, technical_choice_guidance="", studio_preview=None, meeting=None,
-                goal=None, resume_stage=None):
+                goal=None, resume_stage=None, stage_gate=None, review_current=None):
     guidance = skill_guidance or {}
     windows_service = studio_preview is not None and windows_service_session()
 
@@ -108,25 +109,24 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
                         + json.dumps(names, ensure_ascii=False) + "\n\n")
         return context
 
-    def develop(state: TaskState) -> dict:
-        count = state.get("attempts", 0) + 1
-        if goal:
-            goal.invalidate()
-        if meeting and count > 1:
-            meeting.note_unverified("재작업이 시작되어 이전 결과를 다시 확인해야 합니다.")
-        if save_stage and count > 1:
-            for column in ("developer_output", "test_output", "review_output"):
-                save_stage(column, "")
-        emit("STAGE_STARTED", "developer", count, state="RUNNING", engine=state["developer"])
-        feedback = state.get("feedback", "(none)")
-        if goal and goal.needs_reproducer:
+    def admit(stage, node, state, attempt):
+        return decision_context(stage_gate(stage, node, state, attempt)) if stage_gate else ""
+
+    def baseline(state):
+        evidence = admit("reproduce", "baseline", state, 1)
+        ok, feedback = goal.baseline()
+        if not (ok or goal.needs_reproducer):
+            return {"status": "TEST_FAILED", "feedback": feedback, "test_output": feedback}
+        count = 1
+        if goal.needs_reproducer:
+            emit("STAGE_STARTED", "developer", count, state="RUNNING", engine=state["developer"])
             from .goal_reproduction import measure
             repro = run_role(state, "developer", (
                 "Reproduce the reported behavior before editing the implementation. Within the allowed folders "
                 "add only a new pytest regression file which calls the original application and asserts the "
                 "requested behavior. Keep existing source, configuration and tests intact. Never commit, push, "
                 "merge, deploy or change permissions. If expected behavior is unclear ask the operator.\n\n"
-                + folder_context(state, state["developer"]) + "\nTask:\n" + state["task"]), session="reproduction")
+                + folder_context(state, state["developer"]) + "\nTask:\n" + state["task"] + evidence), session="reproduction")
             try:
                 if repro.returncode:
                     raise ValueError("재현 테스트를 준비하지 못했습니다. " + repro.message[:500])
@@ -141,8 +141,22 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
                 emit("STAGE_FAILED", "developer", count, returncode=1, engine=state["developer"])
                 return {"status": "RECOVERY_REQUIRED" if repro.returncode == 124 else "FAILED",
                         "attempts": count, "developer_output": reason, "feedback": reason}
+        return {"status": "NEW", "feedback": feedback, "test_output": feedback}
+
+    def develop(state: TaskState) -> dict:
+        count = state.get("attempts", 0) + 1
+        evidence = admit("implement", "develop", state, count)
+        if goal:
+            goal.invalidate()
+        if meeting and count > 1:
+            meeting.note_unverified("재작업이 시작되어 이전 결과를 다시 확인해야 합니다.")
+        if save_stage and count > 1:
+            for column in ("developer_output", "test_output", "review_output"):
+                save_stage(column, "")
+        emit("STAGE_STARTED", "developer", count, state="RUNNING", engine=state["developer"])
+        feedback = state.get("feedback", "(none)")
         if meeting is not None and count == 1 and state["allow_edits"]:
-            meeting.dispatch(guidance.get("developer", ""))
+            meeting.dispatch(guidance.get("developer", "") + evidence)
         prompt = (
             "You are the development worker for this repository. "
             "Stay within the Git worktree. Never commit, push, merge, deploy, "
@@ -159,7 +173,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
         if goal:
             prompt += ("\n\nDocument the failure hypothesis and implementation for this attempt. Preserve prior tests "
                        "and scope. Use the baseline and the latest verification evidence supplied in feedback.")
-        result = run_role(state, "developer", prompt)
+        result = run_role(state, "developer", prompt + evidence)
         if save_stage:
             save_stage("developer_output", result.message)
         emit("STAGE_COMPLETED" if result.returncode == 0 else "STAGE_FAILED", "developer", count,
@@ -187,6 +201,14 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
         return {"status": "PLAN_ONLY"}
 
     def test(state: TaskState) -> dict:
+        try:
+            admit("verify", "test", state, state["attempts"])
+        except ReworkRequired as exc:
+            goal.stop(str(exc))
+            if save_stage:
+                save_stage("test_output", str(exc))
+            return {"status": "TEST_FAILED", "test_output": str(exc), "feedback": str(exc),
+                    "retry_allowed": state["attempts"] < state["max_attempts"]}
         emit("STAGE_STARTED", "test", state["attempts"], state="TESTING")
         timed_out = False
         returncode = None
@@ -269,6 +291,13 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
         return heading + f"Working-tree status:\n{status or '(no status lines shown)'}\n\nDiff:\n{diff or '(no patch shown)'}"
 
     def review(state: TaskState) -> dict:
+        try:
+            evidence = admit("review", "review", state, state["attempts"])
+        except ReworkRequired as exc:
+            goal.stop(str(exc))
+            if save_stage:
+                save_stage("review_output", str(exc))
+            return {"status": "CHANGES_REQUESTED", "review_output": str(exc), "feedback": str(exc)}
         if goal:
             goal.invalidate()
         emit("STAGE_STARTED", "review", state["attempts"], state="REVIEWING", engine=state["reviewer"])
@@ -284,8 +313,11 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             f"{review_evidence(state)}\n\n"
             f"Test results:\n{state.get('test_output', '')}"
         )
-        result = run_role(state, "reviewer", prompt)
+        result = run_role(state, "reviewer", prompt + evidence)
         output = result.message
+        changed_basis = review_current(state["attempts"]) if review_current and result.returncode == 0 else ""
+        if changed_basis:
+            output = changed_basis + "\n" + output
         plan_changed = meeting is not None and meeting.snapshot()["revision"] != revision
         if save_stage:
             save_stage("review_output", output)
@@ -296,7 +328,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
             status = "REVIEW_FAILED"
         elif result.truncated:
             status = "NEEDS_HUMAN_REVIEW"
-        elif plan_changed:
+        elif plan_changed or changed_basis:
             status = "CHANGES_REQUESTED"
         elif parse_review_verdict(output) == "APPROVED":
             status = "READY_FOR_HUMAN_REVIEW"
@@ -331,23 +363,25 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
     graph.add_node("test", test)
     graph.add_node("review", review)
     if goal:
-        def baseline(_state):
-            ok, output = goal.baseline()
-            return {"status": "NEW" if ok or goal.needs_reproducer else "TEST_FAILED", "feedback": output, "test_output": output}
         graph.add_node("baseline", baseline)
         graph.add_conditional_edges("baseline", lambda s: "develop" if s["status"] == "NEW" else "end",
                                     {"develop": "develop", "end": END})
-    if resume_stage:
-        graph.add_edge(START, resume_stage)
-    elif meeting is not None:
+    entry = "baseline" if goal else "develop"
+    if meeting is not None:
         def prepare(_state):
             meeting.begin()
             return {}
         graph.add_node("meeting", prepare)
-        graph.add_edge(START, "meeting")
-        graph.add_edge("meeting", "baseline" if goal else "develop")
-    else:
-        graph.add_edge(START, "baseline" if goal else "develop")
+        graph.add_edge("meeting", entry)
+        entry = "meeting"
+    if stage_gate:
+        def start_goal(state):
+            admit("start", "start_goal", state, 1)
+            return {}
+        graph.add_node("start_goal", start_goal)
+        graph.add_edge("start_goal", entry)
+        entry = "start_goal"
+    graph.add_edge(START, resume_stage or entry)
     graph.add_conditional_edges("develop", after_develop, {
         "test": "test", "plan_only": "plan_only", "end": END,
     })

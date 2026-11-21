@@ -24,7 +24,7 @@ const localTime = value => {
   return Number.isNaN(date.getTime()) ? '시간 미확인' : date.toLocaleString('ko-KR');
 };
 
-export function mountGithub({get, make, api, context, openGoal, uuid, desktop}) {
+export function mountGithub({get, make, api, context, openGoal, uuid, desktop, briefing}) {
   const field = key => get('github-' + key);
   const note = (key, value) => { field(key).textContent = value; };
   const roomKey = () => JSON.stringify([context().host, context().id]);
@@ -182,6 +182,8 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop}) 
         card.append(owner);
       }
       addButton(card, '연결된 목표 열기', () => openGoal(row.run_id));
+      const adjust = addButton(card, '목표 조정', () => briefing.edit(row.run_id));
+      adjust.dataset.coordinate = row.run_id;
       card.append(pullForm(row));
     }
     if (row.publish_state === 'comment_ack_pending') {
@@ -233,6 +235,10 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop}) 
     field('prev').disabled = changingPage || !context().writable || !previousPages.length;
     field('next').disabled = blocked || latest?.next_cursor == null;
     for (const node of field('issues').querySelectorAll('button')) node.disabled = blocked;
+    for (const node of field('issues').querySelectorAll('[data-coordinate]')) {
+      node.hidden = !briefing.canEdit(node.dataset.coordinate);
+      node.disabled = blocked || node.hidden;
+    }
   }
   function render() {
     const {config, status = {}, issues = [], connections = []} = latest;

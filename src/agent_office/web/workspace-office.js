@@ -2,6 +2,7 @@ import {firstProseParagraph, renderDiff, renderMarkdown, renderSource} from './o
 import {planFlow} from './office-flow.js';
 import {mountGoals} from './workspace-goal.js';
 import {mountGithub} from './workspace-github.js';
+import {mountBriefing} from './workspace-briefing.js';
 
 const roleLabels = {developer: '담당자', reviewer: '검토자'};
 const engines = {codex: 'Codex', antigravity: 'Antigravity', claude: 'Claude Code', gemini: 'Gemini CLI', cline: 'Cline CLI'};
@@ -256,8 +257,12 @@ export function mountWorkspaceOffice(win = window) {
   }
 
   const api = (path, body, timeoutMs) => request(scope(hostId) + path, body, timeoutMs);
+  const uuid = () => win.crypto.randomUUID().replaceAll('-', '');
+  const briefing = mountBriefing({get, make, api, taskTitle, stateName, uuid, refresh, openAction: openBriefAction,
+    context: () => ({workspaceId, identity: hostId + ':' + workspaceId, runs: roomRuns(),
+      supported: room?.briefing_supported === true, writable: canWrite()})});
   const github = mountGithub({get, make, api, desktop: /\bElectron\//i.test(win.navigator.userAgent),
-    uuid: () => win.crypto.randomUUID().replaceAll('-', ''),
+    uuid, briefing,
     openGoal: id => { if (validId(id)) navigation(hostId, workspaceId, id); },
     context: () => ({id: workspaceId, host: hostId, supported: room?.github_supported === true,
       folders: room?.workspace.folders ?? [], runs: roomRuns(), writable: canWrite(), name: directory.find(host => host.id === hostId)?.name ?? hostId})});
@@ -298,6 +303,7 @@ export function mountWorkspaceOffice(win = window) {
     }
     if (changingRoom) {
       github.reset();
+      briefing.reset();
       room = null;
       roomOnline = false;
       olderRuns = [];
@@ -535,12 +541,46 @@ export function mountWorkspaceOffice(win = window) {
     }
   }
 
+  async function openBriefAction(kind, row) {
+    if (!canWrite() || !validId(row.run_id)) return false;
+    const switchRun = runId !== row.run_id, token = epoch + Number(switchRun);
+    if (switchRun) await navigation(hostId, workspaceId, row.run_id);
+    if (!sameContext(token) || !canWrite() || !trustedRun(row.run_id) || runId !== row.run_id) return false;
+    if (kind === 'permission') {
+      showRequests(row.run_id + ':' + row.request_id, row.run_id);
+      return true;
+    }
+    if (kind === 'plan') {
+      if (!meetingReadOK || get('meeting-decision').hidden || detail?.meeting?.revision !== row.revision) return false;
+      openSummaryStep(selected(), {key: 'plan'});
+      return true;
+    }
+    let target;
+    if (kind === 'answer') {
+      target = get('thread-answer-' + row.run_id + '-' + row.request_id);
+      if (!chatDetailsOnline || target?.disabled) return false;
+    } else if (kind === 'candidate') {
+      const fold = [...get('goal-record').querySelectorAll('[data-goal-attempt]')].find(node =>
+        node.dataset.goalAttempt === String(row.attempt) && node.dataset.digest === row.digest && node.dataset.current === 'true');
+      if (!fold || get('goal-report').hidden) return false;
+      fold.open = true;
+      target = fold.querySelector('[data-goal-diff]');
+    } else if (kind === 'work') {
+      target = get(get('goal-report').hidden ? 'ledger-heading' : 'goal-title');
+    }
+    if (!target) return false;
+    if (!target.matches('button,textarea')) target.tabIndex = -1;
+    target.focus();
+    return true;
+  }
+
   get('summary-action').addEventListener('click', () => {
     const run = selected();
     if (run) openSummaryStep(run, nextStep(run));
   });
 
   function renderRoom() {
+    get('office-main').dataset.briefing = String(room?.briefing_supported === true);
     get('room').hidden = !room;
     get('empty-room').hidden = !!room;
     get('empty-register').hidden = !online || workspaces.length > 0;
@@ -555,6 +595,7 @@ export function mountWorkspaceOffice(win = window) {
       return;
     }
     say('room-title', room.workspace.name);
+    briefing.controls();
     github.controls();
     if (!roomOnline) goals.stale();
     const count = room.runs.reduce((total, run) => total + (run.pending_count ?? 0), 0);
@@ -587,7 +628,11 @@ export function mountWorkspaceOffice(win = window) {
     const coordinatorLine = selected()?.lines?.coordinator ?? summary()?.lines?.coordinator;
     seat('coordinator').querySelector('.seat-line').textContent = firstTask ? '원하는 결과를 적어 주세요.' :
       coordinatorLine || '새 작업을 맡길 수 있습니다.';
-    renderTaskSummary(selected());
+    const run = selected(), selectedSummary = get('selected-summary'), summaryPanel = get('task-summary');
+    selectedSummary.hidden = !room.briefing_supported || !run;
+    if (room.briefing_supported && summaryPanel.parentNode !== selectedSummary) selectedSummary.append(summaryPanel);
+    if (!room.briefing_supported && summaryPanel.parentNode === selectedSummary) get('workspace-briefing').after(summaryPanel);
+    renderTaskSummary(run);
     renderLedger();
   }
 
@@ -1114,6 +1159,7 @@ export function mountWorkspaceOffice(win = window) {
       if (!current()) return;
       await Promise.all([
         detailRequest,
+        briefing.load().then(() => github.controls()),
         github.load(),
         loadChat(),
         get('requests').open ? loadRequests() : null,
@@ -1145,7 +1191,7 @@ export function mountWorkspaceOffice(win = window) {
   }
 
   function closeDialogs() {
-    for (const id of ['conversation', 'requests', 'room-settings', 'register-dialog']) {
+    for (const id of ['conversation', 'requests', 'room-settings', 'register-dialog', 'coordination-dialog', 'decision-revision-dialog']) {
       if (get(id).open) get(id).close();
     }
     ++dialogEpoch;
@@ -1218,7 +1264,7 @@ export function mountWorkspaceOffice(win = window) {
     get('assignment-options').hidden = !assignment;
     get('edit-option').hidden = !assignment;
     get('review-option').hidden = !assignment || !supportsMeetings();
-    get('assignment-options').open = Boolean(saved?.delegation != null || saved?.indices || saved?.test_files || saved?.role_engines || saved?.goal_criteria);
+    get('assignment-options').open = Boolean(saved?.delegation != null || saved?.indices || saved?.test_files || saved?.role_engines || saved?.goal_criteria || saved?.coordination);
     get('assignment-engines').hidden = !assignment || !supportsMeetings();
     if (assignment && supportsMeetings()) {
       for (const role of Object.keys(roleLabels)) {
@@ -1235,6 +1281,7 @@ export function mountWorkspaceOffice(win = window) {
     get('review-plan').checked = saved?.review_plan === true;
     get('test-files').value = saved?.test_files?.join('\n') ?? '';
     if (assignment) folderChoices(saved?.indices);
+    if (assignment) briefing.intake.load(null, saved?.coordination, !get('allow-edits').checked);
     get('message').value = saved?.message ?? editor ?? '';
     say('chat-note', saved ? '이전 접수 결과를 확인하지 못했습니다. 같은 요청을 다시 보낼 수 있습니다.' : '');
     say('chat-request-note', '');
@@ -1257,6 +1304,21 @@ export function mountWorkspaceOffice(win = window) {
   function decisionStatus(row) {
     return [decisionLabels[row.decision], requestStateLabels[row.status], stamp(row.delivered_at ?? row.expired_at ?? row.decided_at)]
       .filter(Boolean).join(' · ');
+  }
+
+  function sharedEvidence(record) {
+    const evidence = make('details');
+    evidence.dataset.evidence = 'shared:' + record.source_run + ':' + record.request_id + ':' + record.revision;
+    evidence.append(make('summary', '원래 제품 결정 · 버전 ' + record.revision));
+    const source = roomRuns().find(row => row.id === record.source_run);
+    if (validId(record.source_run)) {
+      const link = make('a', '출처 목표 · ' + (source ? taskTitle(source.task) : record.source_run));
+      link.href = address(hostId, workspaceId, record.source_run);
+      link.addEventListener('click', event => navClick(event, hostId, workspaceId, record.source_run));
+      evidence.append(link);
+    }
+    evidence.append(make('p', record.prompt), make('small', '원본 요청 · ' + record.request_id));
+    return evidence;
   }
 
   function decisionEvidence(row) {
@@ -1345,6 +1407,13 @@ export function mountWorkspaceOffice(win = window) {
         const label = requestLabels[item.kind];
         if (item.status === 'pending') {
           events.push([item.created_at, requestItem(item, epoch, id === 'chat-log' ? 'chat' : 'thread')]);
+          continue;
+        }
+        if (item.shared_decision) {
+          const receipt = message('agent', '선행 목표의 사용자 결정 적용', item.shared_decision.answer,
+            decisionStatus(item), item.id + '-shared');
+          receipt.append(sharedEvidence(item.shared_decision));
+          events.push([item.decided_at || item.created_at, receipt]);
           continue;
         }
         if (simple && item.source === 'delegate') continue;
@@ -1447,6 +1516,10 @@ export function mountWorkspaceOffice(win = window) {
     get('review-plan').disabled = locked;
     for (const picker of get('assignment-engines').querySelectorAll('select')) picker.disabled = locked;
     const editAssignment = assignment && get('allow-edits').checked;
+    const coordinate = get('assignment-coordination');
+    coordinate.hidden = !assignment || room?.briefing_supported !== true;
+    coordinate.disabled = locked || !enabled || coordinate.hidden;
+    if (!coordinate.hidden) briefing.intake.mode(!editAssignment);
     const canAssignGoal = editAssignment && room?.goal_supported === true;
     get('goal-option').hidden = !canAssignGoal;
     get('overnight-goal').disabled = locked || !canAssignGoal;
@@ -1544,6 +1617,10 @@ export function mountWorkspaceOffice(win = window) {
     if (body.allow_edits) {
       const files = get('test-files').value.split('\n').map(path => path.trim()).filter(Boolean);
       if (files.length) body.test_files = files;
+    }
+    if (room?.briefing_supported) {
+      const values = briefing.intake.value();
+      if (values.priority || values.dependencies.length || values.areas.length) body.coordination = values;
     }
     return body;
   }
@@ -1701,9 +1778,10 @@ export function mountWorkspaceOffice(win = window) {
     if (row.delegation_reason) node.append(make('small', row.delegation_reason));
     else if (row.delegation_in_progress) node.append(make('small', '전문가가 근거를 확인하고 있습니다.'));
     if (row.status !== 'pending') {
-      const owner = row.source === 'delegate' ? '조정자 대리 결정' : '사용자 결정';
+      const owner = row.shared_decision ? '선행 목표의 사용자 결정 적용' : row.source === 'delegate' ? '조정자 대리 결정' : '사용자 결정';
       node.append(make('small', [row.decision && owner, decisionStatus(row)].filter(Boolean).join(' · ')));
       if (row.answer) node.append(make('p', row.answer));
+      if (row.shared_decision) node.append(sharedEvidence(row.shared_decision));
       const evidence = decisionEvidence(row);
       if (evidence) node.append(evidence);
       return node;
@@ -2045,6 +2123,11 @@ export function mountWorkspaceOffice(win = window) {
   });
 
   get('host').addEventListener('change', event => navigation(event.target.value, null, null));
+  get('mobile-navigation').addEventListener('click', event => {
+    const button = event.currentTarget, expanded = button.getAttribute('aria-expanded') !== 'true';
+    button.setAttribute('aria-expanded', String(expanded));
+    button.textContent = expanded ? '작업공간·기록 접기' : '작업공간·기록 열기';
+  });
   get('refresh').addEventListener('click', refresh);
   get('history-older').addEventListener('click', loadOlderHistory);
   get('stop-run').addEventListener('click', async () => {
