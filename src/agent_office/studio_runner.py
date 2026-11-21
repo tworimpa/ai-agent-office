@@ -556,10 +556,10 @@ def _worker(db_path, run_id):
             store.connection.execute("UPDATE studio_runs SET proposed_state=?,proposed_outcome=? WHERE id=?",
                                      (state, outcome, run_id))
 
-        def inbox_factory(role, engine):
+        def inbox_factory(role, engine, *, receive_directions=True):
             channel = InboxChannel(db_path, run_id, role, engine,
                                    goal_task_id=role if room and json.loads(room["assignment_json"]).get("goal_policy") else None)
-            if room:
+            if room and receive_directions:
                 channel.directions = DirectionChannel(db_path, run_id, role, engine)
             return channel
 

@@ -7,6 +7,7 @@ import {setTimeout as delay} from 'node:timers/promises'
 import {fileURLToPath} from 'node:url'
 import {_electron as electron} from 'playwright'
 import {LocalStudio} from './studio.mjs'
+import {closeDesktop, finishVerification} from './verify-lifecycle.mjs'
 
 const [target, output, mode] = process.argv.slice(2)
 const githubMode = ['github', 'github-gate'].includes(mode)
@@ -64,7 +65,7 @@ if (githubMode) {
   env.AGENT_OFFICE_GITHUB_CONFIG = provider.config
   git('remote', 'add', 'origin', provider.origin + '/fixture/settings.git')
 }
-let app, page, run, origin
+let app, child, page, run, origin, failure
 async function launch() {
   app = await electron.launch({
     executablePath: executable,
@@ -73,23 +74,15 @@ async function launch() {
     chromiumSandbox: true,
     timeout: 30000
   })
+  child = app.process()
   page = await app.firstWindow()
   page.setDefaultTimeout(25000)
   await page.setViewportSize({width: 1280, height: 900})
 }
 async function close() {
-  const child = app.process()
-  await Promise.race([
-    app.close(),
-    (async () => {
-      for (let i = 0; i < 200; i++) {
-        if (child.exitCode !== null || child.signalCode !== null) return
-        await delay(75)
-      }
-      throw Error('Fixture desktop did not close')
-    })()
-  ])
+  const launched = app
   app = null
+  await closeDesktop(child, () => launched.close())
 }
 async function screenshot(name) {
   await page.screenshot({path: join(evidence, name + '.png')})
@@ -483,7 +476,8 @@ try {
   )
   console.log('Installed journey verified', evidence)
 } catch (error) {
-  console.error('Fixture evidence:', evidence, 'working directory:', root)
+  failure = error
+  console.error('Fixture evidence:', evidence, 'working directory:', root, error)
   if (origin && run) {
     try {
       const {run: detail} = await json('/api/runs/' + run.id)
@@ -512,11 +506,10 @@ try {
       console.error('Could not read fixture diagnostic:', readError.message)
     }
   }
-  if (page && !page.isClosed()) await screenshot('error').catch(() => {})
-  throw error
+  if (page && !page.isClosed()) await page.screenshot({path: join(evidence, 'error.png'), timeout: 3000}).catch(() => {})
 } finally {
-  if (app) await close()
-  const runtime = await studio.running()
-  if (runtime) await studio.stop(runtime.bootId)
-  if (provider) await provider.close()
+  await finishVerification(failure, () => app && close(), async () => {
+    const runtime = await studio.running()
+    if (runtime) await studio.stop(runtime.bootId)
+  }, () => provider?.close())
 }

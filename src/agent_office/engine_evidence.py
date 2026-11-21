@@ -81,7 +81,8 @@ class StudioEngineCatalog:
         with self._lock:
             if not self._closed and self._cache.get(engine) is record:
                 record["entry"] = entry
-                record["expires"] = time.monotonic() + _METADATA_TTL
+                ttl = 10 if entry["probe_status"] in {"timeout", "error"} else _METADATA_TTL
+                record["expires"] = time.monotonic() + ttl
                 self._checked_at = now()
 
     def snapshot(self):

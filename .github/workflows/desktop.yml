@@ -67,7 +67,7 @@ jobs:
           chmod 0755 "$tools"
           mkdir -p "$tools/node_modules" "$tools/fixtures"
           install -m 0755 "$(command -v node)" "$tools/node"
-          cp desktop/{verify-goal,studio}.mjs "$tools/"
+          cp desktop/{verify-goal,verify-lifecycle,studio}.mjs "$tools/"
           cp desktop/fixtures/{goal_worker.py,github_tls.py,github-provider.mjs} "$tools/fixtures/"
           cp -R desktop/node_modules/{playwright,playwright-core} "$tools/node_modules/"
           evidence="$tools/evidence"

@@ -106,6 +106,15 @@ def test_binding_intake_and_ci_repair_pin_immutable_tree_and_keep_same_goal(tmp_
         first = uuid4().hex
         issue = {"id":123,"number":3,"title":"설정 복원","body":"## 완료 기준\n- [ ] 설정을 유지한다", "goal_id":first}
         client.issue_data = issue
+        cold = engine_snapshot("codex", "antigravity")
+        for entry in cold["engines"]:
+            if entry["engine"] == "codex":
+                entry.update(probe_status="pending", headless_support=False)
+        monkeypatch.setattr(server.engines, "snapshot", lambda:cold)
+        with pytest.raises(ValueError, match="엔진"):
+            office.start(ws,first,issue,cfg)
+        assert server.runner.runs() == []
+        monkeypatch.setattr(server.engines, "snapshot", lambda:engine_snapshot("codex","antigravity"))
         receipt = office.start(ws,first,issue,cfg)
         assert office.start(ws,first,issue,cfg) == receipt
         with pytest.raises(ValueError):

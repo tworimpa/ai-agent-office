@@ -317,6 +317,11 @@ class WorkspaceRooms:
             if allow_edits and find_spec("pytest") is None:
                 raise ValueError("작업실 실행 환경에 pytest가 설치되어 있지 않습니다.")
             engines = self.engines.snapshot()["engines"]
+            if origin is not None:
+                # A polling worker may run during cold-start probes. Keep the
+                # configured provider and retry intake instead of assigning the
+                # issue to a different provider that happened to answer first.
+                overrides = {role: settings[role]["engine"] for role in ROLES}
             roles = _assign_roles(settings, engines, allow_edits, meeting, overrides)
             delegated = settings["delegation"] if override is None else override
             revision = pinned_revision or read_workspace_revision(repo)

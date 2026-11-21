@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { access, mkdir, mkdtemp, readFile, realpath, rename, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { LocalStudio } from './studio.mjs'
+import { closeDesktop, finishVerification } from './verify-lifecycle.mjs'
 
 if (!process.argv[2]) throw new Error('Usage: node verify-install.mjs PATH_TO_PACKAGED_EXECUTABLE [--live]')
 const exe = await realpath(process.argv[2])
@@ -21,7 +23,7 @@ const repo = join(root, nativePicker ? 'desktop-project' : '작업공간')
 const views = []
 const peerProfile = join(root, 'peer')
 const resultFile = join(root, 'result.json')
-let app
+let app, child, failure
 console.log(`Evidence directory: ${root}`)
 
 function git(...args) {
@@ -67,6 +69,7 @@ const standalone = new LocalStudio(join(profile, 'local-studio'), python)
 async function launch() {
   app = await electron.launch({ executablePath: exe, args: [`--user-data-dir=${profile}`], env,
     chromiumSandbox: true, timeout: 30000 })
+  child = app.process()
   const window = await app.firstWindow({ timeout: 30000 })
   window.context().setDefaultTimeout(live ? 150000 : 20000)
   return window
@@ -74,17 +77,43 @@ async function launch() {
 
 async function close() {
   const launched = app
-  const child = launched.process()
-  const closing = launched.close()
-  // On Windows a detached runtime can outlive the Playwright launcher's pipe.
-  await Promise.race([closing, (async () => {
-    for (const deadline = Date.now() + 15000; Date.now() < deadline;) {
-      if (child.exitCode !== null || child.signalCode !== null) return
-      await delay(75)
-    }
-    throw new Error('Desktop process did not exit.')
-  })()])
   app = null
+  await closeDesktop(child, () => launched.close())
+}
+
+async function verifyClosingRestore() {
+  const savedProfile = join(root, 'closing-profile')
+  await mkdir(savedProfile)
+  const journalId = 'c'.repeat(32)
+  const restoring = Promise.withResolvers()
+  const server = createServer((request, response) => {
+    if (request.url === '/') {
+      response.writeHead(200, {'Content-Type': 'text/html'})
+      response.write('<!doctype html><title>Restoring</title>')
+      restoring.resolve()
+      return // Keep navigation in flight until the operator closes the last window.
+    }
+    const data = request.url === '/api/hosts' ? {hosts: [{id: 'local', name: 'fixture'}]} : {journal_id: journalId}
+    response.writeHead(200, {'Content-Type': 'application/json'})
+    response.end(JSON.stringify(data))
+  })
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
+  try {
+    const origin = 'http://127.0.0.1:' + server.address().port
+    await writeFile(join(savedProfile, 'connection.json'), JSON.stringify({connection: {mode: 'attached', origin, journalId}}))
+    app = await electron.launch({executablePath: exe, args: ['--user-data-dir=' + savedProfile], env, chromiumSandbox: true})
+    child = app.process()
+    await Promise.race([restoring.promise, delay(20000, null, {ref: false}).then(() => { throw Error('Office restore did not start') })])
+    const launched = app
+    app = null
+    await closeDesktop(child, () => launched.evaluate(({BrowserWindow}) => {
+      setImmediate(() => BrowserWindow.getAllWindows()[0].close())
+    }))
+    console.log('Closing the restoring office window exited the desktop.')
+  } finally {
+    server.closeAllConnections()
+    await new Promise(resolve => server.close(resolve))
+  }
 }
 
 function nextWindow() {
@@ -205,6 +234,7 @@ async function approvePlan(window, revision, edit) {
 }
 
 try {
+  await verifyClosingRestore()
   let window = await launch()
   await capture(window, '01-setup')
   assert.equal(await window.locator('#address').isVisible(), false)
@@ -427,10 +457,19 @@ try {
     persistedDirection: direction.id, test: final.test_output, review: final.review_output,
   }, null, 2))
   console.log(`Desktop verification passed: ${resultFile}`)
+} catch (error) {
+  failure = error
+  console.error('Desktop installation verification failed:', error)
+  for (const window of app?.windows() ?? []) {
+    console.error('Window:', window.url())
+    if (window.url().endsWith('/setup.html')) {
+      const status = await window.locator('#error').textContent({ timeout: 1500 }).catch(() => '')
+      if (status) console.error('Setup reported:', status)
+    }
+  }
 } finally {
-  if (app) await close()
-  for (const runtime of [standalone, attached]) {
+  await finishVerification(failure, () => app && close(), ...[standalone, attached].map(runtime => async () => {
     const running = await runtime.running()
     if (running) await runtime.stop(running.bootId)
-  }
+  }))
 }
