@@ -10,13 +10,13 @@ import {launch, until} from './drivers.mjs'
 import {finishVerification} from '../verify-lifecycle.mjs'
 
 const [mode, electronPath, rustPath, output] = process.argv.slice(2)
-if (!output || !['connect', 'survivor'].includes(mode)) throw Error('Usage: verify-connection.mjs connect|survivor ELECTRON RUST EVIDENCE')
+if (!output || !['connect', 'survivor', 'rust-survivor'].includes(mode)) throw Error('Usage: verify-connection.mjs connect|survivor|rust-survivor ELECTRON RUST EVIDENCE')
 const evidence = resolve(output)
 await mkdir(evidence, {recursive:true})
 const manifest = join(evidence, 'identity.json')
-const previous = mode === 'survivor' && JSON.parse(await readFile(manifest, 'utf8'))
+const previous = mode !== 'connect' && JSON.parse(await readFile(manifest, 'utf8'))
 const root = previous ? previous.root : await mkdtemp(join(tmpdir(), 'office-compare-journal-'))
-const electron = await realpath(electronPath)
+const electron = mode === 'rust-survivor' ? electronPath : await realpath(electronPath)
 const python = process.env.OFFICE_COMPARISON_PYTHON || join(dirname(electron),'resources','runtime',
   process.platform === 'win32' ? 'python.exe' : 'bin/python3')
 const serve = [
@@ -58,8 +58,12 @@ async function setupWindow() {
   await page.ready('#address')
 }
 async function choose(studio) {
-  await page.fill('#address',studio.origin)
-  await page.activate('#connect')
+  await page.run(origin => {
+    const input = document.querySelector('#address')
+    input.value = origin
+    input.dispatchEvent(new Event('input',{bubbles:true}))
+    input.form.requestSubmit(document.querySelector('#connect'))
+  },studio.origin)
   await page.ready('#confirm')
   assert.ok((await page.run(() => document.querySelector('#identity').textContent)).includes(studio.id))
   await page.activate('#confirm')
@@ -99,17 +103,30 @@ try {
     await writeFile(manifest,JSON.stringify({root,original:first.id,replacement:other.id,workspace},null,2))
   } else {
     assert.equal(first.id,previous.original)
-    page = await launch('electron',electron,join(root,'electron-profile'))
-    await page.activate('#connection-options > summary')
-    await page.fill('#address',first.origin)
-    await page.activate('#connect button')
-    await room(first)
+    const kind = mode === 'survivor' ? 'electron' : 'rust'
+    page = await launch(kind, kind === 'rust' ? rustPath : electron, join(root,kind+'-survivor-profile'))
+    if (kind === 'electron') {
+      await page.activate('#connection-options > summary')
+      await page.fill('#address',first.origin)
+      await page.activate('#connect button')
+      await room(first)
+    } else {
+      await setupWindow()
+      await choose(first)
+    }
     await page.ready('#workspaces a[href*="' + previous.workspace + '"]')
-    await page.screenshot(join(evidence,'electron-after-remove.png'))
-    await writeFile(join(evidence,'survivor.json'),JSON.stringify({original:first.id,workspace:previous.workspace},null,2))
+    await page.screenshot(join(evidence,kind+'-after-remove.png'))
+    await writeFile(join(evidence,kind+'-survivor.json'),JSON.stringify({original:first.id,workspace:previous.workspace},null,2))
   }
 } catch (error) {
   failure = error
+  if (page) {
+    const screen = await page.run(() => ({
+      url:location.href, address:document.querySelector('#address')?.value, text:document.body.innerText.slice(0,1500)
+    })).catch(() => null)
+    console.error('Connection verification stopped:', screen)
+    await page.screenshot(join(evidence,'connection-failed.png')).catch(() => {})
+  }
 } finally {
   await finishVerification(failure,close,stop)
 }

@@ -66,6 +66,8 @@ fn only_loopback_http_and_studio_pages() {
     ] {
         assert!(page(&Url::parse(input).unwrap(), &base).is_none());
     }
+    // Tauri omits index.html and the trailing slash for the initial Linux URL.
+    assert!(local_setup(&Url::parse("tauri://localhost").unwrap()));
     assert!(local_setup(
         &Url::parse("tauri://localhost/index.html").unwrap()
     ));

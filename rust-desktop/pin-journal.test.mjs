@@ -8,7 +8,7 @@ const key = 'ai-agent-office.rust.journal'
 const id = 'a'.repeat(32)
 const other = 'b'.repeat(32)
 
-function load(address, storage) {
+function load(address, storage, webkitGtk = false) {
   const location = new URL(address)
   const win = { fetch: async (input, options) => ({ input, options }) }
   win.top = win
@@ -18,7 +18,8 @@ function load(address, storage) {
     clear: () => storage.clear(),
   }
   const history = { replaceState: (_state, _title, url) => { location.href = url.href } }
-  runInNewContext(script, { window: win, location, sessionStorage, history, Request, Headers, URL, URLSearchParams })
+  runInNewContext(script.replace('__WEBKIT_GTK__', String(webkitGtk)),
+    { window: win, location, sessionStorage, history, Request, Headers, URL, URLSearchParams })
   return { fetch: win.fetch, location }
 }
 
@@ -54,4 +55,19 @@ test('missing or malformed pin blocks Studio API calls; setup is unaffected', as
   }
   const setup = load('tauri://localhost/index.html', new Map())
   assert.equal((await setup.fetch('/api/hosts')).options, undefined)
+})
+
+test('only Linux WebKit same-origin Studio API writes override the page referrer policy', async () => {
+  const base = 'http://127.0.0.1:8766'
+  const init = { method: 'POST', referrerPolicy: 'no-referrer' }
+  for (const webkit of [true, false]) {
+    const page = load(base + '/', new Map([[key, id]]), webkit)
+    const write = await page.fetch('/api/workspaces', init)
+    assert.equal(write.options.referrerPolicy, webkit ? 'same-origin' : 'no-referrer')
+    const request = new Request(base + '/api/test', { method: 'POST' })
+    assert.equal((await page.fetch(request)).options.referrerPolicy, webkit ? 'same-origin' : undefined)
+    assert.equal((await page.fetch('/api/status')).options.referrerPolicy, undefined)
+    assert.equal((await page.fetch('/example', init)).options, init)
+    assert.equal((await page.fetch('http://127.0.0.1:8767/api/test', init)).options, init)
+  }
 })

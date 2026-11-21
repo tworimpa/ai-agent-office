@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {execFileSync} from 'node:child_process'
 import {mkdir, readFile, realpath, writeFile} from 'node:fs/promises'
 import {join, resolve} from 'node:path'
 import {launch, until} from './drivers.mjs'
@@ -19,6 +20,7 @@ const runtime = await studio.start().catch(async error => {
 let page, workspace, runId, failure, step
 const registered = new Set()
 const results = []
+const composition = []
 const setStep = name => { step = name; console.log(name) }
 const json = async path => {
   const response = await fetch(runtime.origin + path,{signal:AbortSignal.timeout(8000)})
@@ -49,7 +51,7 @@ async function open(kind) {
     registered.add(kind)
   }
   await page.selectWindow(url => url.startsWith(runtime.origin + '/'))
-  await page.size(1100)
+  await page.size(1366,768)
   assert.equal(await page.run(() => location.origin),runtime.origin)
   const connected = await page.run(async () => (await fetch('/api/desktop-runtime')).json())
   assert.equal(connected.journal_id,runtime.journalId)
@@ -75,25 +77,85 @@ async function register() {
 }
 async function hangul(selector, value) {
   await page.ready(selector)
-  await page.run((s,text) => {
+  await page.fill(selector,'')
+  await page.run(s => {
     const target = document.querySelector(s)
     target.focus()
-    for (const [type,data] of [['compositionstart',''],['compositionupdate',text]]) {
-      target.dispatchEvent(new CompositionEvent(type,{bubbles:true,data}))
+    const observed = []
+    for (const type of ['compositionstart','compositionupdate','compositionend']) {
+      target.addEventListener(type,e => {
+        observed.push([e.type,e.isTrusted])
+        target.dataset.handoffComposition = JSON.stringify(observed)
+      },{once:true})
     }
-  },selector,value)
-  await page.fill(selector,value)
-  const committed = await page.run((s,text) => {
+  },selector)
+  const ibus = !page.compose && process.env.OFFICE_TEST_IBUS === '1' && value === '밝게'
+  if (ibus) {
+    // The wrapper gives this test its own X display, D-Bus and keyboard engine.
+    const ids = execFileSync('xdotool',['search','--onlyvisible','--name','AI Agent Office'],{encoding:'utf8'}).trim().split(/\s+/)
+    assert.equal(ids.length,1,'Expected exactly one fixture window on the private display')
+    execFileSync('xdotool',['windowfocus','--sync',ids[0]])
+    execFileSync('ibus',['engine','hangul'])
+    assert.equal(execFileSync('ibus',['engine'],{encoding:'utf8'}).trim(),'hangul')
+    execFileSync('xdotool',['type','--clearmodifiers','--delay','80','qkfrrp']) // 밝게 on a two-set keyboard
+    execFileSync('xdotool',['key','Right'])
+    await until(() => page.run((s,text) => document.querySelector(s).value === text,selector,value),'IBus committed 밝게')
+    execFileSync('ibus',['engine','xkb:us::eng'])
+  } else if (page.compose) await page.compose(value)
+  else {
+    // W3C WebKitGTK has element.sendKeys but no composition control endpoint.
+    await page.run((s,text) => {
+      const el = document.querySelector(s)
+      for (const [type,data] of [['compositionstart',''],['compositionupdate',text]])
+        el.dispatchEvent(new CompositionEvent(type,{bubbles:true,data}))
+    },selector,value)
+    await page.fill(selector,value)
+    await page.run((s,text) => document.querySelector(s).dispatchEvent(
+      new CompositionEvent('compositionend',{bubbles:true,data:text})),selector,value)
+  }
+  const {committed,observed} = await page.run(s => {
     const target = document.querySelector(s)
-    target.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:text}))
-    return target.value
-  },selector,value)
+    return {committed:target.value,observed:JSON.parse(target.dataset.handoffComposition)}
+  },selector)
   assert.equal(committed,value)
+  if (ibus) {
+    assert.ok(observed.some(([type]) => type === 'compositionend'),'IBus did not commit the Hangul answer')
+  } else {
+    assert.deepEqual(observed.map(([type])=>type),['compositionstart','compositionupdate','compositionend'])
+    assert.ok(observed.slice(0,2).every(([,trusted])=>trusted === Boolean(page.compose)))
+  }
+  const method = ibus ? 'IBus Hangul two-set X11 keyboard + WebKitGTK' :
+    page.compose ? 'Chromium IME engine' : 'scripted WebKit DOM events and WebDriver text'
+  composition.push({selector,method,observed})
 }
 async function selectRun() {
   if (await page.run(() => new URL(location.href).searchParams.get('run')) !== runId)
     await page.activate('#run-list a[href*="' + runId + '"]')
   await until(() => page.run(id => new URL(location.href).searchParams.get('run') === id,runId),'active run ' + runId)
+}
+async function briefingViews(tag,action) {
+  const views = []
+  for (const [width,height] of [[1366,768],[390,844]]) {
+    await page.size(width,height)
+    await page.reload()
+    await page.ready('#brief-' + (action === 'answer' ? 'questions' : 'review') + ' [data-action="' + action + '"][data-run="' + runId + '"]')
+    await page.run(() => window.scrollTo(0,0))
+    const observation = await page.run(() => {
+      const position = selector => [...document.querySelectorAll(selector)].map(el => {
+        const {x,y,width,height} = el.getBoundingClientRect()
+        return {run:el.dataset.run,action:el.dataset.action,x,y,width,height,
+          insideViewport:width > 0 && height > 0 && x >= 0 && y >= 0 && x + width <= innerWidth && y + height <= innerHeight}
+      })
+      return {width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,
+        questions:position('#brief-questions [data-action="answer"]'),candidates:position('#brief-review [data-action="candidate"]')}
+    })
+    assert.equal(observation.width,width)
+    assert.equal(observation.height,height)
+    assert.ok(observation.scrollWidth <= width)
+    await page.screenshot(join(evidence,tag + '-briefing-' + width + 'x' + height + '.png'))
+    views.push(observation)
+  }
+  return views
 }
 async function assign(kind) {
   const task = kind + '에서 저장한 테마와 첫 실행 기본값을 확인해 주세요.'
@@ -139,7 +201,7 @@ async function readRecords() {
 }
 async function renderResult(label,candidate) {
   setStep(label + ' candidate and conversation')
-  await page.size(390)
+  const briefing = await briefingViews(label + '-ready','candidate')
   let candidateAction = '#brief-review [data-action="candidate"][data-run="' + runId + '"]'
   // The newest candidate is visible. Older candidates are tucked into an accessible details element.
   if (await page.run(s => Boolean(document.querySelector(s)?.closest('details:not([open])')),candidateAction)) {
@@ -153,7 +215,7 @@ async function renderResult(label,candidate) {
   await page.key('Enter')
   await until(() => page.run(s => [...document.querySelectorAll(s + ' > pre')].some(el=>el.getClientRects().length && el.textContent.includes('settings.py')),fold),'visible candidate patch')
   await page.screenshot(join(evidence,label + '-candidate.png'))
-  await page.size(1100)
+  await page.size(1366,768)
   await page.activate('.seat[data-person="developer"]')
   await page.activate('#conversation [data-view="technical"]')
   const panel = '#evidence-developer'
@@ -170,19 +232,25 @@ async function renderResult(label,candidate) {
   await page.ready(flow + ' svg[role="img"]')
   await page.screenshot(join(evidence,label + '-mermaid.png'))
   await page.activate('#conversation .close-button')
-  return width
+  return {width,briefing}
 }
 async function journey(first,second) {
+  composition.length = 0
   await open(first)
+  const userAgents = {[first]: await page.run(() => navigator.userAgent)}
   if (!workspace) await register()
   const {task,question} = await assign(first)
   const before = await readRecords()
   assert.equal(before.workspaceId,workspace)
   assert.equal(before.runId,runId)
+  assert.ok(['RUNNING','WAITING_USER'].includes(before.state),before.state)
   await close()
   assert.equal((await studio.running()).bootId,runtime.bootId)
   await open(second)
+  userAgents[second] = await page.run(() => navigator.userAgent)
   await selectRun()
+  const pendingViews = await briefingViews(first + '-to-' + second + '-pending','answer')
+  await page.size(1366,768)
   const resumed = await readRecords()
   assert.deepEqual(resumed,before,'Handoff changed the pending run')
   setStep(second + ' follow-up and product decision')
@@ -196,7 +264,10 @@ async function journey(first,second) {
   await page.activate('#brief-questions [data-action="answer"][data-request="' + question.id + '"]')
   await until(() => page.run(s => document.querySelector(s) === document.activeElement,answer),'product answer focus')
   await hangul(answer,'밝게')
-  await page.activate('#office-thread [data-request="' + runId + ':' + question.id + '"] [data-control="answer"]')
+  const sendAnswer = '#office-thread [data-request="' + runId + ':' + question.id + '"] [data-control="answer"]'
+  await page.key('Tab')
+  await until(() => page.run(s => document.querySelector(s) === document.activeElement,sendAnswer),'Tab from the answer to its submit button')
+  await page.key('Enter')
   await until(async () => (await json(path('/goal'))).goal.recovery?.disposition === 'closed','finished goal',150000)
   const finished = await readRecords()
   assert.equal(finished.state,'READY_FOR_HUMAN_REVIEW')
@@ -220,7 +291,7 @@ async function journey(first,second) {
     c.exit_code === 0 && c.counts.passed === 2 && c.fixed_ids.some(id => id.includes('test_reopen_saved_theme'))))
   assert.equal(finished.boardCandidates[0]?.digest,candidate.digest)
   assert.match(finished.review,/VERDICT: APPROVED/)
-  const width = await renderResult(first + '-to-' + second,candidate)
+  const rendered = await renderResult(first + '-to-' + second,candidate)
   await close()
   await open(first)
   await selectRun()
@@ -228,8 +299,9 @@ async function journey(first,second) {
   assert.deepEqual(reopened,finished,'Candidate, decision, verification or journal changed across clients')
   assert.match(await readFile(join(repo,'settings.py'),'utf8'),/return "light"/)
   await close()
-  return {first,second,workspace,runId,questionId:question.id,directionId:queued.id,narrowViewport:width,
-    checks:'native shell keyboard traversal, scripted DOM composition lifecycle, Hangul persisted, Markdown and Mermaid rendered',
+  return {platform:process.platform,first,second,userAgents,workspace,runId,questionId:question.id,directionId:queued.id,narrowViewport:rendered.width,
+    pendingViews,candidateViews:rendered.briefing,
+    composition:[...composition], checks:'native shell keyboard traversal, Hangul persisted, Markdown and Mermaid rendered',
     pending:before,completed:finished}
 }
 try {

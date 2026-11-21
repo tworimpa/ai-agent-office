@@ -51,7 +51,7 @@ fn local_setup(url: &Url) -> bool {
         _ => false,
     };
     local
-        && matches!(url.path(), "/" | "/index.html")
+        && matches!(url.path(), "" | "/" | "/index.html")
         && url.port().is_none()
         && url.username().is_empty()
         && url.password().is_none()
@@ -323,7 +323,14 @@ fn main() {
                     Some(origin) => studio::page(url, origin).is_some(),
                     None => local_setup(url),
                 })
-                .initialization_script(include_str!("pin-journal.js"))
+                .initialization_script(include_str!("pin-journal.js").replace(
+                    "__WEBKIT_GTK__",
+                    if cfg!(target_os = "linux") {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                ))
                 .on_download(|_, _| false)
                 .on_new_window(|_, _| NewWindowResponse::Deny)
                 .on_permission_request(|_, _| PermissionResponse::Deny)

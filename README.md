@@ -6,6 +6,8 @@ The selected local or SSH-connected host owns its folders, processes, requests a
 
 ## 설치형 앱
 
+기존 Studio에 연결하는 **AI Agent Office (Rust 비교판)**도 Windows와 Ubuntu x64에 별도로 설치할 수 있습니다. 같은 Workspace와 실행을 두 앱에서 이어 보는 방법은 [Rust 비교판 사용 및 검증 안내](docs/rust-comparison.md)에 있습니다.
+
 Windows와 Ubuntu·Debian 계열 Linux에서 **AI Agent Office** 앱을 열어 실행 중인 Studio에 연결하거나 새 로컬 작업실을 시작할 수 있습니다. 앱 창을 닫고 다시 열어도 실행 중인 작업은 같은 화면에서 확인할 수 있습니다. [빌드·설치·제거 안내](docs/desktop.md)
 
 ## 조정자에게 작업 맡기기

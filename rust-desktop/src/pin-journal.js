@@ -31,6 +31,13 @@
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
     if (!/^[a-f0-9]{32}$/.test(journal)) return Promise.reject(new Error('등록된 저널 ID를 확인할 수 없습니다.'))
     headers.set('X-Agent-Office-Expected-Journal', journal)
-    return fetch(input, { ...init, headers })
+    const options = { ...init, headers }
+    const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
+    if (__WEBKIT_GTK__ && method.toUpperCase() === 'POST') {
+      // WebKitGTK sends Origin: null for a same-origin POST under the Studio
+      // page's no-referrer policy. Restrict the override to this same-origin API.
+      options.referrerPolicy = 'same-origin'
+    }
+    return fetch(input, options)
   }
 })()

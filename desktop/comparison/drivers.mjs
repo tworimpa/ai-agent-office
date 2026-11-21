@@ -27,6 +27,13 @@ async function freePort() {
   return port
 }
 
+async function compose(send, value) {
+  const partial = value.slice(0,Math.max(1,value.length - 1))
+  await send('Input.imeSetComposition',{text:partial,selectionStart:partial.length,selectionEnd:partial.length})
+  await send('Input.imeSetComposition',{text:value,selectionStart:value.length,selectionEnd:value.length})
+  await send('Input.insertText',{text:value})
+}
+
 async function electronDriver(executablePath, profile) {
   const app = await electron.launch({executablePath, args:['--user-data-dir=' + profile], chromiumSandbox:true})
   let page = await app.firstWindow()
@@ -36,8 +43,13 @@ async function electronDriver(executablePath, profile) {
     },
     run: (fn, ...args) => page.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')'),
     async fill(selector, value) { await page.locator(selector).fill(value) },
+    async compose(value) {
+      const session = await page.context().newCDPSession(page)
+      try { await compose((method,params) => session.send(method,params),value) } finally { await session.detach() }
+    },
     key: value => page.keyboard.press(value),
-    size: width => page.setViewportSize({width,height:840}),
+    size: (width,height=840) => page.setViewportSize({width,height}),
+    reload: () => page.reload(),
     screenshot: path => page.screenshot({path}),
     close: () => closeDesktop(app.process(), () => app.close())
   }
@@ -50,6 +62,7 @@ async function rustDriver(executable, profile) {
   const args = ['--port', String(port), '--native-port', String(native)]
   if (process.env.TAURI_NATIVE_DRIVER) args.push('--native-driver', process.env.TAURI_NATIVE_DRIVER)
   const windows = process.platform === 'win32'
+  let application
   const child = spawn(process.env.TAURI_DRIVER || 'tauri-driver', args, {
     stdio:['ignore','inherit','inherit'],windowsHide:true,detached:!windows
   })
@@ -82,13 +95,24 @@ async function rustDriver(executable, profile) {
   const keys = {Enter:'\uE007',Tab:'\uE004',Escape:'\uE00C',Space:' '}
   try {
     await until(() => request('GET','/status'), 'tauri-driver')
-    const result = await request('POST','/session',{capabilities:{alwaysMatch:{
+    let capabilities = {
       browserName:'wry','tauri:options':{application:executable,args:['--profile-dir',profile]}
-    }}})
+    }
+    if (windows) {
+      // Microsoft's WebView2 attach mode preserves the app's private data directory.
+      const debugPort = await freePort()
+      application = spawn(executable,['--profile-dir',profile],{stdio:'inherit',windowsHide:false,env:{
+        ...process.env,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-address=127.0.0.1 --remote-debugging-port=' + debugPort
+      }})
+      await until(async () => (await fetch('http://127.0.0.1:' + debugPort + '/json/version')).ok,'test WebView2 endpoint')
+      capabilities = {browserName:'webview2','ms:edgeOptions':{debuggerAddress:'127.0.0.1:' + debugPort}}
+    }
+    const result = await request('POST','/session',{capabilities:{alwaysMatch:capabilities}})
     session = result.sessionId
     assert.ok(session)
     return {
       run,
+      compose: windows ? value => compose((cmd,params) => command('POST','/ms/cdp/execute',{cmd,params}),value) : null,
       async selectWindow(match) {
         await until(async () => {
           for (const handle of await command('GET','/window/handles')) {
@@ -101,21 +125,52 @@ async function rustDriver(executable, profile) {
         const result = await command('POST','/element',{using:'css selector',value:selector})
         const base = '/element/' + result['element-6066-11e4-a52e-4f735466cecf']
         await command('POST',base + '/clear',{})
-        await command('POST',base + '/value',{text:value,value:Array.from(value)})
+        if (value) await command('POST',base + '/value',{text:value,value:Array.from(value)})
       },
       async key(value) {
         assert.ok(Object.hasOwn(keys,value))
         const key = keys[value]
         await command('POST','/actions',{actions:[{type:'key',id:'keyboard',actions:[{type:'keyDown',value:key},{type:'keyUp',value:key}]}]})
       },
-      size: width => command('POST','/window/rect',{width,height:840}),
+      reload: () => command('POST','/refresh',{}),
+      async size(width,height=840) {
+        let outer = {width,height}
+        for (let attempt=0;attempt<5;attempt++) {
+          if (!windows) await command('POST','/window/rect',outer)
+          else {
+            // An attached WebView2 does not own the native top-level window. Account
+            // for desktop DPI and non-client borders using the measured inner viewport.
+            const resized = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',[
+              'Add-Type -TypeDefinition \'using System; using System.Runtime.InteropServices; public class Bounds {',
+              '[DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h,int x,int y,int w,int t,bool repaint); }\';',
+              '$w=(Get-Process -Id ' + application.pid + ').MainWindowHandle;',
+              'if ($w -eq 0 -or ![Bounds]::MoveWindow($w, 16,16,' + outer.width + ',' + outer.height + ',$true)) { exit 1 }'
+            ].join(' ')],{windowsHide:true})
+            assert.equal(resized.status,0,'Failed to resize the test window')
+          }
+          await delay(80)
+          const actual = await run(() => ({width:innerWidth,height:innerHeight}))
+          if (actual.width === width && actual.height === height) return
+          outer.width += width - actual.width
+          outer.height += height - actual.height
+        }
+        throw Error('Unable to set the requested CSS viewport ' + width + 'x' + height)
+      },
       async screenshot(path) { await writeFile(path,Buffer.from(await command('GET','/screenshot'),'base64')) },
       async close() {
-        try { await command('DELETE','') } finally { await stopDriver() }
+        try { await command('DELETE','') } finally {
+          await stopDriver()
+          if (application) await closeDesktop(application,() => {
+            const closed = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
+              'if (!(Get-Process -Id ' + application.pid + ').CloseMainWindow()) { exit 1 }'],{windowsHide:true})
+            assert.equal(closed.status,0,'Failed to close the test window')
+          })
+        }
       }
     }
   } catch (error) {
     await stopDriver()
+    if (application?.exitCode === null) application.kill()
     throw error
   }
 }

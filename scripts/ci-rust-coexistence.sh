@@ -20,12 +20,19 @@ install -m0755 "$(command -v tauri-driver)" "$tools/tauri-driver"
 collect() { mkdir -p "$out"; sudo cp -a "$tools/evidence/." "$out"; sudo chown -R "$(id -u):$(id -g)" "$out"; }
 trap collect EXIT
 verify() {
-  sudo --login --user office-rust-ci /usr/bin/env TAURI_DRIVER="$tools/tauri-driver" \
+  sudo --login --user office-rust-ci /usr/bin/env OFFICE_COMPARISON_PYTHON="$(command -v python)" TAURI_DRIVER="$tools/tauri-driver" \
     TAURI_NATIVE_DRIVER="$(command -v WebKitWebDriver)" xvfb-run -a dbus-run-session -- \
     "$tools/node" "$tools/desktop/comparison/$1" "${@:2}"
 }
 verify verify-connection.mjs connect "$electron" "$rust" "$tools/evidence/identity"
-verify verify-handoff.mjs "$electron" "$rust" "$tools/evidence/handoff"
+sudo --login --user office-rust-ci /usr/bin/env PATH="$tools:/usr/local/bin:/usr/bin:/bin" \
+  TAURI_DRIVER="$tools/tauri-driver" TAURI_NATIVE_DRIVER="$(command -v WebKitWebDriver)" \
+  sh "$tools/desktop/comparison/linux-handoff.sh" "$electron" "$rust" "$tools/evidence/handoff"
+sudo apt-get remove -y ai-agent-office-desktop
+test ! -e "$electron"
+test -x "$rust"
+verify verify-connection.mjs rust-survivor "$electron" "$rust" "$tools/evidence/identity"
+sudo apt-get install -y --no-install-recommends ./electron-installer/*.deb
 sudo apt-get remove -y ai-agent-office-rust
 test ! -e "$rust"
 test -x "$electron"
