@@ -215,6 +215,18 @@ class StudioHandler(ObserverHandler):
         # Closing with unread body bytes can reset the connection and discard
         # the rejection response on Windows. Read once after the origin checks.
         payload = self._json_body() if write else None
+        expected = self.headers.get_all("X-Agent-Office-Expected-Journal")
+        if expected is not None and expected != [self.server.journal_id]:
+            self._reply(409, {"error": {"code": "JOURNAL_MISMATCH", "message": "선택한 작업실과 다른 저널입니다."}})
+            return
+        # Older Studios reject API queries. A bound URL therefore also fails closed
+        # if an older process takes over this port before the next identity check.
+        binding = re.fullmatch(r"office_journal=([0-9a-f]{32})", parsed.query)
+        if binding and parsed.path.startswith("/api/"):
+            if binding[1] != self.server.journal_id:
+                self._reply(409, {"error": {"code": "JOURNAL_MISMATCH", "message": "선택한 작업실과 다른 저널입니다."}})
+                return
+            parsed = parsed._replace(query="")
         if parsed.query:
             studio_page = parsed.path in ("/", "/studio") and _valid_page_query(parsed.path, parsed.query)
             office_page = parsed.path in ("/office", "/versions") and re.fullmatch(r"host=(?:local|[a-f0-9]{32})", parsed.query)
@@ -233,7 +245,7 @@ class StudioHandler(ObserverHandler):
             self._reply(200, {"hosts": hosts})
             return
         if parsed.path == "/api/studio-identity" and not write:
-            self._reply(200, {"journal_id": self.server.journal_id})
+            self._reply(200, {"journal_id": self.server.journal_id, "journal_guard": True})
             return
         if parsed.path == "/api/studio-tools" and not write:
             git = "git.exe" if os.name == "nt" else "git"

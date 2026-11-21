@@ -1,0 +1,822 @@
+{
+  "windows": [
+    {
+      "route": "electron-to-rust",
+      "workspace": "0316dfeeb4ce4e7b8b63151f4562f9cb",
+      "journal": "05c0ca971e714d3ca35bd0cb3854c789",
+      "run": "7b0bf3dfffc64410adf87d042cd15bda",
+      "instruction": "90540c75a61e42c8a9f1eb9fcbdabfb0",
+      "question": "79e26319e52349f1a62109ae1133d15f",
+      "instructionCount": 1,
+      "questionCount": 1,
+      "state": "READY_FOR_HUMAN_REVIEW",
+      "candidate": "29472747e282e2e9a7a41c46292bac5a4cfc9efe463919627522069f59d71f4e",
+      "checks": [
+        {
+          "attempt": 0,
+          "stage": "quick",
+          "status": "failed",
+          "exit_code": 1,
+          "counts": {
+            "failed": 1,
+            "passed": 1
+          }
+        },
+        {
+          "attempt": 0,
+          "stage": "full",
+          "status": "failed",
+          "exit_code": 1,
+          "counts": {
+            "failed": 1,
+            "passed": 1
+          }
+        },
+        {
+          "attempt": 1,
+          "stage": "quick",
+          "status": "passed",
+          "exit_code": 0,
+          "counts": {
+            "passed": 2
+          }
+        },
+        {
+          "attempt": 1,
+          "stage": "full",
+          "status": "passed",
+          "exit_code": 0,
+          "counts": {
+            "passed": 2
+          }
+        }
+      ],
+      "completionReview": "approved",
+      "pendingViews": [
+        {
+          "candidates": [],
+          "height": 768,
+          "questions": [
+            {
+              "action": "answer",
+              "height": 36,
+              "hitTarget": true,
+              "insideViewport": true,
+              "run": "7b0bf3dfffc64410adf87d042cd15bda",
+              "width": 97.4375,
+              "x": 304.66668701171875,
+              "y": 440.46875
+            }
+          ],
+          "scrollWidth": 1351,
+          "width": 1366
+        },
+        {
+          "candidates": [],
+          "height": 844,
+          "questions": [
+            {
+              "action": "answer",
+              "height": 40,
+              "hitTarget": true,
+              "insideViewport": true,
+              "run": "7b0bf3dfffc64410adf87d042cd15bda",
+              "width": 97.4375,
+              "x": 29.666667938232422,
+              "y": 461.94793701171875
+            }
+          ],
+          "scrollWidth": 375,
+          "width": 390
+        }
+      ],
+      "candidateViews": [
+        {
+          "candidates": [
+            {
+              "action": "candidate",
+              "height": 36,
+              "hitTarget": true,
+              "insideViewport": true,
+              "run": "7b0bf3dfffc64410adf87d042cd15bda",
+              "width": 140.98959350585938,
+              "x": 980.6354370117188,
+              "y": 376.0833435058594
+            }
+          ],
+          "height": 768,
+          "questions": [],
+          "scrollWidth": 1351,
+          "width": 1366
+        },
+        {
+          "candidates": [
+            {
+              "action": "candidate",
+              "height": 40,
+              "hitTarget": true,
+              "insideViewport": true,
+              "run": "7b0bf3dfffc64410adf87d042cd15bda",
+              "width": 140.98959350585938,
+              "x": 29.666667938232422,
+              "y": 527.25
+            }
+          ],
+          "height": 844,
+          "questions": [],
+          "scrollWidth": 375,
+          "width": 390
+        }
+      ],
+      "composition": [
+        {
+          "selector": "#message",
+          "method": "Chromium IME engine",
+          "observed": [
+            [
+              "compositionstart",
+              true
+            ],
+            [
+              "compositionupdate",
+              true
+            ],
+            [
+              "compositionend",
+              false
+            ]
+          ]
+        },
+        {
+          "selector": "#message",
+          "method": "Chromium IME engine",
+          "observed": [
+            [
+              "compositionstart",
+              true
+            ],
+            [
+              "compositionupdate",
+              true
+            ],
+            [
+              "compositionend",
+              false
+            ]
+          ]
+        },
+        {
+          "selector": "#thread-answer-7b0bf3dfffc64410adf87d042cd15bda-79e26319e52349f1a62109ae1133d15f",
+          "method": "Chromium IME engine",
+          "observed": [
+            [
+              "compositionstart",
+              true
+            ],
+            [
+              "compositionupdate",
+              true
+            ],
+            [
+              "compositionend",
+              false
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "route": "rust-to-electron",
+      "workspace": "0316dfeeb4ce4e7b8b63151f4562f9cb",
+      "journal": "05c0ca971e714d3ca35bd0cb3854c789",
+      "run": "903fe59a22ef46c6b52058bc6bd49a13",
+      "instruction": "1ad5560eb78144ad995e73c4070a1be3",
+      "question": "10e68e77126a4108b66e805aa6d5dec8",
+      "instructionCount": 1,
+      "questionCount": 1,
+      "state": "READY_FOR_HUMAN_REVIEW",
+      "candidate": "29472747e282e2e9a7a41c46292bac5a4cfc9efe463919627522069f59d71f4e",
+      "checks": [
+        {
+          "attempt": 0,
+          "stage": "quick",
+          "status": "failed",
+          "exit_code": 1,
+          "counts": {
+            "failed": 1,
+            "passed": 1
+          }
+        },
+        {
+          "attempt": 0,
+          "stage": "full",
+          "status": "failed",
+          "exit_code": 1,
+          "counts": {
+            "failed": 1,
+            "passed": 1
+          }
+        },
+        {
+          "attempt": 1,
+          "stage": "quick",
+          "status": "passed",
+          "exit_code": 0,
+          "counts": {
+            "passed": 2
+          }
+        },
+        {
+          "attempt": 1,
+          "stage": "full",
+          "status": "passed",
+          "exit_code": 0,
+          "counts": {
+            "passed": 2
+          }
+        }
+      ],
+      "completionReview": "approved",
+      "pendingViews": [
+        {
+          "width": 1366,
+          "height": 768,
+          "scrollWidth": 1351,
+          "questions": [
+            {
+              "run": "903fe59a22ef46c6b52058bc6bd49a13",
+              "action": "answer",
+              "x": 304.66668701171875,
+              "y": 421.03125,
+              "width": 97.4375,
+              "height": 36,
+              "insideViewport": true,
+              "hitTarget": true
+            }
+          ],
+          "candidates": [
+            {
+              "run": "7b0bf3dfffc64410adf87d042cd15bda",
+              "action": "candidate",
+              "x": 980.6354370117188,
+              "y": 376.0833435058594,
+              "width": 140.98959350585938,
+              "height": 36,
+              "insideViewport": true,
+              "hitTarget": true
+            }
+          ]
+        },
+        {
+          "width": 390,
+          "height": 844,
+          "scrollWidth": 375,
+          "questions": [
+            {
+              "run": "903fe59a22ef46c6b52058bc6bd49a13",
+              "action": "answer",
+              "x": 29.666667938232422,
+              "y": 461.94793701171875,
+              "width": 97.4375,
+              "height": 40,
+              "insideViewport": true,
+              "hitTarget": true
+            }
+          ],
+          "candidates": [
+            {
+              "run": "7b0bf3dfffc64410adf87d042cd15bda",
+              "action": "candidate",
+              "x": 29.666667938232422,
+              "y": 680.6875,
+              "width": 140.98959350585938,
+              "height": 40,
+              "insideViewport": true,
+              "hitTarget": true
+            }
+          ]
+        }
+      ],
+      "candidateViews": [
+        {
+          "width": 1366,
+          "height": 768,
+          "scrollWidth": 1351,
+          "questions": [],
+          "candidates": [
+            {
+              "run": "903fe59a22ef46c6b52058bc6bd49a13",
+              "action": "candidate",
+              "x": 980.6354370117188,
+              "y": 376.0833435058594,
+              "width": 140.98959350585938,
+              "height": 36,
+              "insideViewport": true,
+              "hitTarget": true
+            },
+            {
+              "run": "7b0bf3dfffc64410adf87d042cd15bda",
+              "action": "candidate",
+              "x": 980.6354370117188,
+              "y": 612.6979370117188,
+              "width": 140.98959350585938,
+              "height": 36,
+              "insideViewport": true,
+              "hitTarget": false
+            }
+          ]
+        },
+        {
+          "width": 390,
+          "height": 844,
+          "scrollWidth": 375,
+          "questions": [],
+          "candidates": [
+            {
+              "run": "903fe59a22ef46c6b52058bc6bd49a13",
+              "action": "candidate",
+              "x": 29.666667938232422,
+              "y": 527.25,
+              "width": 140.98959350585938,
+              "height": 40,
+              "insideViewport": true,
+              "hitTarget": true
+            },
+            {
+              "run": "7b0bf3dfffc64410adf87d042cd15bda",
+              "action": "candidate",
+              "x": 29.666667938232422,
+              "y": 759.5729370117188,
+              "width": 140.98959350585938,
+              "height": 40,
+              "insideViewport": true,
+              "hitTarget": false
+            }
+          ]
+        }
+      ],
+      "composition": [
+        {
+          "selector": "#message",
+          "method": "Chromium IME engine",
+          "observed": [
+            [
+              "compositionstart",
+              true
+            ],
+            [
+              "compositionupdate",
+              true
+            ],
+            [
+              "compositionend",
+              false
+            ]
+          ]
+        },
+        {
+          "selector": "#message",
+          "method": "Chromium IME engine",
+          "observed": [
+            [
+              "compositionstart",
+              true
+            ],
+            [
+              "compositionupdate",
+              true
+            ],
+            [
+              "compositionend",
+              false
+            ]
+          ]
+        },
+        {
+          "selector": "#thread-answer-903fe59a22ef46c6b52058bc6bd49a13-10e68e77126a4108b66e805aa6d5dec8",
+          "method": "Chromium IME engine",
+          "observed": [
+            [
+              "compositionstart",
+              true
+            ],
+            [
+              "compositionupdate",
+              true
+            ],
+            [
+              "compositionend",
+              false
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "ubuntu": [
+    {
+      "route": "electron-to-rust",
+      "workspace": "c383c6f2b36c4152a420917d003541fd",
+      "journal": "48029f4526ea4963b59c94d570240a05",
+      "run": "2ece013102eb4661a50e1bf09ffef485",
+      "instruction": "c5e6e59cc1c246ef8c52a8823afa52a1",
+      "question": "496c2c4611ad4463abcd9fa9c5750c5b",
+      "instructionCount": 1,
+      "questionCount": 1,
+      "state": "READY_FOR_HUMAN_REVIEW",
+      "candidate": "29472747e282e2e9a7a41c46292bac5a4cfc9efe463919627522069f59d71f4e",
+      "checks": [
+        {
+          "attempt": 0,
+          "stage": "quick",
+          "status": "failed",
+          "exit_code": 1,
+          "counts": {
+            "passed": 1,
+            "failed": 1
+          }
+        },
+        {
+          "attempt": 0,
+          "stage": "full",
+          "status": "failed",
+          "exit_code": 1,
+          "counts": {
+            "passed": 1,
+            "failed": 1
+          }
+        },
+        {
+          "attempt": 1,
+          "stage": "quick",
+          "status": "passed",
+          "exit_code": 0,
+          "counts": {
+            "passed": 2
+          }
+        },
+        {
+          "attempt": 1,
+          "stage": "full",
+          "status": "passed",
+          "exit_code": 0,
+          "counts": {
+            "passed": 2
+          }
+        }
+      ],
+      "completionReview": "approved",
+      "pendingViews": [
+        {
+          "height": 768,
+          "scrollWidth": 1366,
+          "width": 1366,
+          "questions": [
+            {
+              "run": "2ece013102eb4661a50e1bf09ffef485",
+              "action": "answer",
+              "width": 99,
+              "x": 305,
+              "insideViewport": true,
+              "hitTarget": true,
+              "height": 36,
+              "y": 439.046875
+            }
+          ],
+          "candidates": []
+        },
+        {
+          "height": 844,
+          "scrollWidth": 390,
+          "width": 390,
+          "questions": [
+            {
+              "run": "2ece013102eb4661a50e1bf09ffef485",
+              "action": "answer",
+              "width": 99,
+              "x": 30,
+              "insideViewport": true,
+              "hitTarget": true,
+              "height": 40,
+              "y": 459.9375
+            }
+          ],
+          "candidates": []
+        }
+      ],
+      "candidateViews": [
+        {
+          "height": 768,
+          "scrollWidth": 1366,
+          "width": 1366,
+          "questions": [],
+          "candidates": [
+            {
+              "run": "2ece013102eb4661a50e1bf09ffef485",
+              "action": "candidate",
+              "width": 145,
+              "x": 991.015625,
+              "insideViewport": true,
+              "hitTarget": true,
+              "height": 36,
+              "y": 374.515625
+            }
+          ]
+        },
+        {
+          "height": 844,
+          "scrollWidth": 390,
+          "width": 390,
+          "questions": [],
+          "candidates": [
+            {
+              "run": "2ece013102eb4661a50e1bf09ffef485",
+              "action": "candidate",
+              "width": 145,
+              "x": 30,
+              "insideViewport": true,
+              "hitTarget": true,
+              "height": 40,
+              "y": 525.5625
+            }
+          ]
+        }
+      ],
+      "composition": [
+        {
+          "selector": "#message",
+          "method": "Chromium IME engine",
+          "observed": [
+            [
+              "compositionstart",
+              true
+            ],
+            [
+              "compositionupdate",
+              true
+            ],
+            [
+              "compositionend",
+              false
+            ]
+          ]
+        },
+        {
+          "selector": "#message",
+          "method": "scripted WebKit DOM events and WebDriver text",
+          "observed": [
+            [
+              "compositionstart",
+              false
+            ],
+            [
+              "compositionupdate",
+              false
+            ],
+            [
+              "compositionend",
+              false
+            ]
+          ]
+        },
+        {
+          "selector": "#thread-answer-2ece013102eb4661a50e1bf09ffef485-496c2c4611ad4463abcd9fa9c5750c5b",
+          "method": "IBus Hangul two-set X11 keyboard + WebKitGTK",
+          "observed": [
+            [
+              "compositionend",
+              true
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "route": "rust-to-electron",
+      "workspace": "c383c6f2b36c4152a420917d003541fd",
+      "journal": "48029f4526ea4963b59c94d570240a05",
+      "run": "96193f32f47f46a292079bc1fe3dfe17",
+      "instruction": "a23121d7adda478ebbb915847f727902",
+      "question": "89aa6fb6c83d4dee938eb61384c8e53e",
+      "instructionCount": 1,
+      "questionCount": 1,
+      "state": "READY_FOR_HUMAN_REVIEW",
+      "candidate": "29472747e282e2e9a7a41c46292bac5a4cfc9efe463919627522069f59d71f4e",
+      "checks": [
+        {
+          "attempt": 0,
+          "stage": "quick",
+          "status": "failed",
+          "exit_code": 1,
+          "counts": {
+            "failed": 1,
+            "passed": 1
+          }
+        },
+        {
+          "attempt": 0,
+          "stage": "full",
+          "status": "failed",
+          "exit_code": 1,
+          "counts": {
+            "failed": 1,
+            "passed": 1
+          }
+        },
+        {
+          "attempt": 1,
+          "stage": "quick",
+          "status": "passed",
+          "exit_code": 0,
+          "counts": {
+            "passed": 2
+          }
+        },
+        {
+          "attempt": 1,
+          "stage": "full",
+          "status": "passed",
+          "exit_code": 0,
+          "counts": {
+            "passed": 2
+          }
+        }
+      ],
+      "completionReview": "approved",
+      "pendingViews": [
+        {
+          "width": 1366,
+          "height": 768,
+          "scrollWidth": 1351,
+          "questions": [
+            {
+              "run": "96193f32f47f46a292079bc1fe3dfe17",
+              "action": "answer",
+              "x": 305,
+              "y": 422.640625,
+              "width": 98.9375,
+              "height": 36,
+              "insideViewport": true,
+              "hitTarget": true
+            }
+          ],
+          "candidates": [
+            {
+              "run": "2ece013102eb4661a50e1bf09ffef485",
+              "action": "candidate",
+              "x": 981.078125,
+              "y": 377.078125,
+              "width": 144.25,
+              "height": 36,
+              "insideViewport": true,
+              "hitTarget": true
+            }
+          ]
+        },
+        {
+          "width": 390,
+          "height": 844,
+          "scrollWidth": 375,
+          "questions": [
+            {
+              "run": "96193f32f47f46a292079bc1fe3dfe17",
+              "action": "answer",
+              "x": 30,
+              "y": 464.53125,
+              "width": 98.9375,
+              "height": 40,
+              "insideViewport": true,
+              "hitTarget": true
+            }
+          ],
+          "candidates": [
+            {
+              "run": "2ece013102eb4661a50e1bf09ffef485",
+              "action": "candidate",
+              "x": 30,
+              "y": 684.5625,
+              "width": 144.25,
+              "height": 40,
+              "insideViewport": true,
+              "hitTarget": true
+            }
+          ]
+        }
+      ],
+      "candidateViews": [
+        {
+          "width": 1366,
+          "height": 768,
+          "scrollWidth": 1351,
+          "questions": [],
+          "candidates": [
+            {
+              "run": "96193f32f47f46a292079bc1fe3dfe17",
+              "action": "candidate",
+              "x": 981.078125,
+              "y": 377.078125,
+              "width": 144.25,
+              "height": 36,
+              "insideViewport": true,
+              "hitTarget": true
+            },
+            {
+              "run": "2ece013102eb4661a50e1bf09ffef485",
+              "action": "candidate",
+              "x": 981.078125,
+              "y": 613.609375,
+              "width": 144.25,
+              "height": 36,
+              "insideViewport": true,
+              "hitTarget": false
+            }
+          ]
+        },
+        {
+          "width": 390,
+          "height": 844,
+          "scrollWidth": 375,
+          "questions": [],
+          "candidates": [
+            {
+              "run": "96193f32f47f46a292079bc1fe3dfe17",
+              "action": "candidate",
+              "x": 30,
+              "y": 530.546875,
+              "width": 144.25,
+              "height": 40,
+              "insideViewport": true,
+              "hitTarget": true
+            },
+            {
+              "run": "2ece013102eb4661a50e1bf09ffef485",
+              "action": "candidate",
+              "x": 30,
+              "y": 762.765625,
+              "width": 144.25,
+              "height": 40,
+              "insideViewport": true,
+              "hitTarget": false
+            }
+          ]
+        }
+      ],
+      "composition": [
+        {
+          "selector": "#message",
+          "method": "scripted WebKit DOM events and WebDriver text",
+          "observed": [
+            [
+              "compositionstart",
+              false
+            ],
+            [
+              "compositionupdate",
+              false
+            ],
+            [
+              "compositionend",
+              false
+            ]
+          ]
+        },
+        {
+          "selector": "#message",
+          "method": "Chromium IME engine",
+          "observed": [
+            [
+              "compositionstart",
+              true
+            ],
+            [
+              "compositionupdate",
+              true
+            ],
+            [
+              "compositionend",
+              false
+            ]
+          ]
+        },
+        {
+          "selector": "#thread-answer-96193f32f47f46a292079bc1fe3dfe17-89aa6fb6c83d4dee938eb61384c8e53e",
+          "method": "Chromium IME engine",
+          "observed": [
+            [
+              "compositionstart",
+              true
+            ],
+            [
+              "compositionupdate",
+              true
+            ],
+            [
+              "compositionend",
+              false
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

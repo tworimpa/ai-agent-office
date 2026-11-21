@@ -32,6 +32,15 @@ jobs:
       - run: npm ci --prefix desktop
       - run: npm test --prefix desktop
       - run: npm run package --prefix desktop
+      - name: Share Electron installer with coexistence checks
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-installer-${{ runner.os }}
+          path: |
+            desktop/dist/*Setup*.exe
+            desktop/dist/*.deb
+          if-no-files-found: error
+          retention-days: 7
       - name: Install and verify the Windows desktop app
         if: runner.os == 'Windows'
         shell: pwsh
@@ -98,3 +107,7 @@ jobs:
             ${{ runner.temp }}/office-briefing-evidence
           if-no-files-found: ignore
           retention-days: 7
+
+  rust-comparison:
+    needs: desktop
+    uses: ./.github/workflows/rust-comparison.yml

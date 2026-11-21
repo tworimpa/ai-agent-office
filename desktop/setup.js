@@ -65,6 +65,8 @@ async function render(value, initial = false) {
   if (!value.selected) return
   const local = value.selected.mode === 'local'
   get('connection').textContent = local ? '로컬 작업실 실행 중' : '기존 작업실 연결됨'
+  get('connection-target').textContent = [value.selected.origin, value.selected.journalId && '저널 ' + value.selected.journalId]
+    .filter(Boolean).join(' · ')
   get('stop').hidden = !local
   await updateTools()
 }

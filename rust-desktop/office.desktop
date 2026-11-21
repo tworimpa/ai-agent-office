@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AI Agent Office (Rust 비교판)
+Comment=실행 중인 AI Agent Office Studio 열기
+Exec={{exec}}
+Icon={{icon}}
+StartupWMClass={{exec}}
+Categories=Development;
+Terminal=false

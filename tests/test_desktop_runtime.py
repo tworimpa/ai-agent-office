@@ -46,7 +46,7 @@ def test_runtime_uses_studio_and_honors_only_its_own_stop(tmp_path):
         assert request(first, "/api/desktop-runtime") == first
         assert first["remotes"] == [{"alias": "build-box", "port": 8767, "journalId": journal}]
         assert {"id": journal, "name": "build-box"} in request(first, "/api/hosts")["hosts"]
-        assert request(first, "/api/studio-identity") == {"journal_id": first["journal_id"]}
+        assert request(first, "/api/studio-identity") == {"journal_id": first["journal_id"], "journal_guard": True}
         assert request(first, "/api/workspaces") == {"workspaces": []}
         (data / f"stop-{'f' * 32}").touch()
         assert request(first, "/api/desktop-runtime") == first

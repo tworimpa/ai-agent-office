@@ -1,0 +1,72 @@
+{
+  "start": "2026-11-21T06:06:50.534576+00:00",
+  "os": "Windows-10-10.0.26300-SP0",
+  "python": "3.11.15 (main, Jul 23 2026, 14:42:43) [MSC v.1944 64 bit (AMD64)]",
+  "psutil": "7.2.2",
+  "logicalCPUs": 16,
+  "totalRAM": 68628533248,
+  "repeats": 5,
+  "idle": 9,
+  "memoryMetric": "private_commit_bytes",
+  "executableSha256": {
+    "electron": "282786951aabf8af4408c866ef7a0f4d9efb7313a7e487699278aa743a1e9418",
+    "rust": "4cb4eb44fb515a251b2f91c149d3ed5e5a5e9b49e53af0aeb858f90899cd237f"
+  },
+  "studioPythonSha256": "a291f169782f87fcd24168c70740390e19d5d226493b6d7c4e2ebf22dcc225da",
+  "probeSha256": "39d2ee621dceb04abcd2aedfe96b14141deaeb2de8b57da415ff7059f526c102",
+  "studioOfficeSha256": "27f45d55717bde5851aab253b33bb2f6a5397c1d71b97cdf9e0affee4e2e5add",
+  "studioServerSha256": "5e4de31facdf64907f96c8c2ac40755137bfe242244cdd30885a3b3d674ba8f9",
+  "benchmarkSha256": {
+    "benchmark.py": "afab717dbdbe9d44f178dea066761a197d300da52652c8dda107e18280507b1a",
+    "bench_process.py": "88fe927b665079a45062f30bbd094385e475a7e6c0ba85368bd61b11fdc8007b",
+    "bench-studio.py": "bb13ec45fce9612bc62c7ac12526fef7854a436ee6dec2facad9f4e64699a4e8"
+  },
+  "mockProviderSha256": "9211663e45cf1060433d44cfdfe5cdbdad2764704f6a3f890b372e74f94de21c",
+  "electronAsarSha256AtExport": "35e9ef72973ee1f33c632426a1ca3e13c390f48f65f615e470b1b32e66fed29d",
+  "display": "Windows desktop, viewport 1280x900 CSS px, DPR 1.5",
+  "completedLaunches": 40,
+  "stderrLineCounts": {
+    "window_class_unregister": 20
+  },
+  "packages": {
+    "electron": {
+      "artifact": "AI Agent Office Setup 0.7.0.exe",
+      "packageBytes": 158482257,
+      "sha256": "2bfeed72574375ca78eb220a5cbe925e44892135efae382599fa2927b761eb78",
+      "installedPayload": {
+        "files": 7778,
+        "bytes": 516447116
+      },
+      "commonStudioRuntime": {
+        "files": 7705,
+        "bytes": 142100974
+      },
+      "studioBundled": true,
+      "payloadWithStudioBytes": 516447116,
+      "sharedRendererComponents": {},
+      "byteDefinition": "Regular files, hardlinks once per inventory, excluding symlinks and directory metadata."
+    },
+    "rust": {
+      "artifact": "AI Agent Office (Rust 비교판)_0.7.0_x64-setup.exe",
+      "packageBytes": 2295286,
+      "sha256": "4f60ac3f7dc8ea4872dd0dc223d17e27fa1c805a7040d2bdd45ceb0b84bc0236",
+      "installedPayload": {
+        "files": 2,
+        "bytes": 10304461
+      },
+      "commonStudioRuntime": {
+        "files": 7705,
+        "bytes": 142100974
+      },
+      "studioBundled": false,
+      "payloadWithStudioBytes": 152405435,
+      "sharedRendererComponents": {
+        "157.0.4341.60": {
+          "files": 488,
+          "bytes": 724086795
+        }
+      },
+      "byteDefinition": "Regular files, hardlinks once per inventory, excluding symlinks and directory metadata."
+    }
+  }
+}

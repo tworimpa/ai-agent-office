@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AI Agent Office (Rust 비교판)",
+  "version": "0.7.0",
+  "identifier": "dev.aiagentoffice.rust",
+  "mainBinaryName": "ai-agent-office-rust",
+  "build": { "frontendDist": "ui" },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; base-uri 'none'; frame-src 'none'; form-action 'none'",
+      "capabilities": [{
+        "identifier": "local-setup",
+        "description": "로컬 연결 설정 화면에서만 사용할 수 있는 작업실 등록 및 복원",
+        "windows": ["main"],
+        "permissions": ["allow-snapshot", "allow-select", "allow-confirm", "allow-retry"]
+      }]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "deb"],
+    "publisher": "AI Agent Office",
+    "category": "DeveloperTool",
+    "shortDescription": "AI Agent Office Studio 연결용 Rust 비교판",
+    "icon": ["icons/128x128.png", "icons/icon.ico"],
+    "windows": { "nsis": { "installMode": "currentUser", "displayLanguageSelector": false, "languages": ["Korean", "English"] } },
+    "linux": { "deb": { "desktopTemplate": "office.desktop", "section": "devel" } }
+  }
+}
