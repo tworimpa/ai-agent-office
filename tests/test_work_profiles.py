@@ -7,6 +7,8 @@ from agent_office.store import TaskStore, encode, now
 from agent_office.studio_ssh import RemoteUnavailable, _check_reply
 from test_studio_http import request
 from test_workspace_briefing import office
+from test_remote_studio import LoopbackLink, RemoteHost
+from test_studio_http import studio
 
 
 def available(catalog):
@@ -92,5 +94,38 @@ def test_retry_effort_requires_delegation_measurement_and_next_hypothesis(tmp_pa
             profile = dict(retry_deep=True,retry_effort="high")
             assert goal_workers.retry_choice(db,rid,"implement",2,pref,{}) == pref
             assert goal_workers.retry_choice(db,rid,"implement",2,pref,profile)["effort"] == "high"
+            assert goal_workers.retry_choice(db,rid,"implement",2,pref,profile)["effort"] == "high"
+            assert db.execute("SELECT count(*) FROM studio_usage_actions WHERE action='retry_effort'").fetchone()[0] == 1
             assert goal_workers.retry_choice(db,rid,"implement",3,pref,profile) == pref
             assert "test_theme" in db.execute("SELECT reason FROM studio_usage_actions WHERE action='retry_effort'").fetchone()[0]
+
+
+def test_remote_reads_same_policy_usage_and_character_with_separate_visit_history(tmp_path,monkeypatch):
+    from test_studio_http import project
+    from test_workspace_rooms import engine_snapshot, register
+    with studio(tmp_path/"peer.db",accept_remote=True) as peer:
+        monkeypatch.setattr(peer.runner,"_start_monitor",lambda:None)
+        monkeypatch.setattr(peer.engines,"snapshot",lambda:engine_snapshot("codex","antigravity"))
+        available(peer.rooms.models)
+        host = RemoteHost("fixture-peer",peer.server_port,peer.journal_id)
+        link = LoopbackLink(peer,host)
+        monkeypatch.setattr("agent_office.studio_server.remote_request",link)
+        with studio(tmp_path/"local.db",remotes=(host,)) as local:
+            folder,_ = project(tmp_path)
+            ws = register(peer,[folder.parent])
+            direct=f"/api/rooms/{ws}"
+            remote=f"/api/hosts/{peer.journal_id}/rooms/{ws}"
+            ident=uuid4().hex
+            data=dict(id=ident,message="설정 재현",allow_edits=True,delegation=False,goal=True)
+            assert request(local,remote+"/assignments",data)[0] == 202
+            for suffix in ("/usage/"+ident,"/characters/developer","/work-policy","/models"):
+                status,body=request(local,remote+suffix)
+                observed=request(peer,direct+suffix)[1]
+                if suffix.startswith("/usage/"):
+                    assert body["budget"].pop("active_used") <= observed["budget"].pop("active_used")
+                assert status == 200 and body == observed
+            key=dict(id=uuid4().hex)
+            assert request(local,remote+"/visit",key) == request(peer,direct+"/visit",key)
+            assert request(local,"/api/workspaces")[1]["workspaces"] == []
+            link.online=False
+            assert request(local,remote+"/usage/"+ident)[0] == 503

@@ -359,7 +359,7 @@ class WorkspaceRooms:
             assignment = {"roles": roles, "delegation": delegated,
                           "note": _assignment_note(settings, roles, allow_edits, delegated, choices)}
             effective = work_profiles.resolve(saved_profile, bound_engines, data.get("work_profile", {}), roles,
-                                              self.models, edits=allow_edits, goal=goal, reproduce=goal and reproduce)
+                                              self.models, engines, edits=allow_edits, goal=goal, reproduce=goal and reproduce)
             effective["role_reasons"] = {
                 role: ("Workspace의 기본 엔진" if roles[role]["engine"] == settings[role]["engine"]
                        else "이번 작업에서 선택한 엔진" if role in overrides else "호스트에서 실행 가능한 대체 엔진")

@@ -43,7 +43,8 @@ def _evidence(row, facts, role):
 
     def record(axis, level, label, section, attempt=None, **details):
         if axis not in found or found[axis]["strength"] < level:
-            found[axis] = dict(run_id=rid, strength=level, label=label, section=section, attempt=attempt, **details)
+            found[axis] = dict(run_id=rid, task=row["task"][:64], strength=level, label=label,
+                               section=section, attempt=attempt, **details)
 
     candidates = {r["attempt"]: json.loads(r["record"]) for r in facts["candidates"]}
     approved = {r["attempt"] for r in facts["reviews"] if r["status"] == "approved"
@@ -104,8 +105,10 @@ def describe(db, workspace, name, role):
     from . import goal_recovery, goal_usage
 
     since = (datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)).isoformat()
-    rows = db.execute("""SELECT r.run_id,r.attempts,r.ended_at,s.allow_edits,a.assignment_json,g.adopted_attempt
+    rows = db.execute("""SELECT r.run_id,r.attempts,r.ended_at,t.request_snapshot AS task,
+        s.allow_edits,a.assignment_json,g.adopted_attempt
         FROM studio_room_assignments a JOIN studio_runs s ON s.id=a.run_id JOIN runs r ON r.run_id=s.id
+        JOIN tasks t ON t.task_id=r.task_id
         LEFT JOIN studio_goals g ON g.id=s.id WHERE s.workspace_id=? AND r.host_name=?
         AND julianday(r.started_at)>=julianday(?) ORDER BY r.started_at DESC,r.run_id LIMIT ?""",
                       (workspace, platform.node(), since, RUN_LIMIT)).fetchall()

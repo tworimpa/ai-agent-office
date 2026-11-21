@@ -86,14 +86,26 @@ def _validate(catalog, engine, pref):
         catalog.validate(engine, pref["model"], pref["effort"])
 
 
-def validate_targets(catalog, profile, engines):
+def validate_targets(catalog, profile, engines, host_entries):
+    from .provider_profiles import host_capabilities
+    capabilities = host_capabilities(host_entries,catalog.read())
+    by_engine = {row["engine"]: row for row in host_entries}
     aliases = {}
     for role in ROLES:
         choices = [dict(engine=engines[role], **profile["roles"][role]), *profile["fallbacks"][role]]
+        for fallback in profile["fallbacks"][role]:
+            host = by_engine.get(fallback["engine"], {})
+            required = "review" if role == "reviewer" else "edit"
+            if (not host.get("headless_support") or host.get("probe_status") != "ok"
+                    or host.get("auth_status") == "not_authenticated"
+                    or host.get("capabilities", {}).get(required, {}).get("status") == "failed"):
+                raise ValueError("이 호스트에서 역할을 실행할 수 있는 대체 엔진을 선택하세요.")
         for choice in choices:
             engine, alias = choice["engine"], choice["account_alias"]
             if alias and aliases.setdefault(engine, alias) != alias:
                 raise ValueError("한 호스트의 같은 CLI를 다른 계정으로 전환할 수 없습니다. 동일한 계정 별칭을 사용하세요.")
+            if engine != "codex" and any(choice[k] and capabilities[engine][k] != "supported" for k in ("model","effort")):
+                raise ValueError(f"이 호스트에서 {engine}의 모델 또는 추론 강도 옵션을 확인할 수 없습니다.")
             _validate(catalog, engine, choice)
 
 
@@ -113,7 +125,7 @@ def _preset(model_list, model, mode):
     return selected["id"], effort
 
 
-def resolve(saved, bound_engines, overrides, roles, catalog, *, edits, goal, reproduce):
+def resolve(saved, bound_engines, overrides, roles, catalog, host_entries, *, edits, goal, reproduce):
     base = merge(defaults(), saved)
     for role in ROLES:
         if bound_engines.get(role, roles[role]["engine"]) != roles[role]["engine"]:
@@ -128,7 +140,7 @@ def resolve(saved, bound_engines, overrides, roles, catalog, *, edits, goal, rep
                 or any(overrides.get("fallbacks", {}).values())):
             raise ValueError("토큰 예산과 한도 대기·전환 정책은 장시간 목표에서 설정하세요.")
         profile.update(token_budget=None, on_limit="wait", retry_deep=False, fallbacks={r: [] for r in ROLES})
-    validate_targets(catalog, profile, {r: roles[r]["engine"] for r in ROLES})
+    validate_targets(catalog, profile, {r: roles[r]["engine"] for r in ROLES},host_entries)
     cached = catalog.read()
     if any(roles[r]["engine"] == "codex" for r in ROLES):
         cached = catalog.refresh(if_stale=True)

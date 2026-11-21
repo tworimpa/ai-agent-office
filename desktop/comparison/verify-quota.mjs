@@ -89,8 +89,12 @@ export async function verifyQuota(electron,rust,evidence) {
     const capped={...job,id:id(),work_profile:{token_budget:50},message:'설정 복원 예산 검증'}
     await api(room+'/assignments',capped)
     await until(async()=> (await api(room+'/usage/'+capped.id)).usage.hold?.kind==='budget_stop','only one goal stops at its token budget',90000)
+    const afterBudget=id()
+    await api(room+'/assignments',{id:afterBudget,message:'예산 중단 후 독립 조회',allow_edits:false,delegation:false,
+      role_engines:{developer:'antigravity'}})
+    await until(async()=> (await api('/api/runs/'+afterBudget)).run.state==='PLAN_ONLY','independent run after the goal budget stop')
     await writeFile(join(evidence,'receipt.json'),JSON.stringify({workspace:ws,journal:runtime.journalId,bootBefore:initial.bootId,
-      bootAfter:runtime.bootId,independent,run:job.id,parked,resumed,checks:finished.checks,capped:await api(room+'/usage/'+capped.id)},null,2))
+      bootAfter:runtime.bootId,independent,afterBudget,run:job.id,parked,resumed,checks:finished.checks,capped:await api(room+'/usage/'+capped.id)},null,2))
   } catch (cause) { error=cause }
   finally { await finishVerification(error,close,async()=>{if(runtime) await studio.stop(runtime.bootId)}) }
 }

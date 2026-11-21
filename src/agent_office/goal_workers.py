@@ -73,8 +73,10 @@ def retry_choice(db, run_id, stage, attempt, choice, profile):
     effort = profile.get("retry_effort")
     if stage != "implement" or attempt < 2 or not effort or not profile.get("retry_deep") or choice["engine"] != "codex":
         return choice
-    if db.execute("SELECT 1 FROM studio_usage_actions WHERE run_id=? AND action='retry_effort'", (run_id,)).fetchone():
-        return choice
+    previous = db.execute("SELECT attempt FROM studio_usage_actions WHERE run_id=? AND action='retry_effort'",
+                          (run_id,)).fetchone()
+    if previous:
+        return dict(choice,effort=effort) if previous["attempt"] == attempt else choice
     row = db.execute("SELECT record FROM studio_goal_candidates WHERE run_id=? AND attempt=?",(run_id,attempt-1)).fetchone()
     if not row:
         return choice

@@ -101,7 +101,8 @@ function usageView(make, data) {
   const limits = section('밤샘 목표 예산');
   limits.append(make('p', '실제 작업 ' + metric(budget.active_used, '초') + ' / ' + metric(budget.active_seconds, '초') +
     ' · 시도 ' + metric(budget.attempts_used, '회') + ' / ' + metric(budget.max_attempts, '회') + ' · 토큰 한도 ' + metric(budget.token_budget)));
-  if (usage.hold) limits.append(make('p', [usageActions[usage.hold.kind] || '한도 조치', usage.hold.stage, usage.hold.reason, fmtDate(usage.hold.at)].filter(Boolean).join(' · ')));
+  if (usage.hold) limits.append(make('p', [usageActions[usage.hold.kind] || '한도 조치', usage.hold.stage, usage.hold.reason,
+    usage.hold.resume_condition, fmtDate(usage.hold.at)].filter(Boolean).join(' · ')));
   for (const entry of usage.decisions || []) limits.append(make('p', [usageActions[entry.action] || entry.action, roleNames[entry.role] || entry.role,
     entry.attempt == null ? null : entry.attempt + '차', entry.reason, entry.stage, fmtDate(entry.at)].filter(Boolean).join(' · ')));
   return root;
@@ -134,14 +135,19 @@ export function mountCharacterRecords({get, make, api, context, openEvidence}) {
       const list = make('ul', '', 'character-axes');
       for (const axis of person.axes) {
         const item = make('li');
-        item.append(make('strong', axis.label + ' · ' + (axis.level == null ? '근거 부족' : metric(axis.level) + '/5')),
+        const facts = (axis.evidence || []).filter(fact => safeId(fact.run_id));
+        const fold = facts.length ? make('details') : null;
+        const label = fold ? make('summary') : item;
+        label.append(make('strong', axis.label + ' · ' + (axis.level == null ? '자료 부족' : metric(axis.level) + '/5')),
           make('small', '표본 ' + metric(axis.samples, '건')));
-        for (const fact of axis.evidence || []) {
-          if (!safeId(fact.run_id)) continue;
-          const link = make('button', fact.label || '작업 근거 보기', 'brief-action');
+        if (fold) { fold.append(label); item.append(fold); }
+        for (const fact of facts) {
+          const link = make('button', [fact.task, fact.label || '작업 근거 보기'].filter(Boolean).join(' · '), 'brief-action');
           link.type = 'button';
+          link.dataset.run = fact.run_id;
+          link.dataset.section = fact.section;
           link.addEventListener('click', () => openEvidence(fact));
-          item.append(link);
+          fold.append(link);
         }
         list.append(item);
       }

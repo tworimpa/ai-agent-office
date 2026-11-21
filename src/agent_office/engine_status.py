@@ -102,6 +102,7 @@ def probe_engine(engine, executable, timeout=5):
         if help_status == "ok":
             help_text = help_result.stdout + "\n" + help_result.stderr
             advertised = set(re.findall(r"--[a-z][a-z-]*", help_text))
+            entry["profile_flags"] = sorted(advertised & {"--model", "--effort"})
             entry["headless_support"] = FLAGS[engine] <= advertised
             if engine == "gemini":
                 modes = set(re.findall(r"[A-Za-z0-9_-]+", help_text))

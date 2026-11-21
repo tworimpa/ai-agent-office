@@ -5,7 +5,7 @@ import re
 
 from . import character_profile, work_profiles
 from .models import OfficeError, validate_id
-from .provider_profiles import CAPABILITIES
+from .provider_profiles import host_capabilities
 from .store import TaskStore, now
 
 
@@ -40,8 +40,9 @@ def handle(server, workspace, action, target, data):
     if action == "models":
         if data is not None and data != {}:
             raise ValueError("모델 목록 새로고침 요청을 확인하세요.")
-        return dict(workspace_id=workspace,catalog=catalog.read() if data is None else catalog.refresh(),
-                    capabilities=CAPABILITIES)
+        info = catalog.read() if data is None else catalog.refresh()
+        return dict(workspace_id=workspace,catalog=info,
+                    capabilities=host_capabilities(server.engines.snapshot()["engines"],info))
     with TaskStore(server.db_path, existing=True, readonly=data is None) as store:
         db = store.connection
         if data is None:
@@ -64,7 +65,7 @@ def handle(server, workspace, action, target, data):
                 policy = work_profiles.merge(work_profiles.defaults(), data)
                 roles = server.rooms._settings(db, workspace)
                 engines = {r: roles[r]["engine"] for r in work_profiles.ROLES}
-                work_profiles.validate_targets(catalog, policy, engines)
+                work_profiles.validate_targets(catalog, policy, engines, server.engines.snapshot()["engines"])
                 with store._write():
                     latest = server.rooms._settings(db, workspace)
                     if any(latest[r]["engine"] != engines[r] for r in engines):

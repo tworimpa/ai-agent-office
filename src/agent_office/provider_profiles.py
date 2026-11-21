@@ -24,6 +24,24 @@ CAPABILITIES = {
 }
 
 
+def host_capabilities(engines, catalog):
+    result = deepcopy(CAPABILITIES)
+    by_name = {row["engine"]: row for row in engines}
+    for engine, capabilities in result.items():
+        entry = by_name.get(engine, {})
+        for field in ("model", "effort", "usage", "limits"):
+            if capabilities[field] != "supported":
+                continue
+            if not entry.get("installed") or entry.get("probe_status") != "ok":
+                capabilities[field] = "unknown"
+            elif engine == "codex" and field in ("model","effort") and catalog["status"] != "available":
+                capabilities[field] = "unknown"
+            elif engine != "codex" and field in ("model","effort"):
+                flags = entry.get("profile_flags")
+                capabilities[field] = ("unknown" if flags is None else "supported" if "--"+field in flags else "unsupported")
+    return result
+
+
 def validate_selection(engine, model=None, effort=None):
     if engine not in CAPABILITIES:
         raise ValueError("Unknown provider.")

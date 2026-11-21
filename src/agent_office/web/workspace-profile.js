@@ -1,7 +1,7 @@
 const roleNames = {developer: '담당자', reviewer: '검토자'};
 export const modes = {auto: '자동', quick: '빠른 확인', balanced: '균형 개발', deep: '심층 검토'};
 export const usageActions = {quota_wait: '공급자 한도 대기', quota_stop: '공급자 한도로 중지', budget_stop: '목표 예산으로 중지',
-  fallback: '대체 엔진·모델로 전환', resumed: '재개'};
+  fallback: '대체 엔진·모델로 전환', resumed: '재개', retry_effort:'다음 시도의 추론 강도 변경', retry_unchanged:'재작업 조합 유지'};
 const engines = {codex: 'Codex', antigravity: 'Antigravity', claude: 'Claude Code', gemini: 'Gemini CLI', cline: 'Cline CLI'};
 const capability = {supported: '지원', unknown: '미확인', unsupported: '미지원'};
 

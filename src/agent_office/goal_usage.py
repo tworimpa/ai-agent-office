@@ -222,7 +222,14 @@ def brief(db,run_id):
         FROM studio_usage_actions WHERE run_id=?""",(run_id,)).fetchone()
     observed = db.execute("""SELECT MAX(coalesce(observed_at,started_at)) FROM studio_usage_calls
         WHERE run_id=?""",(run_id,)).fetchone()[0]
-    return dict(hold=dict(hold) if hold else None,last_resume_at=resume,
+    public_hold = dict(hold) if hold else None
+    if public_hold:
+        public_hold["resume_condition"] = {
+            "quota_wait":"같은 계정·한도 구간의 새 사용 가능 응답을 확인하면 같은 실행에서 재개합니다.",
+            "quota_stop":"저장된 변경과 공급자 한도를 확인한 뒤 새 목표를 맡길 수 있습니다.",
+            "budget_stop":"기록된 사용량과 후보를 검토한 뒤 새 예산으로 후속 목표를 맡길 수 있습니다.",
+        }.get(public_hold["kind"])
+    return dict(hold=public_hold,last_resume_at=resume,
                 last_progress_at=max(filter(None,(observed,progress)),default=None))
 
 

@@ -391,8 +391,9 @@ legend { font-size: .87rem; font-weight: 700; color: var(--gold); }
   flex: 0 1 auto; overflow: auto; max-block-size: 40dvh; padding: .35rem 1rem;
   border-bottom: 1px solid var(--line);
 }
+#character-sheet[open] { flex: 0 0 min(46dvh, 23rem); max-block-size: min(46dvh, 23rem); }
 .character-grid { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(0, 1.6fr); gap: 1rem; align-items: start; }
-.character-radar { inline-size: 100%; max-inline-size: 20rem; margin: auto; }
+.character-radar { inline-size: 100%; max-inline-size: 20rem; margin-inline: auto; align-self: start; }
 .character-radar text { fill: currentColor; font: 9px sans-serif; }
 .radar-grid { stroke: var(--soft); stroke-opacity: .45; fill: none; }
 .radar-edge { stroke: var(--gold); stroke-width: 2; }
@@ -400,6 +401,8 @@ legend { font-size: .87rem; font-weight: 700; color: var(--gold); }
 .character-axes { list-style: none; margin: 0; padding: 0; }
 .character-axes li { display: grid; gap: .2rem; padding-block: .35rem; border-bottom: 1px solid var(--line); }
 .character-axes .brief-action { justify-self: start; }
+.character-axes small { margin-inline-start: .5rem; }
+.character-axes details > button { display: block; margin-block-start: .35rem; }
 #work-usage { color: inherit; padding-inline: .75rem; border-block: 1px solid var(--line); }
 .usage-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%, 15rem),1fr)); gap: .85rem; padding: .6rem 0; }
 .usage-grid h3 { font-size: .93rem; }

@@ -239,13 +239,27 @@ async function renderResult(label,candidate,representative) {
   if (representative) {
     await page.activate('#character-sheet > summary')
     await until(() => page.run(() => document.querySelectorAll('#character-record .character-axes li').length === 6),'six evidence axes')
+    await page.run(() => document.querySelector('#character-sheet').scrollTo(0,0))
+    await until(() => page.run(() => {
+      const plot=document.querySelector('.character-radar').getBoundingClientRect()
+      const sheet=document.querySelector('#character-sheet').getBoundingClientRect()
+      return plot.top>=sheet.top && plot.bottom<=sheet.bottom && plot.height>80
+    }),'the full ability chart fits inside the expanded character profile')
     await page.screenshot(join(evidence,label + '-character.png'))
-    await page.activate('#conversation .close-button')
+    await page.activate('#character-record .character-axes li:first-child summary')
+    await page.activate('#character-record [data-section="checks"][data-run="'+runId+'"]')
+    await until(() => page.run(() => Boolean(document.activeElement.closest('[data-goal-check][open][data-attempt="0"]'))),
+      'original baseline evidence from the character profile')
     for (const [w,h] of [[1366,768],[390,844]]) {
       await page.size(w,h)
       await page.run(() => document.querySelector('#work-usage > summary').focus())
       if (!await page.run(() => document.querySelector('#work-usage').open)) await page.key('Enter')
       await until(() => page.run(() => document.querySelector('#usage-record').textContent.includes('fixture-codex')),'usage receipt')
+      await page.run(() => document.querySelector('#work-usage').scrollIntoView({block:'start'}))
+      await until(() => page.run(() => {
+        const box=document.querySelector('#usage-record h3').getBoundingClientRect()
+        return box.top>=0 && box.bottom<=innerHeight
+      }),'visible usage detail')
       await page.screenshot(join(evidence,label + '-usage-' + w + '.png'))
     }
     return {width,briefing}
