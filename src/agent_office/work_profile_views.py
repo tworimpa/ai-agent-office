@@ -41,8 +41,10 @@ def handle(server, workspace, action, target, data):
         if data is not None and data != {}:
             raise ValueError("모델 목록 새로고침 요청을 확인하세요.")
         info = catalog.read() if data is None else catalog.refresh()
+        entries = server.engines.snapshot()["engines"]
         return dict(workspace_id=workspace,catalog=info,
-                    capabilities=host_capabilities(server.engines.snapshot()["engines"],info))
+                    capabilities=host_capabilities(entries,info),
+                    efforts={r["engine"]:r.get("profile_efforts",[]) for r in entries if r["engine"] != "codex"})
     with TaskStore(server.db_path, existing=True, readonly=data is None) as store:
         db = store.connection
         if data is None:

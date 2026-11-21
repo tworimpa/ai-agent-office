@@ -101,6 +101,13 @@ function usageView(make, data) {
   const limits = section('밤샘 목표 예산');
   limits.append(make('p', '실제 작업 ' + metric(budget.active_used, '초') + ' / ' + metric(budget.active_seconds, '초') +
     ' · 시도 ' + metric(budget.attempts_used, '회') + ' / ' + metric(budget.max_attempts, '회') + ' · 토큰 한도 ' + metric(budget.token_budget)));
+  if (Number.isFinite(budget.active_seconds) && Number.isFinite(budget.max_attempts)) {
+    const remaining = (limit, used, unit) => Number.isFinite(used) ? metric(Math.max(0,limit-used),unit) : unknown;
+    const tokensLeft = budget.token_budget == null ? '한도 미설정' : usage.usage_coverage === 'complete' ?
+      remaining(budget.token_budget,usage.total_tokens,'개') : unknown;
+    limits.append(make('p', '남은 예산 · 작업 ' + remaining(budget.active_seconds,budget.active_used,'초') +
+      ' · 시도 ' + remaining(budget.max_attempts,budget.attempts_used,'회') + ' · 토큰 ' + tokensLeft));
+  }
   if (usage.hold) limits.append(make('p', [usageActions[usage.hold.kind] || '한도 조치', usage.hold.stage, usage.hold.reason,
     usage.hold.resume_condition, fmtDate(usage.hold.at)].filter(Boolean).join(' · ')));
   for (const entry of usage.decisions || []) limits.append(make('p', [usageActions[entry.action] || entry.action, roleNames[entry.role] || entry.role,
@@ -154,9 +161,13 @@ export function mountCharacterRecords({get, make, api, context, openEvidence}) {
       group.append(radar(record.ownerDocument, person.axes), list);
       const similar = make('details');
       similar.append(make('summary', '유사 작업의 엔진·모델별 기록'));
-      for (const row of person.comparisons || []) similar.append(make('p', [groupNames[row.group] || row.group,
-        row.engine, row.model || '모델 미확인', row.effort || '강도 미확인', '표본 ' + metric(row.samples, '건'), '채택 ' + metric(row.adopted, '건'),
-        '재작업 ' + metric(row.rework, '건'), '작업 시간 ' + metric(row.active_seconds, '초'), '토큰 ' + metric(row.tokens)].filter(Boolean).join(' · ')));
+      for (const row of person.comparisons || []) {
+        const average = (value, unit) => Number.isFinite(value) && row.samples > 0 ? metric(Math.round(value / row.samples), unit) : unknown;
+        similar.append(make('p', [groupNames[row.group] || row.group,
+          row.engine, row.model || '모델 미확인', row.effort || '강도 미확인', '표본 ' + metric(row.samples, '건'), '채택 ' + metric(row.adopted, '건'),
+          '재작업 ' + metric(row.rework, '건'), '목표당 평균 작업 ' + average(row.active_seconds, '초'),
+          '목표당 평균 역할 토큰 ' + average(row.tokens, '개')].filter(Boolean).join(' · ')));
+      }
       if (!person.comparisons?.length) similar.append(make('p', '비교할 작업 기록이 없습니다.'));
       const reason = context().assignment?.work_profile?.role_reasons?.[role];
       record.replaceChildren(description, ...(reason ? [make('p', '이번 작업 배정 근거 · ' + reason)] : []), group, similar);

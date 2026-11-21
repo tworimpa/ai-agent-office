@@ -268,6 +268,18 @@ def read(db, workspace):
             decisions.append(dict(run_id=rid,request_id=key,revision=row["revision"],kind="plan",role="coordinator",
                                   owner="조정자",task=work[rid]["task"],prompt=prompt,created_at=row["created_at"],
                                   impacts=impacts(rid,key,prompt,"plan")))
+    user_waits = {d["run_id"] for d in decisions if d["kind"] in {"product","permission","plan"}}
+    for rid,item in work.items():
+        if item["usage_hold"]:
+            item["wait_kind"] = "quota" if item["usage_hold"]["kind"] == "quota_wait" else "stopped"
+        elif rid in user_waits:
+            item["wait_kind"] = "user"
+        elif item["wait_reasons"]:
+            item["wait_kind"] = "dependency"
+        elif item["state"] == "QUEUED":
+            item["wait_kind"] = "host"
+        else:
+            item["wait_kind"] = None
     overlaps = []
     for left,right in combinations(areas,2):
         for key in sorted(areas[left].keys() & areas[right].keys()):

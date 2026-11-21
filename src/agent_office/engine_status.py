@@ -103,6 +103,10 @@ def probe_engine(engine, executable, timeout=5):
             help_text = help_result.stdout + "\n" + help_result.stderr
             advertised = set(re.findall(r"--[a-z][a-z-]*", help_text))
             entry["profile_flags"] = sorted(advertised & {"--model", "--effort"})
+            effort_help = re.search(r"(?m)^\s*(?:-\w,\s*)?--effort\b([^\n]*(?:\n[ \t]+\([^\n)]*\))?)", help_text)
+            if effort_help:
+                entry["profile_efforts"] = [level for level in ("low","medium","high","xhigh","max")
+                                            if re.search(rf"\b{level}\b",effort_help[1])]
             entry["headless_support"] = FLAGS[engine] <= advertised
             if engine == "gemini":
                 modes = set(re.findall(r"[A-Za-z0-9_-]+", help_text))

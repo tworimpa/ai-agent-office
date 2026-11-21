@@ -1,0 +1,116 @@
+{
+  "environment": "Windows, installed Electron and WebView2 comparator, isolated Studio; deterministic CLI, real Git and pytest",
+  "request": "Windows에서 재실행하면 설정이 사라지는 문제를 재현하고 수정해줘. 관련 테스트와 독립 리뷰를 거쳐 아침에 검토할 후보를 남겨줘.",
+  "run": "a392f849910f4f86b453bdef4df37999",
+  "journal": "dd26a16b1ed948cd926893e1ebb8ae49",
+  "state": "READY_FOR_HUMAN_REVIEW",
+  "profile": {
+    "fallbacks": {
+      "developer": [],
+      "reviewer": []
+    },
+    "mode": "auto",
+    "on_limit": "wait",
+    "reason": "균형 개발 · 원본 실패를 재현하고 독립 리뷰를 거칩니다.",
+    "retry_deep": false,
+    "role_reasons": {
+      "developer": "Workspace의 기본 엔진 · codex",
+      "reviewer": "Workspace의 기본 엔진 · antigravity"
+    },
+    "roles": {
+      "developer": {
+        "account_alias": null,
+        "effort": "medium",
+        "model": "fixture-codex"
+      },
+      "reviewer": {
+        "account_alias": null,
+        "effort": null,
+        "model": null
+      }
+    },
+    "token_budget": null
+  },
+  "usageCoverage": "partial",
+  "reportedTokens": 300,
+  "calls": [
+    {
+      "role": "developer",
+      "stage": "implement",
+      "attempt": 1,
+      "engine": "codex",
+      "requested_model": "fixture-codex",
+      "actual_model": "fixture-codex-routed",
+      "requested_effort": "medium",
+      "actual_effort": null,
+      "total_tokens": 300,
+      "source": "provider_usage"
+    },
+    {
+      "role": "reviewer",
+      "stage": "review",
+      "attempt": 1,
+      "engine": "antigravity",
+      "requested_model": null,
+      "actual_model": null,
+      "requested_effort": null,
+      "actual_effort": null,
+      "total_tokens": null,
+      "source": "dispatch"
+    }
+  ],
+  "checks": [
+    {
+      "stage": "quick",
+      "attempt": 0,
+      "status": "failed",
+      "exit_code": 1,
+      "counts": {
+        "failed": 1,
+        "passed": 1
+      }
+    },
+    {
+      "stage": "full",
+      "attempt": 0,
+      "status": "failed",
+      "exit_code": 1,
+      "counts": {
+        "failed": 1,
+        "passed": 1
+      }
+    },
+    {
+      "stage": "quick",
+      "attempt": 1,
+      "status": "passed",
+      "exit_code": 0,
+      "counts": {
+        "passed": 2
+      }
+    },
+    {
+      "stage": "full",
+      "attempt": 1,
+      "status": "passed",
+      "exit_code": 0,
+      "counts": {
+        "passed": 2
+      }
+    }
+  ],
+  "candidate": "32f34c9ff995f83b9d00c1b19a6fa1eea9b5f7722e113a2905aa79d45e1a8a21",
+  "review": "approved",
+  "quotaRecovery": {
+    "run": "efa4088bc1e7426fa1aac2eb948c6efc",
+    "bootBefore": "f9dfde2015674756abdd1a290b68af20",
+    "bootAfter": "c1a06368a4c744aea081b5169e2abd0f",
+    "parked": "quota_wait",
+    "actions": [
+      "quota_wait",
+      "resumed"
+    ],
+    "budgetStop": "budget_stop",
+    "reportedTokens": 200
+  }
+}

@@ -278,6 +278,8 @@ export function mountBriefing({win, get, make, api, context, refresh, openAction
     const profile = context().runs.find(run => run.id === row.run_id)?.assignment?.roles?.[row.role];
     const owner = who(row.role, row.owner || profile?.name);
     const item = card(taskTitle(row.task), [owner, stateName(row.state), stageName(row.stage), '우선순위 ' + row.priority].join(' · '));
+    const waiting = {quota:'공급자 계정 한도 대기',user:'사용자 결정 대기',dependency:'선행 작업 대기',host:'실행 호스트의 작업 시작 대기'};
+    if (waiting[row.wait_kind]) item.append(make('p', waiting[row.wait_kind], 'brief-wait'));
     item.append(make('p', [row.progress, '마지막 진전 ' + when(row.last_progress_at)].filter(Boolean).join(' · ')));
     if (row.proof) item.append(make('p', row.proof, 'brief-proof'));
     if (row.usage_hold) item.append(make('p', [usageActions[row.usage_hold.kind] || '한도 조치', row.usage_hold.reason].join(' · '),

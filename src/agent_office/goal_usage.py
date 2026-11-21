@@ -121,12 +121,15 @@ def observe(db, ident, event):
     if kind == "rate_limit":
         record_rates(db,call["run_id"],call["role"],call["engine"],call["account_alias"],ident,event,"provider_event")
     elif kind == "usage":
+        reported = number(event.get("total_tokens"))
+        if reported is not None and call["total_tokens"] is not None and reported < call["total_tokens"]:
+            return  # Older cumulative snapshots must not move context or freshness backwards.
         values = {}
         for k in COUNTERS + CONTEXT:
             value = number(event.get(k))
             if value is not None:
                 values[k] = max(call[k] or 0,value) if k in COUNTERS else value
-        if values:
+        if any(call[k] != v for k,v in values.items()):
             _update(db,ident,values,"provider_usage")
     elif kind == "model":
         values = {k:label(event.get(k)) for k in ("actual_model","actual_effort") if label(event.get(k))}

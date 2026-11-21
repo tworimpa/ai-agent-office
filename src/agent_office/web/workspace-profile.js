@@ -64,7 +64,7 @@ function editor({get, make, prefix, roleEngine, refreshModels}) {
       }));
       const selected = catalog.find(row => row.id === model.value) || (!model.value && catalog.find(row => row.is_default));
       const current = effort.value;
-      const allowed = selected?.efforts || (['claude', 'antigravity'].includes(engine()) && caps.effort === 'supported' ?
+      const allowed = selected?.efforts || hostModels?.efforts?.[engine()] || (['claude', 'antigravity'].includes(engine()) && caps.effort === 'supported' ?
         ['low', 'medium', 'high', 'xhigh', 'max'] : []);
       const levels = [...new Set([...allowed, ...(current ? [current] : [])])];
       choices(effort, [['', blank], ...levels.map(value => [value, value])], current);

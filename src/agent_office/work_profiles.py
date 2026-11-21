@@ -106,6 +106,8 @@ def validate_targets(catalog, profile, engines, host_entries):
                 raise ValueError("한 호스트의 같은 CLI를 다른 계정으로 전환할 수 없습니다. 동일한 계정 별칭을 사용하세요.")
             if engine != "codex" and any(choice[k] and capabilities[engine][k] != "supported" for k in ("model","effort")):
                 raise ValueError(f"이 호스트에서 {engine}의 모델 또는 추론 강도 옵션을 확인할 수 없습니다.")
+            if engine != "codex" and choice["effort"] and choice["effort"] not in by_engine[engine].get("profile_efforts",[]):
+                raise ValueError(f"이 호스트의 {engine}에서 확인된 추론 강도를 선택하세요.")
             _validate(catalog, engine, choice)
 
 
@@ -145,9 +147,14 @@ def resolve(saved, bound_engines, overrides, roles, catalog, host_entries, *, ed
     if any(roles[r]["engine"] == "codex" for r in ROLES):
         cached = catalog.refresh(if_stale=True)
     for role, pref in profile["roles"].items():
+        inferred = "deep" if role == "reviewer" and goal and reproduce and profile["mode"] == "auto" else mode
         if roles[role]["engine"] == "codex" and cached["status"] == "available" and not pref["effort"]:
-            inferred = "deep" if role == "reviewer" and goal and reproduce and profile["mode"] == "auto" else mode
             pref["model"], pref["effort"] = _preset(cached["models"], pref["model"], inferred)
+        elif roles[role]["engine"] in ("claude","antigravity") and not pref["effort"]:
+            host = next((r for r in host_entries if r["engine"] == roles[role]["engine"]), {})
+            target = {"quick":"low","balanced":"medium","deep":"high"}[inferred]
+            if target in host.get("profile_efforts",[]):
+                pref["effort"] = target
     if profile["retry_deep"] and roles["developer"]["engine"] == "codex":
         developer = profile["roles"]["developer"]
         _, next_effort = _preset(cached["models"], developer["model"], "deep")

@@ -43,6 +43,10 @@ def test_only_typed_provider_usage_counts_once_and_unknown_is_visible(goal):
     assert calls[ident]["actual_effort"] is None and calls[ident]["requested_effort"] == "low"
     assert calls[ident]["actual_model"] == "model-2" and calls[ident]["context_window"] == 100
     assert calls[other]["total_tokens"] is None
+    before = calls[ident]["observed_at"]
+    usage.observe(db,ident,{"kind":"usage","total_tokens":3,"context_used":1})
+    stale = next(c for c in usage.describe(db,run_id)["calls"] if c["id"] == ident)
+    assert (stale["context_used"],stale["observed_at"]) == (4,before)
     assert [item["action"] for item in report["decisions"]] == ["provider_change","provider_change"]
     db.execute("UPDATE studio_usage_calls SET finished_at=?",(now(),))
     assert workers.budget(db,run_id,{"token_budget":30})[0] == "TOKEN_BUDGET_UNVERIFIED"
@@ -78,6 +82,19 @@ def test_shared_quota_never_sums_host_snapshots_or_guesses_identity(goal):
     record(run_id,"account-a",None,100,False,"declared")
     record(other,"account-b",None,0,True,"declared")
     assert not usage.blockers(db,run_id,"developer",dict(engine="codex",account_alias="declared"))
+
+
+def test_only_the_designated_role_can_use_a_preapproved_alternative(goal):
+    _,store,rid,_=goal
+    db=store.connection
+    engines={"developer":"codex","reviewer":"antigravity"}
+    profile={"roles":{"developer":{"account_alias":"team"}},"fallbacks":{"developer":[]}}
+    usage.record_rates(db,rid,"developer","codex","team","source",rate("a"*64,100,False),"provider_event")
+    assert workers.select(db,rid,"developer",profile,engines)[0] is None
+    profile["fallbacks"]["developer"]=[{"engine":"claude","model":"fixture","effort":"high"}]
+    selected,blocked=workers.select(db,rid,"developer",profile,engines)
+    assert selected == profile["fallbacks"]["developer"][0] and blocked["engine"]=="codex"
+    assert workers.select(db,rid,"reviewer",profile,engines)==({"engine":"antigravity"},None)
 
 
 def install_fixture(tmp_path,monkeypatch):
