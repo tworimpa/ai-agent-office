@@ -31,6 +31,7 @@ from .away_ledger import return_report, revoke_policy
 from .studio_ssh import RemoteUnavailable, is_peer_route, remote_request
 from .workspace_rooms import WorkspaceRooms, room_route
 from . import github_studio
+from . import workspace_briefing
 from .github_connection import GitHubError
 from . import overnight_goals
 
@@ -39,6 +40,7 @@ ASSETS = {
     "/workspace-office.css": ("workspace-office.css", "text/css"),
     "/workspace-office.js": ("workspace-office.js", "text/javascript"),
     "/workspace-goal.js": ("workspace-goal.js", "text/javascript"),
+    "/workspace-briefing.js": ("workspace-briefing.js", "text/javascript"),
     "/workspace-github.js": ("workspace-github.js", "text/javascript"),
     "/office-content.js": ("office-content.js", "text/javascript"),
     "/office-content.css": ("office-content.css", "text/css"),
@@ -274,6 +276,10 @@ class StudioHandler(ObserverHandler):
 
     def _local_api(self, path, data):
         write = data is not None
+        briefing = workspace_briefing.route("POST" if write else "GET", path.removeprefix("/api"))
+        if briefing:
+            self._reply(200, workspace_briefing.handle(self.server, *briefing, data))
+            return
         integration = github_studio.route("POST" if write else "GET", path.removeprefix("/api"))
         if integration:
             self._reply(*self.server.github.handle(*integration, data))

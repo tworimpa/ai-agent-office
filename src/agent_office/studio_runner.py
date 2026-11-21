@@ -17,7 +17,7 @@ import uuid
 
 from . import role_skills as skills
 from . import team_runs
-from . import meeting_store, goal_recovery
+from . import meeting_store, goal_recovery, goal_stage_wait, workspace_coordination
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .events import snapshot_request
 from .models import ACTIVE, OfficeError, OwnerInfo, TaskSpec, validate_id
@@ -88,10 +88,22 @@ def finish_drained(store, run_id, *, worker_succeeded, preview_finished):
         ).fetchone()
         if row["stop_requested"]:
             state, outcome = "CANCELED", "CANCELED"
+        elif goal_stage_wait.drained(store.connection, run_id):
+            # No provider or command was in flight at this recorded boundary.
+            # Leave the run open so the owner can schedule the same ID again.
+            return
         elif worker_succeeded and row["proposed_state"]:
             state, outcome = row["proposed_state"], row["proposed_outcome"]
+            if state == "READY_FOR_HUMAN_REVIEW" and goal_recovery.is_goal(store.connection, run_id):
+                from .workspace_coordination import stage_status
+                basis = stage_status(store.connection, run_id, "review", store.get_run(run_id).attempts)
+                if not basis["ready"]:
+                    state, outcome = "WAITING_USER", "REVIEW_UNDECIDED"
+                    store.connection.execute("UPDATE studio_runs SET diagnostic=? WHERE id=?",
+                                             ("\n".join(basis["reasons"]), run_id))
         else:
             state, outcome = "RECOVERY_REQUIRED", "INTERRUPTED"
+        goal_stage_wait.end(store.connection, run_id)
         changes, diff = (json.loads(row["preview"]) if preview_finished and row["preview"]
                          else ("(Git preview unavailable)", ""))
         store.connection.execute(
@@ -112,6 +124,8 @@ class LocalRunner:
         self.children = {}
         self.pending = {}  # Raw prompts live only in this owner's memory. Never replay on startup.
         self.team_workers = set()
+        self.queued_goals = set()
+        self.goal_prompts = {}
         self.scheduler = None
         self.shutdown = threading.Event()
         self.stale = set()
@@ -131,17 +145,24 @@ class LocalRunner:
                 team_runs.ensure_schema(store.connection)
                 meeting_store.ensure_schema(store.connection)
                 goal_recovery.ensure_schema(store.connection)
+                workspace_coordination.ensure_schema(store.connection)
                 skills.ensure_schema(store.connection)
                 stale = store.connection.execute(
                     "SELECT r.run_id FROM runs r JOIN studio_runs s ON s.id=r.run_id "
                     "WHERE r.host_name=? AND r.ended_at IS NULL", (platform.node(),)
                 ).fetchall()
                 for row in stale:
+                    if goal_stage_wait.queued(store.connection, row[0]) or goal_stage_wait.drained(store.connection, row[0]):
+                        if goal_stage_wait.original_prompt_available(store.connection, row[0]):
+                            self.queued_goals.add(row[0])
+                            continue
+                        store.connection.execute("DELETE FROM studio_goal_queue WHERE run_id=?", (row[0],))
+                        goal_stage_wait.end(store.connection, row[0])
                     if not self._recover(store, row[0]):
                         self.stale.add(row[0])
                         if store.connection.execute("SELECT 1 FROM studio_team_children WHERE id=?", (row[0],)).fetchone():
                             self.team_workers.add(row[0])
-            if self.stale:
+            if self.stale or self.queued_goals:
                 self._start_monitor()
         except BaseException:
             self.guard.__exit__(None, None, None)
@@ -151,6 +172,8 @@ class LocalRunner:
     def _recover(store, run_id):
         try:
             if store.get_run(run_id).state not in ACTIVE:
+                return True
+            if goal_stage_wait.drained(store.connection, run_id):
                 return True
             run = recover_run(store, run_id, host_name=platform.node(), studio_owner=True)
             with store._write():
@@ -173,12 +196,16 @@ class LocalRunner:
             if self._recover(store, run_id):
                 self.stale.remove(run_id)
                 self.team_workers.discard(run_id)
+                if goal_stage_wait.drained(store.connection, run_id):
+                    self.queued_goals.add(run_id)
         for run_id, child in list(self.children.items()):
             if child.poll() is not None:
                 child.stdin.close()
                 if self._recover(store, run_id):
                     del self.children[run_id]
                     self.team_workers.discard(run_id)
+                    if goal_stage_wait.drained(store.connection, run_id):
+                        self.queued_goals.add(run_id)
 
     def _previous(self, store, run_id, digest):
         row = store.connection.execute("SELECT request_hash FROM studio_runs WHERE id=? UNION ALL "
@@ -214,9 +241,12 @@ class LocalRunner:
     def start(self, run_id: str, workspace_id: str, repo: Path, folders: list[str],
               task: str, allow_edits: bool, *, request_digest=None, developer_engine=DEFAULT_DEVELOPER,
               reviewer_engine=DEFAULT_REVIEWER, use_inbox=False, delegation=None, role_skills=None,
-              indices=None, subtasks=None, room_assignment=None, room_revision=None, room_choices=None, external_origin=None):
+              indices=None, subtasks=None, room_assignment=None, room_revision=None, room_choices=None, external_origin=None,
+              coordination=None):
         validate_id(run_id)
         team_runs.validate_task(task)
+        if coordination is not None and (room_assignment is None or subtasks is not None):
+            raise ValueError("작업실의 개별 의뢰에서 실행 조건을 지정하세요.")
         if type(allow_edits) is not bool or not folders or not all(isinstance(f, str) for f in folders):
             raise ValueError("Invalid Studio request")
         repo = Path(repo).resolve()
@@ -227,6 +257,9 @@ class LocalRunner:
         plan = (team_runs.normalize_subtasks(subtasks, indices, developer_engine, reviewer_engine)
                 if subtasks is not None else None)
         request_parts = [workspace_id, str(repo), folders, task, allow_edits]
+        coordinated = room_assignment is not None and ("goal_policy" in room_assignment or coordination is not None)
+        if coordination is not None:
+            request_parts.append({"coordination": coordination})
         if plan:
             request_parts.append({"indices": indices})
         digest = request_digest or _request_digest(request_parts, developer_engine, reviewer_engine,
@@ -301,6 +334,12 @@ class LocalRunner:
                                 if external_origin is not None:
                                     from .github_office import register as register_origin
                                     register_origin(store.connection, run_id, external_origin)
+                            if coordinated:
+                                store.connection.execute("INSERT INTO studio_goal_queue VALUES(?,?)", (run_id, now()))
+                                workspace_coordination.save(store.connection, workspace_id, run_id,
+                                                            coordination or workspace_coordination.DEFAULT, 0, admission=True)
+                                if not allow_edits and snapshot_request(task) != task:
+                                    store.connection.execute("INSERT INTO studio_readonly_queue_redactions VALUES(?)", (run_id,))
                             register_choices(store.connection, run_id, room_revision, room_choices)
                             if room_assignment.get("meeting"):
                                 meeting_store.register(store.connection, run_id, review_plan=room_assignment["review_plan"])
@@ -309,6 +348,9 @@ class LocalRunner:
 
             if plan:
                 self.pending.update(queued)
+            elif coordinated:
+                self.queued_goals.add(run_id)
+                self.goal_prompts[run_id] = task
             else:
                 self._launch(store, run_id, task)
             return self._detail(store, run_id)
@@ -334,6 +376,8 @@ class LocalRunner:
                     self.stale.remove(run_id)
 
     def _schedule(self, store):
+        if self.queued_goals:
+            goal_stage_wait.dispatch(self, store)
         for child_id in list(self.pending):
             if len(self.team_workers) >= team_runs.MAX_ACTIVE:
                 break
@@ -358,11 +402,12 @@ class LocalRunner:
         interval = 0.15
         while not self.shutdown.wait(interval):
             with self.lock:
-                if self.closed or not (self.pending or self.children or self.stale):
+                if self.closed or not (self.pending or self.children or self.stale or self.queued_goals):
                     self.scheduler = None
                     return
                 can_dispatch = self.pending and len(self.team_workers) < team_runs.MAX_ACTIVE
-                if not (self.stale or can_dispatch or any(child.poll() is not None for child in self.children.values())):
+                if not (self.stale or can_dispatch or self.queued_goals or
+                        any(child.poll() is not None for child in self.children.values())):
                     continue
                 try:
                     with TaskStore(self.path, existing=True) as store:
@@ -450,7 +495,11 @@ class LocalRunner:
         db.execute("UPDATE studio_runs SET stop_requested=1 WHERE id=?", (run_id,))
         meeting_store.stop(db, run_id)
         expire_requests(db, run_id)
-        if run_id in self.pending:
+        if run_id in self.pending or goal_stage_wait.queued(db, run_id) or goal_stage_wait.drained(db, run_id):
+            db.execute("DELETE FROM studio_goal_queue WHERE run_id=?", (run_id,))
+            goal_stage_wait.end(db, run_id)
+            self.queued_goals.discard(run_id)
+            self.goal_prompts.pop(run_id, None)
             store._record(run_id, operation_key=f"{run_id}:studio:final", event_type="RUN_FINISHED",
                           state="CANCELED", outcome="CANCELED", payload={"phase": "run"})
 
@@ -503,7 +552,8 @@ class LocalRunner:
                     cleanup.callback(guard.__exit__, None, None, None)
                 with TaskStore(self.path, existing=True) as store, store._write():
                     for run_id in (*self.children, *self.pending):
-                        self._mark_stopped(store, run_id)
+                        if not goal_stage_wait.waiting(store.connection, run_id):
+                            self._mark_stopped(store, run_id)
                 self.pending.clear()
             with TaskStore(self.path, existing=True) as store:
                 self._refresh(store)
@@ -526,6 +576,8 @@ def _worker(db_path, run_id):
         run = store.get_run(run_id)
         task = store.get_task(run.task_id)
         row = store.connection.execute("SELECT folders,allow_edits FROM studio_runs WHERE id=?", (run_id,)).fetchone()
+        if not row["allow_edits"]:
+            raw_task += goal_stage_wait.readonly_context(store.connection, run_id)
         interactive = store.connection.execute("SELECT 1 FROM studio_interactive_runs WHERE id=?", (run_id,)).fetchone()
         policy = get_policy(db_path, run_id)
         team = store.connection.execute("""SELECT p.base_revision FROM studio_team_children c
@@ -578,6 +630,8 @@ def _worker(db_path, run_id):
                         inbox_factory=inbox_factory if interactive else None, studio_preview=studio_preview,
                         room_meeting=bool(assignment.get("meeting")),
                         goal_assignment=assignment if assignment.get("goal_policy") and args.allow_edits else None)
+        except goal_stage_wait.Parked:
+            return
         except MeetingFailure as exc:
             with store._write():
                 meeting_store.fail(store.connection, run_id, str(exc))

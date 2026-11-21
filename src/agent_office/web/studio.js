@@ -55,7 +55,7 @@ const sameSkills = (left, right) => [...roles, ...delegationRoles].every(([role]
 
 function decisionLabel(row) {
   const action = decisionLabels[row.decision];
-  return [inboxStates[row.status] ?? '상태 미확인', row.source === 'delegate' && '대리 결정', action,
+  return [inboxStates[row.status] ?? '상태 미확인', row.shared_decision && '선행 목표의 사용자 결정 적용', row.source === 'delegate' && '대리 결정', action,
     row.decision === 'answer' && row.answer].filter(Boolean).join(' · ');
 }
 
@@ -819,6 +819,11 @@ export function mountStudio(win) {
       status.className = 'inbox-meta inbox-status';
       status.textContent = decisionLabel(row);
       card.append(status);
+      if (row.shared_decision) {
+        const source = make('p'), record = row.shared_decision;
+        source.textContent = '출처 목표 ' + record.source_run + ' · 원본 요청 ' + record.request_id + ' · 버전 ' + record.revision;
+        card.append(source);
+      }
       if (row.source === 'delegate' && row.delegation_details) card.append(...delegationEvidence(row.delegation_details));
       const dates = [['decided_at', '결정'], ['delivered_at', '전달'], ['expired_at', '만료']]
         .filter(([field]) => timeLabel(row[field])).map(([field, label]) => label + ' ' + timeLabel(row[field]));

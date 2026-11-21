@@ -1,7 +1,9 @@
 """Deterministic coding CLI for the installed settings-recovery journey."""
 import json
+import os
 from pathlib import Path
 import sys
+import time
 
 
 def send(value):
@@ -38,6 +40,7 @@ def develop():
 def server():
     editing = False
     turns = 0
+    initial = ""
     for line in sys.stdin.buffer:
         request = json.loads(line)
         method = request.get("method")
@@ -57,7 +60,13 @@ def server():
             turn = str(turns)
             send({"id": request["id"], "result": {"turn": {"id": turn, "status": "inProgress"}}})
             prompt = request["params"]["input"][0]["text"]
-            if editing and turns == 1 and 'return "light"' in Path("settings.py").read_text(encoding="utf8") and "밝게" not in prompt:
+            if turns == 1:
+                initial = prompt
+            if Path("briefing-fixture.txt").is_file():
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                from briefing_worker import respond
+                text = respond(initial, prompt, editing, turn, send)
+            elif editing and turns == 1 and 'return "light"' in Path("settings.py").read_text(encoding="utf8") and "밝게" not in prompt:
                 if Path("github-journey.txt").exists():
                     text = "AGENT_OFFICE_QUESTION\nAGENT_OFFICE_TECHNICAL_CHOICES\n" + json.dumps({
                         "purpose": "diagnosis", "options": [{"path": "settings.py", "line": 3},
@@ -79,6 +88,18 @@ def server():
 
 
 engine, *args = sys.argv[1:]
+if args[:1] == ["--fixture-trace"]:
+    import atexit
+    trace_dir = Path(args[1])
+    args = args[2:]
+    if "app-server" in args or "exec" in args and "--help" not in args or engine == "agy" and not (
+            "--help" in args or "--version" in args):
+        trace = trace_dir / (str(os.getpid()) + "-" + str(time.time_ns()) + ".json")
+        times = {"pid": os.getpid(), "engine": engine, "started": time.time(), "cwd": str(Path.cwd())}
+        trace.write_text(json.dumps(times), encoding="utf8")
+        def ended():
+            trace.write_text(json.dumps({**times, "ended": time.time()}), encoding="utf8")
+        atexit.register(ended)
 if args == ["--version"]:
     print("codex-cli 0.169.1" if engine == "codex" else "agy 1.0.0-fixture")
 elif args == ["login", "status"]:

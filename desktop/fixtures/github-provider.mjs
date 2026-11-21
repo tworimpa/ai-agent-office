@@ -6,7 +6,7 @@ import {createServer} from 'node:https'
 import {join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 
-export async function githubFixture(root, python, project, title) {
+export async function githubFixture(root, python, project, title, number = 7) {
   const bare = join(root, 'github-fixture.git'), index = join(root, 'github-fixture.index')
   execFileSync('git', ['clone', '--bare', '--no-hardlinks', '-q', project, bare])
   const git = (args, input) => execFileSync('git', ['--git-dir=' + bare, '-c', 'user.name=Fixture',
@@ -19,7 +19,7 @@ export async function githubFixture(root, python, project, title) {
   const repo = {id: 71, full_name: 'fixture/settings', name: 'settings', default_branch: 'main', owner: {login: 'fixture'}}
   const user = {id: 42, login: 'fixture-owner', type: 'User'}, bot = {id: 550, login: 'office-fixture[bot]', type: 'Bot'}
   const created = new Date().toISOString(), label = {name: 'office:ready'}
-  const issue = {id: 107, number: 7, title, body: '설정 복원과 전체 회귀 결과를 확인하세요.', labels: [label], user,
+  const issue = {id: 107, number, title, body: '설정 복원과 전체 회귀 결과를 확인하세요.', labels: [label], user,
     state: 'open', created_at: created, updated_at: created}
   const timeline = [{id: 201, event: 'labeled', label, actor: user, created_at: created}]
   const comments = [], calls = [], errors = []
@@ -30,7 +30,7 @@ export async function githubFixture(root, python, project, title) {
   function issueComment(body, author) {
     const id = 3000 + comments.length
     const stamp = new Date().toISOString()
-    const row = {id, body, user: author, html_url: origin + '/fixture/settings/issues/7#issuecomment-' + id,
+    const row = {id, body, user: author, html_url: origin + '/fixture/settings/issues/' + number + '#issuecomment-' + id,
       created_at: stamp, updated_at: stamp, ...(author === bot && {performed_via_github_app: {id: 55}})}
     comments.push(row)
     timeline.push({...row, event: 'commented', actor: author})
@@ -115,7 +115,7 @@ export async function githubFixture(root, python, project, title) {
         return send({sha: git(['commit-tree', data.tree, '-p', head, '-m', data.message])}, 201)
       }
       if (route === '/git/refs' && method === 'POST') {
-        assert.match(data.ref, /^refs\/heads\/ao\/issue-7-[0-9a-f]+$/)
+        assert.match(data.ref, new RegExp('^refs/heads/ao/issue-' + number + '-[0-9a-f]+$'))
         git(['update-ref', data.ref, data.sha, '0'.repeat(40)])
         branch = data.ref.slice('refs/'.length)
         return send({ref: data.ref, object: {sha: data.sha}}, 201)
@@ -136,11 +136,11 @@ export async function githubFixture(root, python, project, title) {
       if (route === '/branches/main') return send({name: 'main', commit: {sha: head}})
       if (route === '/collaborators/fixture-owner/permission') return send({permission: 'write', user})
       if (route === '/issues') return send(feed ? [issue, closed] : [])
-      if (route === '/issues/7') return send(issue)
+      if (route === '/issues/' + number) return send(issue)
       if (route === '/issues/8') return send(closed)
       if (route === '/issues/8/timeline') return send([timeline[0], {id: 202, event: 'closed', actor: user, created_at: closed.closed_at}])
-      if (route === '/issues/7/timeline') return send(timeline)
-      if (route === '/issues/7/comments') {
+      if (route === '/issues/' + number + '/timeline') return send(timeline)
+      if (route === '/issues/' + number + '/comments') {
         if (method !== 'POST') return send(comments)
         const posted = issueComment(data.body, bot)
         if (dropFirstReceipt) {
@@ -155,11 +155,11 @@ export async function githubFixture(root, python, project, title) {
         if (method === 'PATCH') Object.assign(row, {body: data.body, updated_at: new Date().toISOString()})
         return send(row)
       }
-      if (route === '/issues/7/labels' && method === 'POST') {
+      if (route === '/issues/' + number + '/labels' && method === 'POST') {
         for (const name of data.labels) if (!issue.labels.some(l => l.name === name)) issue.labels.push({name})
         return send(issue.labels)
       }
-      if (route.startsWith('/issues/7/labels/') && method === 'DELETE') {
+      if (route.startsWith('/issues/' + number + '/labels/') && method === 'DELETE') {
         issue.labels = issue.labels.filter(l => l.name !== decodeURIComponent(route.split('/').at(-1)))
         return send(issue.labels)
       }
@@ -172,7 +172,7 @@ export async function githubFixture(root, python, project, title) {
   })
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
   origin = 'https://127.0.0.1:' + server.address().port
-  issue.html_url = origin + '/fixture/settings/issues/7'
+  issue.html_url = origin + '/fixture/settings/issues/' + number
   closed.html_url = origin + '/fixture/settings/issues/8'
   repo.html_url = origin + '/fixture/settings'
   repo.clone_url = repo.html_url + '.git'

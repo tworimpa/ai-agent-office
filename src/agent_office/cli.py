@@ -123,10 +123,20 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
             from .meeting_runtime import RoomMeeting
             meeting = RoomMeeting(store.path, run_id, worktree.path, args.task, args.developer, args.reviewer,
                                   folders or ["."], adapters)
+        stage_gate = review_current = None
+        if goal:
+            from .goal_stage_wait import enter
+            from .workspace_coordination import stage_status
+            def stage_gate(stage, node, state, attempt):
+                return enter(store, run_id, stage, node, state, attempt)
+            def review_current(attempt):
+                result = stage_status(store.connection, run_id, "review", attempt)
+                return "\n".join(result["reasons"]) if not result["ready"] else ""
         graph = build_graph(adapters, recorder=recorder, save_stage=save_stage, inbox_factory=inbox_factory,
                             delegated_questions=delegated_questions, skill_guidance=guidance,
                             technical_choice_guidance=technical_choice_guidance, studio_preview=studio_preview,
-                            meeting=meeting, goal=goal, resume_stage=resume["next_stage"] if resume else None)
+                            meeting=meeting, goal=goal, resume_stage=resume["next_stage"] if resume else None,
+                            stage_gate=stage_gate, review_current=review_current)
         initial = {
             "task": args.task,
             "workspace": str(worktree.path),

@@ -51,6 +51,12 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $githubMode = if ($mode -eq 'privilege-gate') { 'github-gate' } else { 'github' }
           node desktop/verify-goal.mjs $exe (Join-Path $env:RUNNER_TEMP 'office-github-evidence') $githubMode
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ($mode -eq 'after') {
+            node desktop/verify-goal.mjs $exe (Join-Path $env:RUNNER_TEMP 'office-briefing-evidence') briefing-after
+          } else {
+            Write-Host 'Repository pytest is gated in elevated sessions. The Linux regular-user job exercises the full briefing journey.'
+          }
       - name: Install and verify the Linux desktop app
         if: runner.os == 'Linux'
         run: |
@@ -67,8 +73,8 @@ jobs:
           chmod 0755 "$tools"
           mkdir -p "$tools/node_modules" "$tools/fixtures"
           install -m 0755 "$(command -v node)" "$tools/node"
-          cp desktop/{verify-goal,verify-lifecycle,studio}.mjs "$tools/"
-          cp desktop/fixtures/{goal_worker.py,github_tls.py,github-provider.mjs} "$tools/fixtures/"
+          cp desktop/{verify-goal,verify-briefing,verify-lifecycle,studio}.mjs "$tools/"
+          cp desktop/fixtures/{goal_worker.py,briefing_worker.py,github_tls.py,github-provider.mjs} "$tools/fixtures/"
           cp -R desktop/node_modules/{playwright,playwright-core} "$tools/node_modules/"
           evidence="$tools/evidence"
           sudo install -d -o office-goal-ci -g office-goal-ci "$evidence"
@@ -80,6 +86,7 @@ jobs:
           trap capture EXIT
           sudo --login --user office-goal-ci xvfb-run -a "$tools/node" "$tools/verify-goal.mjs" /usr/bin/ai-agent-office-desktop "$evidence" after
           sudo --login --user office-goal-ci xvfb-run -a "$tools/node" "$tools/verify-goal.mjs" /usr/bin/ai-agent-office-desktop "$evidence/github" github
+          sudo --login --user office-goal-ci xvfb-run -a "$tools/node" "$tools/verify-goal.mjs" /usr/bin/ai-agent-office-desktop "$evidence/briefing" briefing-after
       - name: Keep the fixture report and screen captures
         if: always()
         uses: actions/upload-artifact@v4
@@ -88,5 +95,6 @@ jobs:
           path: |
             ${{ runner.temp }}/office-goal-evidence
             ${{ runner.temp }}/office-github-evidence
+            ${{ runner.temp }}/office-briefing-evidence
           if-no-files-found: ignore
           retention-days: 7

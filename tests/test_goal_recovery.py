@@ -183,7 +183,8 @@ def test_wait_clock_counts_only_blocked_work_and_never_double_counts_requests(go
                    (ident, run_id, holder, kind, "decided" if end else "pending", stamp(start), stamp(end) if end else None))
         db.execute("INSERT INTO studio_goal_waits VALUES(?,?)", (ident, stamp(start)))
     assert recovery.timing(db, run_id, at=stamp(12)) == {
-        "active_seconds":6, "user_wait_seconds":6, "unobserved_seconds":0, "waiting_for_user":True}
+        "active_seconds":6, "user_wait_seconds":6, "unobserved_seconds":0, "waiting_for_user":True,
+        "dependency_wait_seconds":0, "waiting_for_dependency":False}
 
 
 def test_lost_supervisor_does_not_charge_the_gap_before_restart(goal, monkeypatch):
