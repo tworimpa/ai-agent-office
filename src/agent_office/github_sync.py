@@ -502,7 +502,7 @@ class IssueSync:
             r["restart_required"] = False
         else:
             receipt = self.office.rework(binding["workspace"], r["run_id"], pending["id"], pending["feedback"],
-                                         binding["config"], self._payload(r), pending["sha"])
+                                         binding["config"], dict(self._payload(r), feedback_kind=pending["kind"]), pending["sha"])
             if receipt and receipt.get("base_commit"):
                 r["base_commit"] = receipt["base_commit"]
             events.append((pending["source"], "feedback_applied", pending["sha"], "accepted"))
@@ -610,7 +610,7 @@ class IssueSync:
             action = fingerprint("repair", r["pr_number"], head)
             if classification == "code_failure" and r["retries"] < cfg["ci_retries"] and not self.journal.has(key, action):
                 actionable[action] = {"kind": "ci", "source": action, "sha": head,
-                                      "feedback": "검증 실패: " + obs["detail"]}
+                                      "feedback": "검증 실패: " + obs["detail"] + "\n검사 도구의 실패 근거:\n" + obs["evidence"]}
         conclusions = {v for name in cfg["ci_checks"] for v in states.get(name, {"pending"})}
         if not trusted:
             r["ci_state"] = "unverified_head"

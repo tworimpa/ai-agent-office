@@ -121,7 +121,8 @@ def issue_task(issue, feedback=None):
     if details["criteria"]:
         prompt += "\n\n완료 기준\n" + _bounded_text("\n".join(details["criteria"]), 1800)
     if feedback:
-        prompt += "\n\n연결된 PR의 후속 작업\n" + _bounded_text(str(feedback), 2850)
+        prompt += ("\n\n후속 작업: 위 Issue의 검증된 수정은 유지하고 아래 PR 피드백의 원인을 확인하세요. "
+                   "검사에서 보고한 실패는 해당 커밋에서 재현한 뒤 수정하세요.\n" + _bounded_text(str(feedback), 2710))
     return prompt
 
 
@@ -231,6 +232,9 @@ class GitHubOffice:
                     delegation=None, meeting=True, indices=[cfg["folder_index"]])
         if details["criteria"]:
             data["goal_criteria"] = details["criteria"]
+        if feedback:
+            data["reproduce_required"] = issue.get("feedback_kind") == "ci"
+            data.setdefault("goal_criteria", [_bounded_text(feedback, 2000)])
         # Resolving a missing Git object may take time. Do not submit work against
         # an issue that was closed, relabelled or edited while fetching its base.
         self._confirm_intake(client, slug, cfg, issue)

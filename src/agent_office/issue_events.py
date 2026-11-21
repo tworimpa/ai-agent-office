@@ -83,7 +83,7 @@ def check_observation(item, head, allowed, *, status=False):
     name = item.get("context" if status else "name") or ""
     conclusion = item.get("state" if status else "conclusion") or "pending"
     output = item.get("output") or {}
-    diagnostic = " ".join(str(v or "") for v in (
+    diagnostic = "\n".join(str(v or "") for v in (
         output.get("title"), output.get("summary"), output.get("text"), item.get("description")))
     classification = "observed"
     if sha != head:
@@ -95,6 +95,14 @@ def check_observation(item, head, allowed, *, status=False):
           and (item.get("app") or {}).get("slug") == "github-actions"
           and ((item.get("app") or {}).get("owner") or {}).get("login") == "github"):
         classification = "code_failure"
+    evidence = []
+    if classification == "code_failure":
+        for line in external_text(diagnostic).splitlines():
+            if _TEST_FAILURE.search(line):
+                evidence.append(" ".join(line.split())[:360])
+            if len(evidence) == 3:
+                break
     return {"id": fingerprint("status" if status else "check", item.get("id"), name, sha, conclusion),
+            "evidence": "\n".join(evidence),
             "kind": "ci_result", "detail": f"{external_text(name)[:160]} · {conclusion[:40]} · {str(sha)[:64]}",
             "classification": classification, "name": name, "sha": sha, "conclusion": conclusion}
