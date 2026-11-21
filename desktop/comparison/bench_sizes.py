@@ -72,9 +72,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.estimate_apt_only:
+        with args.package.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        estimates = {name: apt_estimate(args.package, minimum=minimum)
+                     for name, minimum in (("defaultApt", False), ("requiredOnly", True))}
         with args.output.open("x", encoding="utf-8") as output:
-            json.dump({name: apt_estimate(args.package, minimum=minimum)
-                       for name, minimum in (("defaultApt", False), ("requiredOnly", True))}, output, indent=2)
+            json.dump(dict(sha256=digest, **estimates), output, indent=2)
         return
     if args.studio_runtime is None:
         parser.error("--studio-runtime is required for installed payloads")

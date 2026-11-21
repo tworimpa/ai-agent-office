@@ -20,7 +20,7 @@ install -m0755 "$(command -v tauri-driver)" "$tools/tauri-driver"
 collect() { mkdir -p "$out"; sudo cp -a "$tools/evidence/." "$out"; sudo chown -R "$(id -u):$(id -g)" "$out"; }
 trap collect EXIT
 verify() {
-  sudo --login --user office-rust-ci /usr/bin/env OFFICE_COMPARISON_PYTHON="$(command -v python)" TAURI_DRIVER="$tools/tauri-driver" \
+  sudo --login --user office-rust-ci /usr/bin/env OFFICE_COMPARISON_PYTHON="$(command -v python)" OFFICE_HANDOFF_RECEIPT="$tools/evidence/handoff/journal-receipt.json" TAURI_DRIVER="$tools/tauri-driver" \
     TAURI_NATIVE_DRIVER="$(command -v WebKitWebDriver)" xvfb-run -a dbus-run-session -- \
     "$tools/node" "$tools/desktop/comparison/$1" "${@:2}"
 }

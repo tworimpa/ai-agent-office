@@ -64,22 +64,53 @@ if (!$launched -or !(Test-Path -LiteralPath (Join-Path $probeProfile 'profile.lo
 if (!($launched.CloseMainWindow()) -or !$launched.WaitForExit(20000)) { throw 'Test shortcut window did not close' }
 if (!(Test-Path -LiteralPath $rust) -or !(Test-Path -LiteralPath $electron) -or
     (Split-Path -LiteralPath $rust) -eq (Split-Path -LiteralPath $electron)) { throw 'Installer paths overlap or a binary is missing' }
-node desktop/comparison/verify-connection.mjs connect $electron $rust $identity
-if ($LASTEXITCODE) { exit $LASTEXITCODE }
-$user = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
-if (!$user.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    node desktop/comparison/verify-handoff.mjs $electron $rust (Join-Path $evidence 'handoff')
-    if ($LASTEXITCODE) { exit $LASTEXITCODE }
-} else {
-    Write-Host 'This runner is elevated. The regular-user Windows acceptance uses the packaged apps for the edit and pytest journey.'
+# WebView2 150+ intentionally ignores user debugging arguments in elevated apps.
+# Run the production binaries with the runner user's ordinary token. Use that
+# user's profile for fixture files, so the checkout and its ACLs are untouched.
+$suite = Join-Path $env:LOCALAPPDATA ('office-ci-' + [guid]::NewGuid().ToString('n'))
+foreach ($dir in @('temp','evidence','desktop/comparison','desktop/fixtures','desktop/node_modules')) {
+    New-Item -ItemType Directory -Force (Join-Path $suite $dir) | Out-Null
 }
+Copy-Item -Path 'desktop/comparison/*.mjs','desktop/comparison/handoff-worker.py' -Destination "$suite/desktop/comparison"
+Copy-Item -LiteralPath 'desktop/fixtures/goal_worker.py' -Destination "$suite/desktop/fixtures"
+Copy-Item -LiteralPath 'desktop/studio.mjs','desktop/verify-lifecycle.mjs' -Destination "$suite/desktop"
+Copy-Item -LiteralPath 'desktop/node_modules/playwright','desktop/node_modules/playwright-core' -Destination "$suite/desktop/node_modules" -Recurse
+Copy-Item -LiteralPath (Get-Command node -CommandType Application | Select-Object -First 1).Source -Destination "$suite/node.exe"
+Copy-Item -LiteralPath (Get-Command tauri-driver -CommandType Application | Select-Object -First 1).Source -Destination "$suite/tauri-driver.exe"
+Copy-Item -LiteralPath $env:TAURI_NATIVE_DRIVER -Destination "$suite/msedgedriver.exe"
+Copy-Item -LiteralPath 'scripts/ci-rust-user-session.ps1' -Destination $suite
+@{electron=$electron;rust=$rust;python=$env:OFFICE_COMPARISON_PYTHON} | ConvertTo-Json | Set-Content "$suite/session.json"
+$user = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+$launcher = $null
+if ($user.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $portable = Join-Path $env:RUNNER_TEMP 'gsudo-v2.6.1.zip'
+    Invoke-WebRequest 'https://github.com/gerardog/gsudo/releases/download/v2.6.1/gsudo.portable.zip' -OutFile $portable
+    if ((Get-FileHash $portable).Hash -ne '21130BF178D7B9891207F00BFF56F05B6B363CE9CEC7B2D084E45FB12EE51F44') {
+        throw 'Portable gsudo 2.6.1 release digest mismatch'
+    }
+    Expand-Archive -LiteralPath $portable -DestinationPath (Join-Path $driverDir 'gsudo')
+    $launcher = Join-Path $driverDir 'gsudo/x64/gsudo.exe'
+}
+function Invoke-DesktopCheck([string]$mode) {
+    $shell = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
+    $arguments = @('-NoLogo','-NoProfile','-NonInteractive','-File',"$suite/ci-rust-user-session.ps1",$mode)
+    Push-Location $suite
+    try {
+        if ($launcher) { & $launcher --integrity Medium --direct --wait $shell @arguments }
+        else { & $shell @arguments }
+        if ($LASTEXITCODE) { throw "$mode failed with exit code $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+        Copy-Item -Path "$suite/evidence/*" -Destination $evidence -Recurse -Force
+    }
+}
+Invoke-DesktopCheck connect
+Invoke-DesktopCheck handoff
 Invoke-TestInstaller (Single-File (Split-Path -LiteralPath $electron) 'Uninstall AI Agent Office.exe')
 Wait-TestAppRemoval $electron
-node desktop/comparison/verify-connection.mjs rust-survivor $electron $rust $identity
-if ($LASTEXITCODE) { exit $LASTEXITCODE }
+Invoke-DesktopCheck rust-survivor
 Invoke-TestInstaller $electronInstaller
 Invoke-TestInstaller $uninstaller
 Wait-TestAppRemoval $rust
 if (!(Test-Path -LiteralPath $electron)) { throw 'Uninstall did not isolate the Rust app' }
-node desktop/comparison/verify-connection.mjs survivor $electron $rust $identity
-exit $LASTEXITCODE
+Invoke-DesktopCheck survivor

@@ -1,0 +1,23 @@
+{
+  "os": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+  "start": "2026-11-21T06:18:46.803276+00:00",
+  "repeats": 1,
+  "idle": 9,
+  "memoryMetric": "proportional_set_bytes",
+  "executableSha256": {
+    "electron": "03100c52299d74c8f05a8f95338e24ffc65bcff36eb40776a00389fc2fc409af",
+    "rust": "d07afae6561b2e997795b70816ac9700941952cfd478a4218d184b5ee4e78db9"
+  },
+  "probeSha256": "39d2ee621dceb04abcd2aedfe96b14141deaeb2de8b57da415ff7059f526c102",
+  "studioOfficeSha256": "27f45d55717bde5851aab253b33bb2f6a5397c1d71b97cdf9e0affee4e2e5add",
+  "studioServerSha256": "5e4de31facdf64907f96c8c2ac40755137bfe242244cdd30885a3b3d674ba8f9",
+  "mockProviderSha256": "9211663e45cf1060433d44cfdfe5cdbdad2764704f6a3f890b372e74f94de21c",
+  "benchmarkSha256": {
+    "benchmark.py": "afab717dbdbe9d44f178dea066761a197d300da52652c8dda107e18280507b1a",
+    "bench_process.py": "88fe927b665079a45062f30bbd094385e475a7e6c0ba85368bd61b11fdc8007b",
+    "bench-studio.py": "bb13ec45fce9612bc62c7ac12526fef7854a436ee6dec2facad9f4e64699a4e8"
+  },
+  "display": "WSLg XWayland DISPLAY=:0, 1280x900 CSS pixels, DPR 1",
+  "wslgSocketMatchesMountedX0": true,
+  "completedLaunches": 4
+}

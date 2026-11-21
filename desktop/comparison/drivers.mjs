@@ -34,6 +34,25 @@ async function compose(send, value) {
   await send('Input.insertText',{text:value})
 }
 
+async function waitForWebView(application, port) {
+  const endpoint = 'http://127.0.0.1:' + port + '/json/version'
+  let startupError, last
+  application.once('error', error => { startupError = error })
+  for (const deadline = Date.now() + 30000; Date.now() < deadline; ) {
+    if (startupError || application.exitCode !== null || application.signalCode !== null) break
+    try {
+      const response = await fetch(endpoint,{signal:AbortSignal.timeout(1500)})
+      if (response.ok && (await response.json()).webSocketDebuggerUrl) return
+      last = 'HTTP ' + response.status
+    } catch (error) { last = error.cause?.code || error.message }
+    await delay(150)
+  }
+  throw Error('Test WebView2 endpoint unavailable: ' + JSON.stringify({
+    executable:application.spawnfile, cwd:process.cwd(), pid:application.pid, endpoint,
+    exitCode:application.exitCode, signal:application.signalCode, result:startupError?.message || last
+  }))
+}
+
 async function electronDriver(executablePath, profile) {
   const app = await electron.launch({executablePath, args:['--user-data-dir=' + profile], chromiumSandbox:true})
   let page = await app.firstWindow()
@@ -105,7 +124,7 @@ async function rustDriver(executable, profile) {
       application = spawn(executable,['--profile-dir',profile],{stdio:'inherit',windowsHide:false,env:{
         ...process.env,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-address=127.0.0.1 --remote-debugging-port=' + debugPort
       }})
-      await until(async () => (await fetch('http://127.0.0.1:' + debugPort + '/json/version')).ok,'test WebView2 endpoint')
+      await waitForWebView(application, debugPort)
       capabilities = {browserName:'webview2','ms:edgeOptions':{debuggerAddress:'127.0.0.1:' + debugPort}}
     }
     const result = await request('POST','/session',{capabilities:{alwaysMatch:capabilities}})
@@ -131,7 +150,18 @@ async function rustDriver(executable, profile) {
         if (value && windows) {
           await run(s => document.querySelector(s).focus(),selector)
           await command('POST','/ms/cdp/execute',{cmd:'Input.insertText',params:{text:value}})
-        } else if (value) await command('POST',base + '/value',{text:value,value:Array.from(value)})
+        } else if (value) {
+          // WebKitWebDriver can acknowledge sendKeys before IBus has delivered
+          // the whole string. Fill fixture data atomically; the separate Hangul
+          // acceptance uses the actual X11 keyboard and waits for its IME commit.
+          await run((s,text) => {
+            const input = document.querySelector(s)
+            input.focus()
+            input.value = text
+            input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}))
+            input.dispatchEvent(new Event('change',{bubbles:true}))
+          },selector,value)
+        }
         assert.equal(await run(s => document.querySelector(s).value,selector),value,'Text input ' + selector)
       },
       async key(value) {

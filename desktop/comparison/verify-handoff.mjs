@@ -4,6 +4,7 @@ import {mkdir, readFile, realpath, writeFile} from 'node:fs/promises'
 import {join, resolve} from 'node:path'
 import {launch, until} from './drivers.mjs'
 import {prepare} from './handoff-fixture.mjs'
+import {sha256} from './journal-receipt.mjs'
 import {finishVerification} from '../verify-lifecycle.mjs'
 
 const [electron, rust, output] = process.argv.slice(2)
@@ -103,7 +104,7 @@ async function hangul(selector, value) {
     execFileSync('ibus',['engine','xkb:us::eng'])
   } else if (page.compose) await page.compose(value)
   else {
-    // W3C WebKitGTK has element.sendKeys but no composition control endpoint.
+    // Outside the native IBus check, cover the application's composition event handling.
     await page.run((s,text) => {
       const el = document.querySelector(s)
       for (const [type,data] of [['compositionstart',''],['compositionupdate',text]])
@@ -125,7 +126,7 @@ async function hangul(selector, value) {
     assert.ok(observed.slice(0,2).every(([,trusted])=>trusted === Boolean(page.compose)))
   }
   const method = ibus ? 'IBus Hangul two-set X11 keyboard + WebKitGTK' :
-    page.compose ? 'Chromium IME engine' : 'scripted WebKit DOM events and WebDriver text'
+    page.compose ? 'Chromium IME engine' : 'scripted WebKit DOM events and text entry'
   composition.push({selector,method,observed})
 }
 async function selectRun() {
@@ -332,3 +333,11 @@ try {
 } finally {
   await finishVerification(failure,close,() => studio.stop(runtime.bootId))
 }
+const journalFiles = []
+for (const name of ['tasks.sqlite3','tasks.sqlite3.studio.sqlite3']) {
+  const file = join(studio.directory,name)
+  journalFiles.push({file,sha256:await sha256(file)})
+}
+await writeFile(join(evidence,'journal-receipt.json'),JSON.stringify({
+  journal:runtime.journalId, runs:results.map(r => r.runId), files:journalFiles
+},null,2))

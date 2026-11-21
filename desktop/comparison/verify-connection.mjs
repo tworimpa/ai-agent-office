@@ -7,6 +7,7 @@ import {dirname, join, resolve} from 'node:path'
 import {tmpdir} from 'node:os'
 import {createInterface} from 'node:readline'
 import {launch, until} from './drivers.mjs'
+import {sha256} from './journal-receipt.mjs'
 import {finishVerification} from '../verify-lifecycle.mjs'
 
 const [mode, electronPath, rustPath, output] = process.argv.slice(2)
@@ -141,7 +142,14 @@ try {
     await room(first)
     await page.ready('#workspaces a[href*="' + previous.workspace + '"]')
     await page.screenshot(join(evidence,kind+'-after-remove.png'))
-    await writeFile(join(evidence,kind+'-survivor.json'),JSON.stringify({original:first.id,workspace:previous.workspace},null,2))
+    const proof = {original:first.id,workspace:previous.workspace}
+    if (process.env.OFFICE_HANDOFF_RECEIPT) {
+      const receipt = JSON.parse(await readFile(process.env.OFFICE_HANDOFF_RECEIPT,'utf8'))
+      for (const item of receipt.files) assert.equal(await sha256(item.file),item.sha256)
+      proof.preservedCompletedRuns = receipt.runs
+      proof.preservedJournal = receipt.journal
+    }
+    await writeFile(join(evidence,kind+'-survivor.json'),JSON.stringify(proof,null,2))
   }
 } catch (error) {
   failure = error
