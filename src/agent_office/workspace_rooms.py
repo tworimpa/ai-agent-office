@@ -8,7 +8,7 @@ import threading
 from hashlib import sha256
 
 from . import overnight_goals, role_skills
-from . import workspace_coordination
+from . import workspace_coordination, work_profiles
 from . import meeting_store
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .models import OfficeError, validate_id
@@ -168,7 +168,10 @@ def _lines(row, requests, stages):
 
 
 class WorkspaceRooms:
-    def __init__(self, db_path, catalog, runner, engines):
+    def __init__(self, db_path, catalog, runner, engines, *, journal_id=None):
+        from .provider_profiles import ModelCatalog
+        self.models = ModelCatalog()
+        self.journal_id = journal_id
         self.path = db_path
         self.catalog = catalog
         self.runner = runner
@@ -177,6 +180,7 @@ class WorkspaceRooms:
         with TaskStore(db_path, existing=True) as store, store._write():
             overnight_goals.ensure_schema(store.connection)
             workspace_coordination.ensure_schema(store.connection)
+            work_profiles.schema(store.connection)
             store.connection.execute("""CREATE TABLE IF NOT EXISTS studio_room_settings(
                 workspace_id TEXT PRIMARY KEY, settings_json TEXT NOT NULL)""")
             store.connection.execute("CREATE INDEX IF NOT EXISTS studio_runs_workspace ON studio_runs(workspace_id)")
@@ -260,6 +264,7 @@ class WorkspaceRooms:
             if cursor is None:
                 page.update(workspace=workspace, settings=self._settings(db, workspace_id), engines=engines,
                             meeting_supported=True, goal_supported=True, github_supported=True, briefing_supported=True,
+                            work_profiles_supported=True, shared_visits_supported=True, journal_id=self.journal_id,
                             goal_default=db.execute("SELECT 1 FROM studio_goal_policies WHERE workspace_id=?",
                                                     (workspace_id,)).fetchone() is not None)
         return page
@@ -271,7 +276,7 @@ class WorkspaceRooms:
     def assign(self, workspace_id, data, *, pinned_revision=None, origin=None):
         required = {"id", "message", "allow_edits", "delegation"}
         if not required <= data.keys() or data.keys() - required - {"indices", "test_files", "meeting", "review_plan",
-                                                                    "role_engines", "goal", "goal_criteria", "reproduce_required", "coordination"}:
+                                                                    "role_engines", "goal", "goal_criteria", "reproduce_required", "coordination", "work_profile"}:
             raise ValueError("조정자에게 보낼 요청을 확인하세요.")
         meeting = data.get("meeting", False)
         review_plan = data.get("review_plan", False)
@@ -312,6 +317,7 @@ class WorkspaceRooms:
                 if prior:
                     return prior
                 settings = self._settings(store.connection, workspace_id)
+                saved_profile, bound_engines = work_profiles.stored(store.connection, workspace_id)
                 if specification is not None:
                     coordination = workspace_coordination.bind_references(
                         store.connection, workspace_id, specification, origin)
@@ -352,6 +358,14 @@ class WorkspaceRooms:
                                                    verifier_engine=verifier)
             assignment = {"roles": roles, "delegation": delegated,
                           "note": _assignment_note(settings, roles, allow_edits, delegated, choices)}
+            effective = work_profiles.resolve(saved_profile, bound_engines, data.get("work_profile", {}), roles,
+                                              self.models, edits=allow_edits, goal=goal, reproduce=goal and reproduce)
+            effective["role_reasons"] = {
+                role: ("Workspace의 기본 엔진" if roles[role]["engine"] == settings[role]["engine"]
+                       else "이번 작업에서 선택한 엔진" if role in overrides else "호스트에서 실행 가능한 대체 엔진")
+                + " · " + roles[role]["engine"] for role in ROLES
+            }
+            assignment["work_profile"] = effective
             if goal:
                 assignment.update(goal_policy=goal_policy, goal_criteria=criteria, reproduce_required=reproduce,
                                   planning_mode="meeting" if meeting else "direct")

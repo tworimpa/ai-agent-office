@@ -3,7 +3,7 @@ import json
 import platform
 import time
 
-from . import goal_recovery
+from . import goal_recovery, goal_workers
 from .models import ACTIVE, OfficeError
 from .ownership import RunGuard
 from .store import encode, now
@@ -56,7 +56,14 @@ def enter(store, run_id, stage, node, state, attempt):
         with store._write():
             if db.execute("SELECT stop_requested FROM studio_runs WHERE id=?", (run_id,)).fetchone()[0]:
                 raise OfficeError("INTERRUPTED")
-            result = try_stage(db, run_id, stage, attempt)
+            result = try_stage(db, run_id, "verify" if stage == "consultation" else stage, attempt)
+            restriction = goal_workers.admission(db, run_id, stage, attempt, record=True) if result["ready"] else None
+            if restriction:
+                if restriction[0] == "stop":
+                    end(db,run_id)
+                    goal_recovery.invalidate_checkpoint(db,run_id)
+                    break
+                result = dict(result,ready=False,reasons=[restriction[1]])
             if result.get("rework_required"):
                 # Raise outside the transaction so the old wait closes durably.
                 end(db, run_id)
@@ -80,7 +87,11 @@ def enter(store, run_id, stage, node, state, attempt):
             raise Parked()
         # Some environments cannot be fingerprinted or their saved prompt was redacted.
         # Keep the current owner and original prompt until the dependency changes.
+        if restriction:
+            goal_workers.maybe_probe(store,run_id)
         time.sleep(.35)
+    if restriction and restriction[0] == "stop":
+        raise goal_workers.OperatorStop(*restriction[1])
     raise ReworkRequired("\n".join(result["reasons"]))
 
 
@@ -149,9 +160,18 @@ def dispatch(runner, store):
             continue
         # A quiet dependency can wait overnight. Poll without reserving the SQLite
         # writer or probing process locks until the source or the operator changes it.
-        status = stage_status(db, run_id, stage, attempt)
+        status = stage_status(db, run_id, "verify" if stage == "consultation" else stage, attempt)
         if not status["ready"] and not status.get("rework_required") and row["reasons"] == encode(status["reasons"]):
             continue
+        if status["ready"]:
+            restriction = goal_workers.admission(db,run_id,stage,attempt)
+            if restriction and restriction[0] == "wait":
+                if row["reasons"] != encode([restriction[1]]):
+                    with store._write():
+                        goal_workers.admission(db,run_id,stage,attempt,record=True)
+                        note(db,run_id,stage,attempt,[restriction[1]])
+                goal_workers.maybe_probe(store,run_id)
+                continue
         if RunGuard(store.path, run_id).is_held() or RunGuard.worker(store.path, run_id).is_held():
             continue
         with store._write():
@@ -163,7 +183,7 @@ def dispatch(runner, store):
             # A read-only request has just one dispatch boundary, before any planner or
             # worker runs. Store its exact basis in the same transaction as the claim.
             admission = stage_status if row["allow_edits"] else try_stage
-            result = admission(db, run_id, stage, attempt)
+            result = admission(db, run_id, "verify" if stage == "consultation" else stage, attempt)
             if not (result["ready"] or result.get("rework_required")):
                 note(db, run_id, stage, attempt, result["reasons"])
                 continue

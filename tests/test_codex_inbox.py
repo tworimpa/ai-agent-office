@@ -50,12 +50,12 @@ def install_mock_codex(directory, monkeypatch, scenario):
     return executable
 
 
-def fixture(tmp_path, monkeypatch, scenario, edits=True, operator=None):
+def fixture(tmp_path, monkeypatch, scenario, edits=True, operator=None, **options):
     executable = install_mock_codex(tmp_path, monkeypatch, scenario)
     monkeypatch.setattr("agent_office.adapters.resolve_executable", lambda _: str(executable))
     operator = operator or Operator()
     result = CLIAdapter("codex", timeout=2 if scenario == "timeout" else 8).execute(
-        "원래 작업", workspace=tmp_path, allow_edits=edits, inbox=operator)
+        "원래 작업", workspace=tmp_path, allow_edits=edits, inbox=operator, **options)
     return operator, result
 
 
@@ -141,6 +141,48 @@ def test_timeout_expires_unsent_codex_decision(tmp_path, monkeypatch):
     assert result.returncode == 124 and not operator.sent and not operator.confirmed
 
 
+def test_task_profile_bound_telemetry_and_account_change(tmp_path, monkeypatch):
+    events = []
+    _, result = fixture(tmp_path, monkeypatch, "profile", model="fixture-model", effort="high", telemetry=events.append)
+    assert result.returncode == 0, result.message
+    assert events[0] == {"kind": "model", "actual_model": "fixture-model", "actual_effort": "high"}
+    assert events[1]["ordinary_usage_allowed"] is True and len(events[1]["account_key"]) == 64
+    assert events[2] == {"kind": "model", "actual_model": "fixture-reroute"}
+    assert events[3] == {"kind": "usage", "input_tokens": 700, "total_tokens": 900,
+                         "context_used": 300, "context_basis": "last_response_total", "context_window": 4000}
+    assert events[4]["account_key"] == events[1]["account_key"]
+    assert "account_key" not in events[5]
+    assert "private" not in json.dumps(events)
+
+
+def test_native_preflight_exhaustion_closes_before_first_model_turn(tmp_path, monkeypatch):
+    events = []
+    _, result = fixture(tmp_path, monkeypatch, "exhausted", telemetry=events.append)
+    assert result.preflight_blocked and result.returncode == 75
+    assert events[-1] == {"kind": "usage", "total_tokens": 0}
+    assert events[-2]["ordinary_usage_allowed"] is False
+
+
+@pytest.mark.parametrize("scenario", ["catalog", "catalog-bad"])
+def test_catalog_refresh_only_invokes_paginated_metadata(tmp_path, monkeypatch, scenario):
+    from agent_office.provider_profiles import ModelCatalog
+    executable = install_mock_codex(tmp_path, monkeypatch, scenario)
+    monkeypatch.setattr("agent_office.provider_profiles.resolve_executable", lambda _: str(executable))
+    catalog = ModelCatalog()
+    assert catalog.read()["status"] == "unprobed"
+    snapshot = catalog.refresh()
+    if scenario == "catalog-bad":
+        assert snapshot["status"] == "unavailable" and snapshot["models"] == []
+        return
+    assert [row["id"] for row in snapshot["models"]] == ["visible-1", "visible-2"]
+    assert snapshot["models"][0]["efforts"] == ["high"]
+    snapshot["models"].clear()
+    catalog.validate("codex", "visible-2", "high")
+    with pytest.raises(ValueError):
+        catalog.validate("codex", "visible-2", "low")
+    assert "private" not in json.dumps(catalog.read())
+
+
 def server():
     scenario = os.environ["OFFICE_FIXTURE_CODEX"]
     if sys.argv[1:2] == ["exec"] and scenario in ("room-choice", "room-product"):
@@ -178,6 +220,8 @@ def server():
             emit(id=start["id"], result={})
             start = read()
         assert start["method"] == "turn/start" and start["params"]["threadId"] == "thread"
+        if scenario == "profile":
+            assert start["params"]["model"] == "fixture-model" and start["params"]["effort"] == "high"
         message = start["params"]["input"][0]["text"]
         if scenario.startswith("service-shell"):
             assert ("exec_command" in message and "cmd.exe" in message) == (scenario == "service-shell-legacy")
@@ -199,6 +243,14 @@ def server():
         user = {"type": "userMessage", "id": "user" + turn}
         for method in ("item/started", "item/completed"):
             emit(method=method, params={"threadId": "thread", "turnId": turn, "item": user})
+        if scenario == "profile":
+            emit(method="model/rerouted", params={"threadId": "thread", "turnId": turn, "toModel": "fixture-reroute"})
+            emit(method="thread/tokenUsage/updated", params={"threadId": "thread", "turnId": turn,
+                 "tokenUsage": {"total": {"inputTokens": 700, "totalTokens": 900},
+                                "last": {"totalTokens": 300}, "modelContextWindow": 4000}})
+            emit(method="account/rateLimits/updated", params={"rateLimits": quota})
+            emit(method="account/updated", params={"private": "private"})
+            emit(method="account/rateLimits/updated", params={"rateLimits": quota})
         if scenario == "buffered-trailing":
             final = {"id": "final", "type": "agentMessage", "phase": "final_answer", "text": "done"}
             for method in ("item/started", "item/completed"):
@@ -215,9 +267,25 @@ def server():
         emit(method="remoteControl/status/changed", params={"status": "disabled", "environmentId": None})
     assert read()["method"] == "initialized"
     start = read()
+    if scenario.startswith("catalog"):
+        for page in (1, 2):
+            assert start["method"] == "model/list" and start["params"]["includeHidden"] is False
+            assert start["params"].get("cursor") == ("page2" if page == 2 else None)
+            row = {"model": f"visible-{page}", "displayName": "Fixture", "description": "private",
+                   "supportedReasoningEfforts": [{"reasoningEffort": "high", "description": "private"}],
+                   "defaultReasoningEffort": "high", "isDefault": page == 1}
+            emit(id=start["id"], result={"data": [row, {**row, "hidden": True}],
+                 "nextCursor": "page2" if page == 1 or scenario == "catalog-bad" else None})
+            if page == 1:
+                start = read()
+        return
     params = start["params"]
     assert start["method"] == "thread/start" and params["approvalsReviewer"] == "user"
     assert params["approvalPolicy"] == "on-request" and Path(params["cwd"]) == Path.cwd()
+    if scenario == "profile":
+        assert params["model"] == "fixture-model" and params["config"]["model_reasoning_effort"] == "high"
+        skip = init["params"]["capabilities"]["optOutNotificationMethods"]
+        assert "model/rerouted" not in skip and "thread/tokenUsage/updated" not in skip
     if scenario == "account-status":
         emit(method="account/updated", params={"authMode": "chatgpt", "planType": "plus"})
     if scenario == "account-status-request":
@@ -237,8 +305,19 @@ def server():
         "type": "workspaceWrite", "excludeTmpdirEnvVar": True, "excludeSlashTmp": True}
     if scenario == "bad-mode":
         policy["type"] = "dangerFullAccess"
-    emit(id=start["id"], result={"sandbox": policy, "cwd": str(Path.cwd()), "approvalsReviewer": "user",
+    profile = ({"modelProvider": "openai", "model": "fixture-model", "reasoningEffort": "high"}
+               if scenario in ("profile", "exhausted") else {})
+    emit(id=start["id"], result={"sandbox": policy, "cwd": str(Path.cwd()), "approvalsReviewer": "user", **profile,
                                  "approvalPolicy": "on-request", "thread": {"id": "thread"}})
+    if scenario in ("profile", "exhausted"):
+        request = read()
+        assert request["method"] == "account/rateLimits/read"
+        quota = {"limitId": "codex", "primary": {"usedPercent": 20, "windowDurationMins": 300}}
+        emit(id=request["id"], result={"accountId": "private-account", "ordinaryUsageAllowed": scenario != "exhausted",
+                                       "rateLimits": quota})
+        if scenario == "exhausted":
+            assert not sys.stdin.buffer.readline()
+            return
     if scenario.startswith("service-shell"):
         inject = read()
         assert inject["method"] == "thread/inject_items" and inject["params"]["threadId"] == "thread"

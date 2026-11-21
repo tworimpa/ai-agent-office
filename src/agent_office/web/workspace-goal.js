@@ -102,6 +102,8 @@ export function mountGoals({win, get, make, api, refresh, onPolicySaved, context
       [attemptLabel(check.attempt), stages[check.stage] ?? check.stage, outcome, ...counts].join(' · ')
     );
     node.dataset.goalCheck = check.stage;
+    node.dataset.attempt = String(check.attempt);
+    node.dataset.position = String(check.position);
     const timing = make('p', '시작 ' + formatted(check.started_at));
     if (live) {
       const clock = make('span');
@@ -351,6 +353,7 @@ export function mountGoals({win, get, make, api, refresh, onPolicySaved, context
       ]) {
         if (!candidate[key + '_status']) continue;
         const evidence = fold(title + ' · ' + label(candidate[key + '_status']));
+        evidence.dataset.reviewKind = key;
         if (candidate[key + '_at']) evidence.append(make('p', formatted(candidate[key + '_at'])));
         if (candidate[key + '_output']) evidence.append(make('pre', candidate[key + '_output']));
         node.append(evidence);

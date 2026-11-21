@@ -92,7 +92,7 @@ def make_parser() -> argparse.ArgumentParser:
 
 def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage=None, defer_final=None,
                 inbox_factory=None, base_revision=None, delegated_questions=(), technical_choice_guidance="",
-                studio_preview=None, room_meeting=False, goal_assignment=None):
+                studio_preview=None, room_meeting=False, goal_assignment=None, room_assignment=None):
     repo = args.repo.expanduser().resolve()
     worktree = plan_worktree(repo, run_id)
     recorder = RunRecorder(store, run_id)
@@ -118,11 +118,16 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
             for engine in SUPPORTED_ENGINES
         }
         guidance = role_guidance(store.connection, run_id, ("developer", "reviewer")) if prepared else {}
+        workers = None
+        if room_assignment or goal_assignment:
+            from .goal_workers import RoomWorkers
+            workers = RoomWorkers(store.path, run_id, adapters, room_assignment or goal_assignment,
+                                  {"developer": args.developer, "reviewer": args.reviewer})
         meeting = None
         if room_meeting:
             from .meeting_runtime import RoomMeeting
             meeting = RoomMeeting(store.path, run_id, worktree.path, args.task, args.developer, args.reviewer,
-                                  folders or ["."], adapters)
+                                  folders or ["."], adapters, workers=workers)
         stage_gate = review_current = None
         if goal:
             from .goal_stage_wait import enter
@@ -136,7 +141,7 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
                             delegated_questions=delegated_questions, skill_guidance=guidance,
                             technical_choice_guidance=technical_choice_guidance, studio_preview=studio_preview,
                             meeting=meeting, goal=goal, resume_stage=resume["next_stage"] if resume else None,
-                            stage_gate=stage_gate, review_current=review_current)
+                            stage_gate=stage_gate, review_current=review_current, workers=workers)
         initial = {
             "task": args.task,
             "workspace": str(worktree.path),

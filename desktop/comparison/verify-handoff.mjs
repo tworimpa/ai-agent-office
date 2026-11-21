@@ -162,8 +162,9 @@ async function briefingViews(tag,action) {
   }
   return views
 }
-async function assign(kind) {
-  const task = kind + '에서 저장한 테마와 첫 실행 기본값을 확인해 주세요.'
+async function assign(kind, representative) {
+  const task = representative ? 'Windows에서 재실행하면 설정이 사라지는 문제를 재현하고 수정해줘. 관련 테스트와 독립 리뷰를 거쳐 아침에 검토할 후보를 남겨줘.' :
+    kind + '에서 저장한 테마와 첫 실행 기본값을 확인해 주세요.'
   await page.activate('.seat[data-person="coordinator"]')
   await hangul('#message',task)
   await page.check('#allow-edits')
@@ -179,10 +180,16 @@ async function assign(kind) {
   assert.equal(run.assignment.roles.developer.engine,'codex')
   assert.equal(run.assignment.roles.reviewer.engine,'antigravity')
   setStep(kind + ' assignment ' + runId)
-  const review = '#brief-questions [data-action="plan"][data-run="' + runId + '"]'
-  await page.activate(review)
-  await page.check('#meeting-inputs input[type="radio"]')
-  await page.activate('#approve-plan')
+  if (!representative) {
+    const review = '#brief-questions [data-action="plan"][data-run="' + runId + '"]'
+    await page.activate(review)
+    await page.check('#meeting-inputs input[type="radio"]')
+    await page.activate('#approve-plan')
+  } else {
+    assert.equal(run.assignment.work_profile.mode,'auto')
+    assert.equal(run.assignment.work_profile.roles.developer.model,'fixture-codex')
+    assert.equal(run.assignment.planning_mode,'direct')
+  }
   const question = await until(async () => (await requests()).find(row => row.kind === 'product_decision' && row.status === 'pending'),'product decision',90000)
   assert.match(question.prompt,/테마/)
   return {task,question}
@@ -204,7 +211,7 @@ async function readRecords() {
       events:goal.events,state:goal.state,meeting:detail.meeting,review:detail.review_output}
   },workspace,runId)
 }
-async function renderResult(label,candidate) {
+async function renderResult(label,candidate,representative) {
   setStep(label + ' candidate and conversation')
   const briefing = await briefingViews(label + '-ready','candidate')
   let candidateAction = '#brief-review [data-action="candidate"][data-run="' + runId + '"]'
@@ -228,6 +235,20 @@ async function renderResult(label,candidate) {
   await until(() => page.run(s => [...document.querySelectorAll(s + ' .office-markdown h1,' + s + ' .office-markdown h2,' + s + ' .office-markdown h3,' + s + ' .office-markdown h4')].some(h => h.textContent === '변경 근거'),panel),'rendered Markdown heading')
   assert.equal(await page.run(s => document.querySelector(s + ' li code')?.textContent,panel),'theme')
   await page.screenshot(join(evidence,label + '-markdown.png'))
+  if (representative) {
+    await page.activate('#character-sheet > summary')
+    await until(() => page.run(() => document.querySelectorAll('#character-record .character-axes li').length === 6),'six evidence axes')
+    await page.screenshot(join(evidence,label + '-character.png'))
+    await page.activate('#conversation .close-button')
+    for (const [w,h] of [[1366,768],[390,844]]) {
+      await page.size(w,h)
+      await page.run(() => document.querySelector('#work-usage > summary').focus())
+      if (!await page.run(() => document.querySelector('#work-usage').open)) await page.key('Enter')
+      await until(() => page.run(() => document.querySelector('#usage-record').textContent.includes('fixture-codex')),'usage receipt')
+      await page.screenshot(join(evidence,label + '-usage-' + w + '.png'))
+    }
+    return {width,briefing}
+  }
   await page.activate('#conversation [data-view="simple"]')
   await page.activate('#conversation [data-jump="meeting"]')
   const revision = '#conversation details[data-revision="1"]'
@@ -239,12 +260,12 @@ async function renderResult(label,candidate) {
   await page.activate('#conversation .close-button')
   return {width,briefing}
 }
-async function journey(first,second) {
+async function journey(first,second,representative=false) {
   composition.length = 0
   await open(first)
   const userAgents = {[first]: await page.run(() => navigator.userAgent)}
   if (!workspace) await register()
-  const {task,question} = await assign(first)
+  const {task,question} = await assign(first,representative)
   const before = await readRecords()
   assert.equal(before.workspaceId,workspace)
   assert.equal(before.runId,runId)
@@ -285,7 +306,7 @@ async function journey(first,second) {
   assert.equal(finished.directions.length,1)
   assert.equal(finished.directions[0].id,queued.id)
   assert.equal(finished.directions[0].delivery,'delivered')
-  assert.ok(finished.meeting.revisions.some(row => row.direction_id === queued.id))
+  if (!representative) assert.ok(finished.meeting.revisions.some(row => row.direction_id === queued.id))
   assert.equal(finished.candidates.length,1)
   const candidate = finished.candidates[0]
   assert.equal(candidate.review_status,'approved')
@@ -296,24 +317,36 @@ async function journey(first,second) {
     c.exit_code === 0 && c.counts.passed === 2 && c.fixed_ids.some(id => id.includes('test_reopen_saved_theme'))))
   assert.equal(finished.boardCandidates[0]?.digest,candidate.digest)
   assert.match(finished.review,/VERDICT: APPROVED/)
-  const rendered = await renderResult(first + '-to-' + second,candidate)
+  const rendered = await renderResult(representative ? 'morning' : first + '-to-' + second,candidate,representative)
+  const metrics = () => page.run(async (ws,run) => (await fetch('/api/rooms/'+ws+'/usage/'+run)).json(),workspace,runId)
+  const usage = representative ? await metrics() : undefined
+  if (representative) {
+    assert.equal(usage.profile.mode,'auto')
+    assert.ok(usage.usage.calls.some(call => call.role==='developer' && call.requested_model==='fixture-codex' && call.actual_model==='fixture-codex-routed'))
+    assert.ok(usage.usage.calls.some(call => call.role==='reviewer' && call.engine==='antigravity'))
+    assert.ok(usage.usage.total_tokens>0)
+    assert.ok(usage.usage.rate_limits.some(limit => limit.used_percent===18))
+  }
   await close()
   await open(first)
   await selectRun()
   const reopened = await readRecords()
+  if (representative) assert.deepEqual(await metrics(), usage, 'Desktop journal usage changed across clients')
   assert.deepEqual(reopened,finished,'Candidate, decision, verification or journal changed across clients')
   assert.match(await readFile(join(repo,'settings.py'),'utf8'),/return "light"/)
   await close()
   return {platform:process.platform,first,second,userAgents,workspace,runId,questionId:question.id,directionId:queued.id,narrowViewport:rendered.width,
     pendingViews,candidateViews:rendered.briefing,
     composition:[...composition], checks:'native shell keyboard traversal, Hangul persisted, Markdown and Mermaid rendered',
-    pending:before,completed:finished}
+    pending:before,completed:finished,usage}
 }
 try {
   for (const [first,second] of [['electron','rust'],['rust','electron']]) {
     results.push(await journey(first,second))
     await writeFile(join(evidence,first + '-to-' + second + '.json'),JSON.stringify(results.at(-1),null,2))
   }
+  results.push(await journey('electron','rust',true))
+  await writeFile(join(evidence,'morning-work-profile.json'),JSON.stringify(results.at(-1),null,2))
   const ids = (await json('/api/rooms/' + workspace)).runs.map(run=>run.id).sort()
   assert.deepEqual(ids,results.map(result=>result.runId).sort())
   console.log('Both handoffs passed on',process.platform,'·',evidence)

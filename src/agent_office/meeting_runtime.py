@@ -20,7 +20,7 @@ class MeetingFailure(RuntimeError):
 
 
 class RoomMeeting:
-    def __init__(self, path, run_id, workspace, task, developer, reviewer, folders, adapters):
+    def __init__(self, path, run_id, workspace, task, developer, reviewer, folders, adapters, *, workers=None):
         self.path = path
         self.run_id = run_id
         self.workspace = workspace
@@ -28,6 +28,7 @@ class RoomMeeting:
         self.developer = developer
         self.reviewer = reviewer
         self.folders = folders
+        self.workers = workers
         self.adapters = adapters
         self.applied_work = ""
 
@@ -52,7 +53,7 @@ class RoomMeeting:
     def consult(self, request, record):
         try:
             return conduct_meeting(request, self.workspace, self.developer, self.reviewer,
-                                   adapters=self.adapters, folders=self.folders, record=record)
+                                   adapters=self.adapters, folders=self.folders, record=record, workers=self.workers)
         except ValueError as exc:
             raise MeetingFailure(str(exc)) from exc
         except OSError as exc:
@@ -73,20 +74,22 @@ class RoomMeeting:
 
     def dispatch(self, role_guidance):
         current = self.snapshot()
+        bound = self.workers.bind("developer","parallel_implementation",1) if self.workers else None
+        engine = bound.engine if bound else self.developer
         def record(task_id, result):
-            self.write(meeting_store.record_work, current["revision"], task_id, self.developer, result)
+            self.write(meeting_store.record_work, current["revision"], task_id, engine, result)
 
         def open_inbox(task_id=None):
             # Keep each child's session approvals separate. Only the primary
             # developer consumes directions addressed to the overall role.
-            return InboxChannel(self.path, self.run_id, "developer", self.developer, goal_task_id=task_id)
+            return InboxChannel(self.path, self.run_id, "developer", engine, goal_task_id=task_id)
 
         try:
             from .goal_recovery import is_goal
             with TaskStore(self.path, existing=True, readonly=True) as store:
                 independent = is_goal(store.connection, self.run_id)
             self.applied_work = execute_parallel(
-                current["plan"], self.workspace, self.adapters, self.developer,
+                current["plan"], self.workspace, {engine:bound} if bound else self.adapters, engine,
                 task=self.task + "\n" + role_guidance + "\nAccepted plan and decisions:\n" + self.context(),
                 record=record, open_inbox=open_inbox, independent=independent)
         except (OSError, ValueError) as exc:

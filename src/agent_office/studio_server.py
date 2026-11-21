@@ -31,7 +31,7 @@ from .away_ledger import return_report, revoke_policy
 from .studio_ssh import RemoteUnavailable, is_peer_route, remote_request
 from .workspace_rooms import WorkspaceRooms, room_route
 from . import github_studio
-from . import workspace_briefing
+from . import workspace_briefing, work_profile_views
 from .github_connection import GitHubError
 from . import overnight_goals
 
@@ -41,6 +41,8 @@ ASSETS = {
     "/workspace-office.js": ("workspace-office.js", "text/javascript"),
     "/workspace-goal.js": ("workspace-goal.js", "text/javascript"),
     "/workspace-briefing.js": ("workspace-briefing.js", "text/javascript"),
+    "/workspace-profile.js": ("workspace-profile.js", "text/javascript"),
+    "/workspace-character.js": ("workspace-character.js", "text/javascript"),
     "/workspace-github.js": ("workspace-github.js", "text/javascript"),
     "/office-content.js": ("office-content.js", "text/javascript"),
     "/office-content.css": ("office-content.css", "text/css"),
@@ -142,7 +144,7 @@ class StudioServer(ThreadingHTTPServer):
             from .goal_peer import configure
             configure(self.db_path, remotes)
             self.directions = self.runner.directions
-            self.rooms = WorkspaceRooms(self.db_path, self.catalog, self.runner, self.engines)
+            self.rooms = WorkspaceRooms(self.db_path, self.catalog, self.runner, self.engines, journal_id=self.journal_id)
             self.improvements = StudioImprovements(self.db_path, improvement_source)
             self.github = github_studio.WorkspaceGitHub(self)
         except BaseException:
@@ -288,6 +290,10 @@ class StudioHandler(ObserverHandler):
 
     def _local_api(self, path, data):
         write = data is not None
+        profile = work_profile_views.route("POST" if write else "GET", path.removeprefix("/api"))
+        if profile:
+            self._reply(200, work_profile_views.handle(self, *profile, data))
+            return
         briefing = workspace_briefing.route("POST" if write else "GET", path.removeprefix("/api"))
         if briefing:
             self._reply(200, workspace_briefing.handle(self.server, *briefing, data))
