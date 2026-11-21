@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Agent Office (Rust 비교판)</title>
+  <link rel="stylesheet" href="setup.css">
+  <script src="setup.js" defer></script>
+</head>
+<body>
+  <main>
+    <h1>Studio 연결</h1>
+    <p>이 컴퓨터에서 실행 중인 Studio 주소를 입력하세요.</p>
+    <form id="setup">
+      <label for="address">Studio 주소</label>
+      <input id="address" name="address" type="url" value="http://127.0.0.1:8766" maxlength="192" required spellcheck="false" autocapitalize="none" autocorrect="off">
+      <div class="actions">
+        <button id="connect" type="submit">주소 확인</button>
+        <button id="retry" type="button" hidden>저장된 작업실 다시 열기</button>
+      </div>
+    </form>
+    <section id="preview" hidden>
+      <h2>등록할 작업실</h2>
+      <p id="identity"></p>
+      <button id="confirm" type="button">이 저널로 연결</button>
+    </section>
+    <p id="status" role="status"></p>
+  </main>
+</body>
+</html>

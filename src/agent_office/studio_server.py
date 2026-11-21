@@ -215,6 +215,10 @@ class StudioHandler(ObserverHandler):
         # Closing with unread body bytes can reset the connection and discard
         # the rejection response on Windows. Read once after the origin checks.
         payload = self._json_body() if write else None
+        expected = self.headers.get_all("X-Agent-Office-Expected-Journal")
+        if expected is not None and expected != [self.server.journal_id]:
+            self._reply(409, {"error": {"code": "JOURNAL_MISMATCH", "message": "선택한 작업실과 다른 저널입니다."}})
+            return
         if parsed.query:
             studio_page = parsed.path in ("/", "/studio") and _valid_page_query(parsed.path, parsed.query)
             office_page = parsed.path in ("/office", "/versions") and re.fullmatch(r"host=(?:local|[a-f0-9]{32})", parsed.query)

@@ -1,0 +1,19 @@
+:root { color-scheme: dark; font: 1rem/1.6 system-ui, sans-serif; color: #edf0f6; background: #18202e; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 35rem; margin: clamp(2rem, 12vh, 6rem) auto; padding: 0 1.5rem; }
+h1 { font-size: 1.85rem; margin: 0; }
+h2 { font-size: 1.1rem; }
+p { color: #cbd2de; }
+form { margin-top: 2rem; }
+label { display: block; font-weight: 600; }
+input, button { font: inherit; border-radius: .45rem; min-height: 3rem; }
+input { width: 100%; padding: .55rem .85rem; margin: .4rem 0 1rem; color: inherit; background: #111923; border: 1px solid #8390a4; }
+button { padding: .5rem 1.1rem; border: 1px solid #f0ad85; background: #f0ad85; color: #261e1a; font-weight: 600; cursor: pointer; }
+button:disabled { opacity: .65; cursor: wait; }
+:focus-visible { outline: 3px solid #b5d8ff; outline-offset: 3px; }
+.actions { display: flex; flex-wrap: wrap; gap: .65rem; }
+#retry { background: transparent; border-color: #8390a4; color: inherit; }
+#preview { margin-top: 1.75rem; padding-block: 1rem; border-top: 1px solid #536176; }
+#identity { overflow-wrap: anywhere; white-space: pre-line; }
+#status { min-height: 1.6em; white-space: pre-line; overflow-wrap: anywhere; }

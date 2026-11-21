@@ -49,6 +49,18 @@ def request(server, path, payload=None, **headers):
         connection.close()
 
 
+def test_attached_window_does_not_apply_another_journals_requests(tmp_path):
+    folder, _ = project(tmp_path)
+    body = {"name": "fixture", "paths": [str(folder)]}
+    with studio(tmp_path / "first.db") as first, studio(tmp_path / "next.db") as replacement:
+        header = {"X-Agent-Office-Expected-Journal": first.journal_id}
+        for payload in (body, None):
+            status, response = request(replacement, "/api/workspaces", payload, **header)
+            assert status == 409 and response["error"]["code"] == "JOURNAL_MISMATCH"
+        assert request(replacement, "/api/workspaces")[1]["workspaces"] == []
+        assert request(first, "/api/workspaces", body, **header)[0] == 201
+
+
 def workers(tmp_path, monkeypatch, *, edit_gate=None):
     bin_dir = tmp_path / "mock cli"
     bin_dir.mkdir()
