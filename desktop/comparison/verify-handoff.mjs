@@ -143,8 +143,10 @@ async function briefingViews(tag,action) {
     const observation = await page.run(() => {
       const position = selector => [...document.querySelectorAll(selector)].map(el => {
         const {x,y,width,height} = el.getBoundingClientRect()
+        const center = document.elementFromPoint(x + width / 2,y + height / 2)
         return {run:el.dataset.run,action:el.dataset.action,x,y,width,height,
-          insideViewport:width > 0 && height > 0 && x >= 0 && y >= 0 && x + width <= innerWidth && y + height <= innerHeight}
+          insideViewport:width > 0 && height > 0 && x >= 0 && y >= 0 && x + width <= innerWidth && y + height <= innerHeight,
+          hitTarget:el.contains(center)}
       })
       return {width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,
         questions:position('#brief-questions [data-action="answer"]'),candidates:position('#brief-review [data-action="candidate"]')}
@@ -152,6 +154,8 @@ async function briefingViews(tag,action) {
     assert.equal(observation.width,width)
     assert.equal(observation.height,height)
     assert.ok(observation.scrollWidth <= width)
+    const group = action === 'answer' ? observation.questions : observation.candidates
+    assert.ok(group.some(item=>item.run === runId && item.insideViewport && item.hitTarget),'Active briefing action is outside the first viewport')
     await page.screenshot(join(evidence,tag + '-briefing-' + width + 'x' + height + '.png'))
     views.push(observation)
   }

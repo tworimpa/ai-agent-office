@@ -16,7 +16,10 @@ async function refresh() {
   $('confirm').disabled = busy
   $('preview').hidden = !state.candidate
   if (state.candidate) {
-    $('identity').textContent = state.candidate.origin + '\n저널 ID ' + state.candidate.journalId
+    const readOnly = state.candidate.access === 'readOnly'
+    $('identity').textContent = state.candidate.origin + '\n저널 ID ' + state.candidate.journalId +
+      (readOnly ? '\n이 Studio에서는 기록만 열람할 수 있습니다. 작업 제출과 응답에는 Studio 업데이트가 필요합니다.' : '')
+    $('confirm').textContent = readOnly ? '읽기 전용으로 열기' : '이 저널로 연결'
   }
   $('status').textContent = state.message
 }

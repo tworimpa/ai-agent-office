@@ -58,7 +58,12 @@ def test_attached_window_does_not_apply_another_journals_requests(tmp_path):
             status, response = request(replacement, "/api/workspaces", payload, **header)
             assert status == 409 and response["error"]["code"] == "JOURNAL_MISMATCH"
         assert request(replacement, "/api/workspaces")[1]["workspaces"] == []
-        assert request(first, "/api/workspaces", body, **header)[0] == 201
+        pinned = "/api/workspaces?office_journal=" + first.journal_id
+        for payload in (body, None):
+            assert request(replacement, pinned, payload)[0] == 409
+        assert request(replacement, "/api/workspaces")[1]["workspaces"] == []
+        assert request(first, pinned + "&extra=1", body)[0] == 400
+        assert request(first, pinned, body, **header)[0] == 201
 
 
 def workers(tmp_path, monkeypatch, *, edit_gate=None):

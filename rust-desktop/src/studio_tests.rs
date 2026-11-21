@@ -100,12 +100,40 @@ fn identity_probe_requires_both_local_host_and_matching_id() {
         let result = probe(&client().unwrap(), &address, expected);
         assert_eq!(result.is_ok(), ok);
         if ok {
-            assert_eq!(result.unwrap().journal_id, ID);
+            let result = result.unwrap();
+            assert_eq!(result.connection.journal_id, ID);
+            assert_eq!(result.access, Access::ReadOnly);
         } else {
             assert_eq!(result.unwrap_err(), MISMATCH);
         }
         server.join().unwrap();
     }
+}
+
+#[test]
+fn only_explicit_guard_support_enables_writes_and_capability_changes_need_confirmation() {
+    for (flag, expected) in [
+        ("true", Access::JournalBound),
+        ("false", Access::ReadOnly),
+        ("\"true\"", Access::ReadOnly),
+    ] {
+        let identity = format!(r#"{{"journal_id":"{ID}","journal_guard":{flag}}}"#);
+        let (address, server) = listen(vec![
+            ("/api/hosts", 200, "application/json", HOSTS.into()),
+            ("/api/studio-identity", 200, "application/json", identity),
+        ]);
+        let live = probe(&client().unwrap(), &address, Some(ID)).unwrap();
+        assert_eq!(live.access, expected);
+        server.join().unwrap();
+    }
+    for previous in [None, Some(Access::ReadOnly), Some(Access::JournalBound)] {
+        assert!(Access::ReadOnly.requires_confirmation(previous, false));
+    }
+    assert!(Access::ReadOnly.requires_confirmation(Some(Access::JournalBound), true));
+    assert!(Access::JournalBound.requires_confirmation(Some(Access::ReadOnly), true));
+    assert!(Access::JournalBound.requires_confirmation(Some(Access::ReadOnly), false));
+    assert!(!Access::ReadOnly.requires_confirmation(Some(Access::ReadOnly), true));
+    assert!(!Access::JournalBound.requires_confirmation(None, false));
 }
 
 #[test]

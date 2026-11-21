@@ -96,7 +96,31 @@ fn api(client: &Client, origin: &str, path: &str, optional: bool) -> Result<Opti
         .map_err(|_| INVALID_STUDIO.into())
 }
 
-pub fn probe(client: &Client, address: &str, expected: Option<&str>) -> Result<Connection, String> {
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Access {
+    JournalBound,
+    ReadOnly,
+}
+
+impl Access {
+    pub fn requires_confirmation(self, previous: Option<Self>, connected: bool) -> bool {
+        previous.is_some_and(|mode| mode != self) || (!connected && self == Self::ReadOnly)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct VerifiedStudio {
+    #[serde(flatten)]
+    pub connection: Connection,
+    pub access: Access,
+}
+
+pub fn probe(
+    client: &Client,
+    address: &str,
+    expected: Option<&str>,
+) -> Result<VerifiedStudio, String> {
     let origin = origin(address)?;
     let hosts = api(client, &origin, "/api/hosts", false)?.ok_or(INVALID_STUDIO)?;
     if !hosts["hosts"].as_array().is_some_and(|rows| {
@@ -105,9 +129,19 @@ pub fn probe(client: &Client, address: &str, expected: Option<&str>) -> Result<C
     }) {
         return Err(INVALID_STUDIO.into());
     }
-    let identity = match api(client, &origin, "/api/studio-identity", true)? {
-        Some(value) => value,
-        None => api(client, &origin, "/api/runtime-health", true)?.ok_or(INVALID_STUDIO)?,
+    let (identity, access) = match api(client, &origin, "/api/studio-identity", true)? {
+        Some(value) => {
+            let access = if value["journal_guard"] == true {
+                Access::JournalBound
+            } else {
+                Access::ReadOnly
+            };
+            (value, access)
+        }
+        None => (
+            api(client, &origin, "/api/runtime-health", true)?.ok_or(INVALID_STUDIO)?,
+            Access::ReadOnly,
+        ),
     };
     let journal = identity["journal_id"]
         .as_str()
@@ -116,10 +150,13 @@ pub fn probe(client: &Client, address: &str, expected: Option<&str>) -> Result<C
     if expected.is_some_and(|id| journal != id) {
         return Err(MISMATCH.into());
     }
-    Ok(Connection {
-        origin,
-        journal_id: journal.to_owned(),
-        page: "/".into(),
+    Ok(VerifiedStudio {
+        access,
+        connection: Connection {
+            origin,
+            journal_id: journal.to_owned(),
+            page: "/".into(),
+        },
     })
 }
 

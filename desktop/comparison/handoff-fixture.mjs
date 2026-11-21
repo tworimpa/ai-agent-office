@@ -9,7 +9,7 @@ export async function prepare(electronExe) {
   const repo = join(root,'project')
   const bin = join(root,'bin')
   const windows = process.platform === 'win32'
-  const python = process.env.OFFICE_COMPARISON_PYTHON || process.env.OFFICE_VERIFY_PYTHON ||
+  const python = process.env.OFFICE_VERIFY_PYTHON ||
     join(dirname(electronExe),'resources','runtime',windows?'python.exe':'bin/python3')
   await mkdir(join(repo,'tests'),{recursive:true})
   await mkdir(bin)

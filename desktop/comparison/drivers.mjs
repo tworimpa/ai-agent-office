@@ -42,6 +42,7 @@ async function electronDriver(executablePath, profile) {
       page = await until(() => app.windows().find(window => match(window.url())), 'Electron Studio window')
     },
     run: (fn, ...args) => page.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')'),
+    click: selector => page.locator(selector).click(),
     async fill(selector, value) { await page.locator(selector).fill(value) },
     async compose(value) {
       const session = await page.context().newCDPSession(page)
@@ -112,6 +113,8 @@ async function rustDriver(executable, profile) {
     assert.ok(session)
     return {
       run,
+      // Attached WebView2 can translate client coordinates a second time on scaled monitors.
+      click: selector => run(s => document.querySelector(s).click(),selector),
       compose: windows ? value => compose((cmd,params) => command('POST','/ms/cdp/execute',{cmd,params}),value) : null,
       async selectWindow(match) {
         await until(async () => {
@@ -125,7 +128,11 @@ async function rustDriver(executable, profile) {
         const result = await command('POST','/element',{using:'css selector',value:selector})
         const base = '/element/' + result['element-6066-11e4-a52e-4f735466cecf']
         await command('POST',base + '/clear',{})
-        if (value) await command('POST',base + '/value',{text:value,value:Array.from(value)})
+        if (value && windows) {
+          await run(s => document.querySelector(s).focus(),selector)
+          await command('POST','/ms/cdp/execute',{cmd:'Input.insertText',params:{text:value}})
+        } else if (value) await command('POST',base + '/value',{text:value,value:Array.from(value)})
+        assert.equal(await run(s => document.querySelector(s).value,selector),value,'Text input ' + selector)
       },
       async key(value) {
         assert.ok(Object.hasOwn(keys,value))
@@ -134,7 +141,9 @@ async function rustDriver(executable, profile) {
       },
       reload: () => command('POST','/refresh',{}),
       async size(width,height=840) {
-        let outer = {width,height}
+        const scale = windows ? await run(() => devicePixelRatio) : 1
+        const outer = {width:Math.round(width * scale),height:Math.round(height * scale)}
+        let actual
         for (let attempt=0;attempt<5;attempt++) {
           if (!windows) await command('POST','/window/rect',outer)
           else {
@@ -142,19 +151,21 @@ async function rustDriver(executable, profile) {
             // for desktop DPI and non-client borders using the measured inner viewport.
             const resized = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',[
               'Add-Type -TypeDefinition \'using System; using System.Runtime.InteropServices; public class Bounds {',
+              '[DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpi);',
               '[DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h,int x,int y,int w,int t,bool repaint); }\';',
+              '[void][Bounds]::SetThreadDpiAwarenessContext([IntPtr]::new(-4));',
               '$w=(Get-Process -Id ' + application.pid + ').MainWindowHandle;',
               'if ($w -eq 0 -or ![Bounds]::MoveWindow($w, 16,16,' + outer.width + ',' + outer.height + ',$true)) { exit 1 }'
             ].join(' ')],{windowsHide:true})
             assert.equal(resized.status,0,'Failed to resize the test window')
           }
           await delay(80)
-          const actual = await run(() => ({width:innerWidth,height:innerHeight}))
+          actual = await run(() => ({width:innerWidth,height:innerHeight}))
           if (actual.width === width && actual.height === height) return
-          outer.width += width - actual.width
-          outer.height += height - actual.height
+          outer.width += Math.round((width - actual.width) * scale)
+          outer.height += Math.round((height - actual.height) * scale)
         }
-        throw Error('Unable to set the requested CSS viewport ' + width + 'x' + height)
+        throw Error('Requested viewport ' + width + 'x' + height + ', observed ' + JSON.stringify(actual))
       },
       async screenshot(path) { await writeFile(path,Buffer.from(await command('GET','/screenshot'),'base64')) },
       async close() {
@@ -187,8 +198,11 @@ export async function launch(kind, executable, profile) {
     ready,
     async activate(selector) {
       await ready(selector)
-      await driver.run(s => document.querySelector(s).focus(),selector)
-      await driver.key('Enter')
+      if (process.platform === 'win32') await driver.click(selector)
+      else {
+        await driver.run(s => document.querySelector(s).focus(),selector)
+        await driver.key('Enter')
+      }
     },
     async check(selector) {
       await ready(selector)

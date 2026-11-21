@@ -14,7 +14,7 @@ use std::{
     thread,
     time::Duration,
 };
-use studio::Connection;
+use studio::{Access, Connection, VerifiedStudio};
 use tauri::{
     menu::{Menu, SubmenuBuilder},
     webview::{NewWindowResponse, PermissionResponse},
@@ -27,7 +27,7 @@ const TITLE: &str = "AI Agent Office (Rust 비교판)";
 #[derive(Default, Clone, PartialEq, Serialize)]
 struct Screen {
     saved: Option<Connection>,
-    candidate: Option<Connection>,
+    candidate: Option<VerifiedStudio>,
     message: String,
     unreadable: bool,
 }
@@ -38,6 +38,7 @@ struct Session {
     client: Client,
     screen: Screen,
     connected: bool,
+    last_access: Option<Access>,
     paused: bool,
     // Navigation callbacks run on the native message loop and must not wait
     // for a Session lock held by a thread dispatching a WebView call.
@@ -89,7 +90,7 @@ impl Session {
             .screen
             .saved
             .as_ref()
-            .is_some_and(|s| s.journal_id != candidate.journal_id);
+            .is_some_and(|s| s.journal_id != candidate.connection.journal_id);
         self.screen.message = if replacing {
             "저장된 작업실과 저널이 다릅니다. 아래 저널로 등록을 변경할지 확인하세요."
         } else {
@@ -106,24 +107,47 @@ impl Session {
             .candidate
             .take()
             .ok_or("먼저 주소를 확인하세요.")?;
-        studio::probe(&self.client, &candidate.origin, Some(&candidate.journal_id))?;
+        let live = studio::probe(
+            &self.client,
+            &candidate.connection.origin,
+            Some(&candidate.connection.journal_id),
+        )?;
+        if candidate.access != live.access {
+            self.screen.candidate = Some(live);
+            return Err(
+                "Studio의 저널 보호 기능이 바뀌었습니다. 연결 방식을 다시 확인하세요.".into(),
+            );
+        }
         if let Some(saved) = &self.screen.saved {
-            if saved.journal_id == candidate.journal_id {
-                candidate.page.clone_from(&saved.page);
+            if saved.journal_id == candidate.connection.journal_id {
+                candidate.connection.page.clone_from(&saved.page);
             }
         }
-        studio::save(&self.directory, &candidate)?;
-        self.screen.saved = Some(candidate.clone());
-        self.open(app, &candidate)
+        studio::save(&self.directory, &candidate.connection)?;
+        self.screen.saved = Some(candidate.connection.clone());
+        self.open(app, &candidate.connection, candidate.access)
     }
 
-    fn open(&mut self, app: &AppHandle, connection: &Connection) -> Result<(), String> {
+    fn open(
+        &mut self,
+        app: &AppHandle,
+        connection: &Connection,
+        access: Access,
+    ) -> Result<(), String> {
         let window = app
             .get_webview_window("main")
             .ok_or("작업실 창을 찾을 수 없습니다.")?;
         let mut url = connection.url()?;
         let fragment = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("office-desktop-journal", &connection.journal_id)
+            .append_pair(
+                "access",
+                if access == Access::JournalBound {
+                    "bound"
+                } else {
+                    "read-only"
+                },
+            )
             .append_pair("anchor", url.fragment().unwrap_or(""))
             .finish();
         url.set_fragment(Some(&fragment));
@@ -133,6 +157,12 @@ impl Session {
             return Err(format!("Studio 화면을 열 수 없습니다. {error}"));
         }
         self.connected = true;
+        self.last_access = Some(access);
+        let _ = window.set_title(if access == Access::ReadOnly {
+            "AI Agent Office (Rust 비교판) · 읽기 전용"
+        } else {
+            TITLE
+        });
         self.paused = false;
         self.screen.message.clear();
         Ok(())
@@ -170,6 +200,7 @@ impl Session {
         self.connected = false;
         *self.allowed_origin.write().unwrap() = None;
         if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_title(TITLE);
             let setup_url = if cfg!(target_os = "windows") {
                 "http://tauri.localhost/index.html"
             } else {
@@ -189,16 +220,43 @@ impl Session {
         let Some(saved) = self.screen.saved.clone() else {
             return Ok(());
         };
-        if let Err(error) = studio::probe(&self.client, &saved.origin, Some(&saved.journal_id)) {
-            if self.connected {
-                self.disconnect(app);
+        let live = match studio::probe(&self.client, &saved.origin, Some(&saved.journal_id)) {
+            Ok(live) => live,
+            Err(error) => {
+                if self.connected {
+                    let remembered = self.remember(app);
+                    self.disconnect(app);
+                    remembered?;
+                }
+                return Err(format!("저장된 작업실 {}\n{error}", saved.origin));
             }
-            return Err(format!("저장된 작업실 {}\n{error}", saved.origin));
+        };
+        let changed = self
+            .last_access
+            .is_some_and(|previous| previous != live.access);
+        if live
+            .access
+            .requires_confirmation(self.last_access, self.connected)
+        {
+            if self.connected {
+                let remembered = self.remember(app);
+                self.disconnect(app);
+                remembered?;
+            }
+            self.paused = true;
+            self.screen.candidate = Some(live);
+            self.screen.message = if changed {
+                "Studio의 저널 보호 기능이 바뀌었습니다. 연결 방식을 확인하세요."
+            } else {
+                "저장된 작업실의 읽기 전용 연결을 확인하세요."
+            }
+            .into();
+            return Ok(());
         }
         if self.connected {
             self.remember(app)
         } else {
-            self.open(app, &saved)
+            self.open(app, &saved, live.access)
         }
     }
 }
@@ -303,6 +361,7 @@ fn main() {
                 _profile_lock: profile_lock,
                 client: studio::client()?,
                 connected: false,
+                last_access: None,
                 paused: false,
                 allowed_origin: allowed_origin.clone(),
                 screen: Screen::default(),

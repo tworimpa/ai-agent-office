@@ -31,8 +31,8 @@ const serve = [
   '    finally: server.shutdown(); thread.join()'
 ].join('\n')
 let active, page, failure
-async function start(journal, port = 0) {
-  const child = spawn(python,['-I','-B','-c',serve,join(root,journal + '.sqlite3'),String(port)],
+async function start(journal, port = 0, interpreter = python) {
+  const child = spawn(interpreter,['-I','-B','-c',serve,join(root,journal + '.sqlite3'),String(port)],
     {stdio:['pipe','pipe','inherit'],windowsHide:true})
   const exit = once(child, 'exit')
   active = {child,exit}
@@ -75,7 +75,7 @@ async function room(studio) {
   assert.equal(journal,studio.id)
 }
 try {
-  const first = await start('original')
+  const first = await start('original', previous ? previous.port : 0)
   if (mode === 'connect') {
     const path = join(root,'workspace')
     await mkdir(path)
@@ -99,21 +99,44 @@ try {
     await until(() => page.run(() => document.querySelector('#status').textContent.includes('다른 작업실')),'replacement notice')
     await page.screenshot(join(evidence,'changed-journal.png'))
     await choose(other)
+    await stop()
+    await setupWindow()
+    if (process.env.OFFICE_LEGACY_STUDIO_PYTHON) {
+      const legacy = await start('original',first.port,process.env.OFFICE_LEGACY_STUDIO_PYTHON)
+      assert.equal(legacy.id,first.id)
+      await page.run(origin => {
+        document.querySelector('#address').value = origin
+        document.querySelector('#setup').requestSubmit(document.querySelector('#connect'))
+      },legacy.origin)
+      await page.ready('#confirm')
+      assert.match(await page.run(() => document.querySelector('#confirm').innerText),/읽기 전용/)
+      await page.activate('#confirm')
+      await room(legacy)
+      const blocked = await page.run(async () => {
+        try { await fetch('/api/workspaces',{method:'POST'}); return false }
+        catch (error) { return String(error).includes('읽기 전용') }
+      })
+      assert.ok(blocked,'Legacy Studio should be readable and reject app mutations before sending')
+      await writeFile(join(evidence,'legacy.json'),JSON.stringify({journal:legacy.id,readOnly:true},null,2))
+      await stop()
+      await setupWindow()
+    }
+    await start('original',first.port)
+    await choose(first)
     await close()
-    await writeFile(manifest,JSON.stringify({root,original:first.id,replacement:other.id,workspace},null,2))
+    page = await launch('electron',electron,join(root,'electron-profile'))
+    await page.activate('#connection-options > summary')
+    await page.fill('#address',first.origin)
+    await page.activate('#connect button')
+    await room(first)
+    await close()
+    await writeFile(manifest,JSON.stringify({root,port:first.port,original:first.id,replacement:other.id,workspace},null,2))
   } else {
     assert.equal(first.id,previous.original)
     const kind = mode === 'survivor' ? 'electron' : 'rust'
-    page = await launch(kind, kind === 'rust' ? rustPath : electron, join(root,kind+'-survivor-profile'))
-    if (kind === 'electron') {
-      await page.activate('#connection-options > summary')
-      await page.fill('#address',first.origin)
-      await page.activate('#connect button')
-      await room(first)
-    } else {
-      await setupWindow()
-      await choose(first)
-    }
+    // Reuse both the listening port and the profile that was attached before uninstall.
+    page = await launch(kind, kind === 'rust' ? rustPath : electron, join(root,kind+'-profile'))
+    await room(first)
     await page.ready('#workspaces a[href*="' + previous.workspace + '"]')
     await page.screenshot(join(evidence,kind+'-after-remove.png'))
     await writeFile(join(evidence,kind+'-survivor.json'),JSON.stringify({original:first.id,workspace:previous.workspace},null,2))

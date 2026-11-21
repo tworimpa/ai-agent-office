@@ -12,7 +12,9 @@ Rust 비교판에는 Python 실행기나 제공자 계정 설정이 필요하지
 
 ## 구현 및 빌드
 
-`rust-desktop/`의 Tauri 2 창은 설정 페이지에서만 네이티브 연결 명령을 사용한다. 선택한 루프백 Studio의 `/api/hosts`와 `/api/studio-identity`로 대상을 확인한다. Studio 화면에서 발생한 API 요청에는 기대하는 저널 ID를 붙인다. 이 버전의 Studio는 다른 ID가 지정된 요청을 처리하기 전에 HTTP 409를 돌려준다. 이전 Studio에서 연결 단계의 저널 확인은 가능하지만 요청마다 검사하는 기능은 서버 업데이트가 필요하다.
+`rust-desktop/`의 Tauri 2 창은 설정 페이지에서만 네이티브 연결 명령을 사용한다. 선택한 루프백 Studio의 `/api/hosts`와 `/api/studio-identity`로 대상을 확인한다. 이 버전의 Studio는 `journal_guard`를 알린다. 비교판은 API 주소와 헤더에 확인한 저널 ID를 붙이고, 서버는 다른 ID가 지정된 요청에 HTTP 409를 돌려준다. 포트를 구버전 Studio가 차지해도 구버전 서버가 이 API 주소를 거절한다.
+
+저널 ID 확인만 지원하는 이전 Studio는 **읽기 전용**으로 표시한다. 사용자가 확인하면 작업 이력을 볼 수 있다. Rust판에서 의뢰·추가 지시·답변까지 하려면 저널 확인 기능이 포함된 Studio를 실행해 두 앱을 그 주소에 연결한다. 비교판 설치가 실행 중인 서비스나 기존 Studio를 업데이트하지 않는다.
 
 비교판의 앱 식별자는 `dev.aiagentoffice.rust`, 실행 파일과 Debian 패키지명은 `ai-agent-office-rust`다. 설정은 별도의 사용자 디렉터리에 저장된다. `--profile-dir <절대 경로>`로 검증용 프로필을 지정할 수 있다. Windows에서는 시스템 WebView2, Linux에서는 WebKitGTK 4.1을 사용한다.
 
@@ -27,4 +29,4 @@ npx --yes --package=@tauri-apps/cli@2.12.6 tauri build --bundles nsis -- --locke
 npx --yes --package=@tauri-apps/cli@2.12.6 tauri build --bundles deb -- --locked
 ```
 
-기본 산출물 경로는 `rust-desktop/target/release/bundle/`이다. CI에서는 Electron 설치 파일을 같은 실행의 Rust 패키지 검증에 전달한다. 두 앱을 설치한 뒤 연결·저널 교체를 검사하고, 비교판을 제거한 다음 Electron을 열어 같은 저널과 작업공간을 다시 확인한다.
+기본 산출물 경로는 `rust-desktop/target/release/bundle/`이다. CI에서는 Electron 설치 파일을 같은 실행의 Rust 패키지 검증에 전달한다. 두 앱에서 연결을 저장하고, 같은 포트의 저널 교체를 시험한다. 이후 한쪽 앱을 제거한 다음 다른 앱의 저장된 프로필이 원래 저널·작업공간을 복원하는지 양방향으로 확인한다. 측정 환경과 재현 명령은 [비교 벤치마크 안내](../desktop/comparison/BENCHMARK.md)를 참조한다.
