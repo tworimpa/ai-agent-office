@@ -7,10 +7,12 @@ import {setTimeout as delay} from 'node:timers/promises'
 import {fileURLToPath} from 'node:url'
 import {_electron as electron} from 'playwright'
 import {LocalStudio} from './studio.mjs'
+import {closeDesktop, finishVerification} from './verify-lifecycle.mjs'
 
 const [target, output, mode] = process.argv.slice(2)
-if (!target || !output || !['before', 'after', 'privilege-gate'].includes(mode))
-  throw Error('Usage: node verify-goal.mjs INSTALLED_EXECUTABLE EVIDENCE_DIRECTORY before|after|privilege-gate')
+const githubMode = ['github', 'github-gate'].includes(mode)
+if (!target || !output || !['before', 'after', 'privilege-gate', 'github', 'github-gate'].includes(mode))
+  throw Error('Usage: node verify-goal.mjs INSTALLED_EXECUTABLE EVIDENCE_DIRECTORY before|after|privilege-gate|github|github-gate')
 const executable = await realpath(target)
 const started = Date.now()
 const windows = process.platform === 'win32'
@@ -42,7 +44,8 @@ await writeFile(
 function git(...args) {
   return execFileSync('git', args, {cwd: repo, encoding: 'utf8'})
 }
-git('init', '-q')
+git('init', '-q', '-b', 'main')
+if (githubMode) await writeFile(join(repo, 'github-journey.txt'), 'GitHub Issue integration fixture\n')
 git('add', '.')
 git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'settings fixture')
 const source = fileURLToPath(new URL('fixtures/goal_worker.py', import.meta.url))
@@ -55,7 +58,14 @@ for (const engine of ['codex', 'agy']) {
 }
 const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH'
 const env = {...process.env, [pathKey]: bin + delimiter + process.env[pathKey]}
-let app, page, run, origin
+let provider
+if (githubMode) {
+  const {githubFixture} = await import('./fixtures/github-provider.mjs')
+  provider = await githubFixture(root, python, repo, request)
+  env.AGENT_OFFICE_GITHUB_CONFIG = provider.config
+  git('remote', 'add', 'origin', provider.origin + '/fixture/settings.git')
+}
+let app, child, page, run, origin, failure
 async function launch() {
   app = await electron.launch({
     executablePath: executable,
@@ -64,23 +74,15 @@ async function launch() {
     chromiumSandbox: true,
     timeout: 30000
   })
+  child = app.process()
   page = await app.firstWindow()
   page.setDefaultTimeout(25000)
   await page.setViewportSize({width: 1280, height: 900})
 }
 async function close() {
-  const child = app.process()
-  await Promise.race([
-    app.close(),
-    (async () => {
-      for (let i = 0; i < 200; i++) {
-        if (child.exitCode !== null || child.signalCode !== null) return
-        await delay(75)
-      }
-      throw Error('Fixture desktop did not close')
-    })()
-  ])
+  const launched = app
   app = null
+  await closeDesktop(child, () => launched.close())
 }
 async function screenshot(name) {
   await page.screenshot({path: join(evidence, name + '.png')})
@@ -96,6 +98,148 @@ async function manualFailure(cwd, args, test, file, detail) {
   assert.ok(result.stdout.includes(test), result.stdout)
   await writeFile(join(evidence, file), result.stdout)
   record('verification', detail)
+}
+async function eventually(read, reason, seconds = 150) {
+  for (const deadline = Date.now() + seconds * 1000; Date.now() < deadline; ) {
+    const result = await read()
+    if (result) return result
+    await delay(400)
+  }
+  throw Error(reason + (provider?.errors.length ? ' · ' + provider.errors.join(', ') : ''))
+}
+async function githubJourney() {
+  await page.locator('#settings').click()
+  await page.locator('#github-settings > summary').click()
+  await page.locator('#github-repo').selectOption('71')
+  assert.equal(await page.locator('#github-branch').inputValue(), 'main')
+  assert.equal(await page.locator('#github-draft').isChecked(), false)
+  await page.locator('#github-test').click()
+  await page.locator('#github-diagnostic').filter({hasText: '연결 확인됨'}).waitFor()
+  assert.ok(!provider.calls.includes('POST /repos/fixture/settings/labels'), 'Testing a connection must not claim a repository')
+  await page.locator('#github-settings > summary').evaluate(el => el.scrollIntoView({block: 'start'}))
+  await screenshot('01a-github-diagnostic')
+  await page.locator('#github-actors').fill('42')
+  await page.locator('#github-answers').fill('42')
+  await page.locator('#github-enabled').check()
+  await page.locator('#github-save').click()
+  await page.locator('#github-settings-note').filter({hasText: '저장했습니다'}).waitFor()
+  assert.equal(provider.calls.filter(c => c === 'POST /repos/fixture/settings/labels').length, 1, 'Explicit intake opt-in registers one ownership label')
+  await screenshot('01-github-connection')
+  await page.getByRole('button', {name: '설정 닫기'}).click()
+  const ws = new URL(page.url()).searchParams.get('workspace'), path = '/api/rooms/' + ws + '/github'
+  const sync = async () => { await page.locator('#github-sync').click() }
+  const state = () => json(path)
+  const issue = async () => (await state()).issues.find(row => row.issue_id === 107)
+  // Give the first empty scan a known completion before exposing the labelled issue.
+  await sync()
+  await eventually(async () => (await state()).status.last_sync, 'First manual synchronisation did not complete')
+  const original = await studio.running()
+  await close()
+  await studio.stop(original.bootId)
+  assert.equal(await studio.running(), null, 'The desktop host must be stopped before the issue is labelled')
+  record('studio_stopped', {boot_id: original.bootId, journal_id: original.journalId})
+  provider.feed()
+  await launch()
+  const working = await studio.running()
+  assert.notEqual(working.bootId, original.bootId)
+  origin = working.origin
+  await page.locator('#room-title').filter({hasText: '설정 복원 검증'}).waitFor()
+  record('studio_restarted', {boot_id: working.bootId, journal_id: working.journalId})
+  await close()
+  const linked = await eventually(async () => { const row = await issue(); return row?.run_id && row }, 'Background polling did not import the issue with the desktop closed')
+  run = {id: linked.run_id}
+  record('poll', 'Studio 종료 중 생긴 라벨과 닫힌 이슈를 재기동 후 자동 대조하여 열린 이슈 하나를 목표로 접수')
+  await launch()
+  origin = (await studio.running()).origin
+  assert.equal((await studio.running()).bootId, working.bootId)
+  const card = page.locator('[data-issue="107"]')
+  await card.getByRole('button', {name: '연결된 목표 열기'}).click()
+  await page.locator('[data-goal-section="github"]').getByText(/목표 ID/).waitFor()
+  await page.locator('.seat[data-person=developer] .seat-task').filter({hasText: /설정/}).waitFor()
+  await screenshot('02-github-issue-goal')
+  await sync()
+  if (mode === 'github') {
+    const question = await eventually(async () => {
+      const inbox = await json('/api/runs/' + run.id + '/inbox')
+      return inbox.requests.find(row => row.kind === 'question' && row.status === 'pending')
+    }, 'Technical question did not appear')
+    await sync()
+    await eventually(() => provider.comments.some(c => c.user.type === 'Bot' && c.body.includes(question.id)), 'GitHub status did not reference the pending question')
+    provider.reply('/office answer ' + linked.goal_id + ' ' + question.id + ' 1')
+    await sync()
+    await eventually(async () => (await json('/api/runs/' + run.id + '/inbox')).requests.find(q => q.id === question.id)?.delivered_at,
+      'The authorized GitHub reply did not reach the worker')
+    record('answer', '이슈 댓글의 기술 답변이 해당 작업에 전달됨')
+  }
+  const goal = await eventually(async () => {
+    const {goal} = await json('/api/runs/' + run.id + '/goal')
+    return goal.recovery?.disposition === 'closed' && goal
+  }, 'GitHub-linked run did not finish', 180)
+  if (mode === 'github-gate') {
+    assert.equal(goal.checks[0]?.status, 'unverified')
+    assert.match(goal.checks[0]?.summary, /일반 사용자/)
+    assert.equal(goal.candidates.length, 0)
+  } else {
+    assert.equal(goal.state, 'READY_FOR_HUMAN_REVIEW', goal.stop_reason)
+    assert.equal(goal.best_attempt, 2)
+    assert.ok(goal.checks.some(c => c.attempt === 2 && c.stage === 'full' && c.status === 'passed'))
+  }
+  await sync()
+  await eventually(async () => {
+    const row = await issue()
+    return row?.comment_id && provider.comments.some(c => c.id === row.comment_id && c.user.type === 'Bot')
+  }, 'Issue status was not published')
+  await close()
+  await studio.stop(working.bootId)
+  await launch()
+  const recovered = await studio.running()
+  assert.notEqual(recovered.bootId, working.bootId)
+  record('journal_restored', {boot_id: recovered.bootId, journal_id: recovered.journalId})
+  origin = recovered.origin
+  await page.locator('[data-issue="107"] button').filter({hasText: '연결된 목표 열기'}).waitFor()
+  const restoredCard = page.locator('[data-issue="107"]')
+  await restoredCard.getByRole('button', {name: '이슈 기록 및 최초 요청'}).click()
+  await restoredCard.getByText('최초 요청', {exact: true}).waitFor()
+  await restoredCard.locator('pre').filter({hasText: request}).waitFor()
+  let restored = await state()
+  assert.equal(restored.issues.find(row => row.issue_id === 107)?.run_id, run.id)
+  assert.equal(restored.issues.find(row => row.issue_id === 108)?.run_id, null, 'An already closed issue cannot start a goal')
+  const snapshot = await json('/api/rooms/' + ws)
+  assert.equal(snapshot.runs.length, 1, 'Polling, manual requests and restart must converge on one run')
+  assert.equal(provider.calls.some(call => call.startsWith('POST ') && call.endsWith('/pulls')), false)
+  assert.equal(provider.comments.filter(c => c.user.type === 'Bot').length, 1, 'One maintained issue comment')
+  assert.equal(provider.calls.filter(call => call === 'POST /repos/fixture/settings/issues/7/comments').length, 1, 'Reconcile a lost creation receipt without posting twice')
+  await restoredCard.evaluate(el => el.scrollIntoView({block: 'center'}))
+  await restoredCard.locator('.github-owner .portrait').waitFor()
+  await screenshot('03-github-restored')
+  if (mode === 'github') {
+    await page.locator('#settings').click()
+    await page.locator('#github-settings > summary').click()
+    await page.locator('#github-repo option[value="71"]').waitFor({state: 'attached'})
+    await page.locator('#github-draft').check()
+    await page.locator('#github-save').click()
+    await page.locator('#github-settings-note').filter({hasText: '저장했습니다'}).waitFor()
+    await page.getByRole('button', {name: '설정 닫기'}).click()
+    await sync()
+    const published = await eventually(async () => {
+      const row = await issue()
+      return row?.pr_number && row
+    }, 'Opt-in did not publish the verified candidate draft', 60)
+    const pr = provider.draft()
+    assert.equal(pr.draft, true)
+    assert.equal(published.candidate_sha, pr.head.sha)
+    assert.equal(pr.base.sha, git('rev-parse', 'HEAD').trim())
+    assert.equal(provider.calls.filter(c => c === 'POST /repos/fixture/settings/pulls').length, 1)
+    await restoredCard.getByText('PR #9 주소 보기', {exact: true}).click()
+    assert.equal(await restoredCard.getByLabel('PR #9 주소').inputValue(), published.pr_url)
+    await screenshot('04-verified-draft')
+    record('draft', '옵트인 이후 검증된 소스로 초안 PR 생성 · ' + pr.head.sha)
+    restored = await state()
+  }
+  assert.deepEqual(provider.errors, [])
+  await writeFile(join(evidence, 'goal.json'), JSON.stringify(goal, null, 2))
+  await writeFile(join(evidence, 'github.json'), JSON.stringify({restored, calls: provider.calls, comments: provider.comments}, null, 2))
+  record('restore', '호스트 재시작 뒤 목표 ID와 이슈 연결 및 상태 댓글 한 개 확인')
 }
 async function decide() {
   await page.locator('#summary-action').filter({hasText: '계획 확인하기'}).click()
@@ -156,7 +300,7 @@ async function verifyRestoredReport(captureOverview = false) {
   assert.equal(new URL(page.url()).searchParams.get('run'), run.id)
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
 }
-try {
+async function verifyJourney() {
   await launch()
   const opened = app.waitForEvent('window')
   await page.getByRole('button', {name: '내 작업실 시작'}).click()
@@ -193,6 +337,10 @@ try {
     await page.locator('#goal-policy-note').filter({hasText: '저장했습니다'}).waitFor()
     record('workspace_setup', '프로젝트 기본값으로 관련 테스트를 한 번 지정')
     await page.getByRole('button', {name: '설정 닫기'}).click()
+  }
+  if (githubMode) {
+    await githubJourney()
+    return
   }
   await page.locator('.seat[data-person="coordinator"]').click()
   await page.locator('#message').fill(request)
@@ -319,13 +467,17 @@ try {
     assert.equal(adopted.deployment_status, 'not_recorded')
     record('adopt', '검토한 2차 후보의 채택을 기록')
   }
+}
+try {
+  await verifyJourney()
   await writeFile(
     join(evidence, 'result.json'),
     JSON.stringify({platform: process.platform, executable, root, mode, run_id: run.id, request, events}, null, 2)
   )
   console.log('Installed journey verified', evidence)
 } catch (error) {
-  console.error('Fixture evidence:', evidence, 'working directory:', root)
+  failure = error
+  console.error('Fixture evidence:', evidence, 'working directory:', root, error)
   if (origin && run) {
     try {
       const {run: detail} = await json('/api/runs/' + run.id)
@@ -354,10 +506,10 @@ try {
       console.error('Could not read fixture diagnostic:', readError.message)
     }
   }
-  if (page && !page.isClosed()) await screenshot('error').catch(() => {})
-  throw error
+  if (page && !page.isClosed()) await page.screenshot({path: join(evidence, 'error.png'), timeout: 3000}).catch(() => {})
 } finally {
-  if (app) await close()
-  const runtime = await studio.running()
-  if (runtime) await studio.stop(runtime.bootId)
+  await finishVerification(failure, () => app && close(), async () => {
+    const runtime = await studio.running()
+    if (runtime) await studio.stop(runtime.bootId)
+  }, () => provider?.close())
 }

@@ -25,6 +25,8 @@ let setupWindow, officeWindow, studio, profilePath, profile, selected, startupEr
 let confirmInProgress = false
 let profileUnreadable = false
 let pickerOpen = false
+let quitting = false
+app.on('before-quit', () => { quitting = true })
 
 function bundledPython() {
   const win = process.platform === 'win32'
@@ -109,6 +111,7 @@ function secureContents(window, allowed) {
 }
 
 function showSetup() {
+  if (quitting) return
   if (setupWindow) {
     setupWindow.show()
     setupWindow.focus()
@@ -127,7 +130,7 @@ async function showOffice() {
   if (!selected) throw new Error('먼저 작업실에 연결하세요.')
   const connection = selected
   await checkStudio(connection.origin, connection.journalId)
-  if (selected !== connection) return
+  if (quitting || selected !== connection) return
 
   if (officeWindow && officeWindow.officeMode === connection.mode && officeWindow.officeBoot === connection.bootId &&
       connection.journalId && officeWindow.officeJournal === connection.journalId &&
@@ -164,6 +167,9 @@ async function showOffice() {
     }
   }
   secureContents(window, allowed)
+  // Chromium can reject loadURL before Electron finishes destroying a closing window.
+  let closing = false
+  window.once('close', () => { closing = true })
   window.webContents.on('did-navigate', remember)
   window.webContents.on('did-navigate-in-page', (event, url, isMainFrame) => {
     if (isMainFrame) remember(event, url)
@@ -173,11 +179,13 @@ async function showOffice() {
   try {
     await window.loadURL(connection.origin + page)
   } catch {
+    if (closing || quitting || window.isDestroyed()) return
     showSetup()
     if (!window.isDestroyed()) window.close()
     throw new Error('작업실 화면을 열 수 없습니다. Studio 연결을 다시 확인하세요.')
   }
-  if (!window.isDestroyed()) window.show()
+  if (closing || quitting || window.isDestroyed()) return
+  window.show()
   setupWindow?.close()
 }
 
@@ -326,6 +334,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => { (officeWindow || setupWindow)?.focus() })
   app.on('window-all-closed', () => app.quit())
   app.whenReady().then(initialize).catch(error => {
+    if (quitting) return
     dialog.showErrorBox('AI Agent Office', error.message)
     app.quit()
   })

@@ -52,7 +52,7 @@ const active = new Set(['QUEUED', 'RUNNING', 'WAITING_USER', 'TESTING', 'REVIEWI
 const canAdoptCandidate = (candidate) =>
   candidate?.eligible === true && candidate.status === 'passed' && candidate.review_status === 'approved';
 
-export function mountGoals({win, get, make, api, refresh, onPolicySaved, context, openInbox, openMeeting}) {
+export function mountGoals({win, get, make, api, refresh, onPolicySaved, context, openInbox, openMeeting, openRun}) {
   let latest = null,
     counter = 0,
     policyRead = 0,
@@ -224,6 +224,7 @@ export function mountGoals({win, get, make, api, refresh, onPolicySaved, context
       elapsed(goal.waiting_seconds);
     const key = JSON.stringify([
       goal.run_id,
+      goal.external,
       goal.state,
       goal.adopted_attempt,
       goal.best_attempt,
@@ -250,6 +251,20 @@ export function mountGoals({win, get, make, api, refresh, onPolicySaved, context
     const root = get('goal-record');
     const opened = new Set([...root.querySelectorAll('details[open]')].map((node) => node.dataset.key));
     root.replaceChildren();
+    if (goal.external) {
+      const source = section('GitHub 이슈 #' + goal.external.number, 'github');
+      source.append(make('p', goal.external.url), make('p', '목표 ID · ' + goal.external.goal_id));
+      if (goal.external.head_sha) source.append(make('p', '접수한 커밋 · ' + goal.external.head_sha));
+      if (goal.external.intake?.links?.length) {
+        source.append(make('strong', '이슈에 첨부된 링크'));
+        lines(source, goal.external.intake.links);
+      }
+      for (const item of goal.external.linked_runs ?? []) {
+        if (item.id === goal.run_id) source.append(make('p', '현재 실행 · ' + item.id));
+        else if (/^[a-f0-9]{32}$/.test(item.id)) source.append(button('연결된 실행 · ' + item.id, () => openRun(item.id)));
+      }
+      root.append(source);
+    }
     const brief = fold('원래 요청과 완료 기준');
     brief.append(make('p', goal.request), make('p', '기준 커밋 ' + (goal.base_commit || '미확인')));
     lines(brief, [

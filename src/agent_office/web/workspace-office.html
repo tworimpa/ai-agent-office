@@ -89,6 +89,17 @@
           <div id="goal-record"></div>
           <p id="goal-note" role="status"></p>
         </section>
+        <section id="github-inbox" class="goal-report" aria-labelledby="github-heading" hidden>
+          <h2 id="github-heading">GitHub 이슈</h2>
+          <p id="github-status"></p>
+          <button id="github-sync" type="button" class="secondary">지금 가져오기</button>
+          <p id="github-action-note" role="status"></p>
+          <div id="github-issues"></div>
+          <nav id="github-pages" aria-label="GitHub 이슈 목록 페이지" hidden>
+            <button id="github-prev" type="button" class="secondary">이전 이슈 목록</button>
+            <button id="github-next" type="button" class="secondary">다음 이슈 목록</button>
+          </nav>
+        </section>
         <div class="room-scene" aria-label="작업실에 있는 에이전트">
           <div class="scene-seats">
             <button type="button" class="seat" data-person="coordinator" aria-haspopup="dialog">
@@ -268,6 +279,41 @@
       <p id="settings-note" class="form-note" role="status"></p>
       <button type="submit" id="save-settings" class="primary">설정 저장</button>
     </form>
+    <details id="github-settings" hidden>
+      <summary id="github-settings-title">GitHub 이슈 연결</summary>
+      <form id="github-form" method="post" class="settings-form" aria-labelledby="github-settings-title">
+        <p id="github-host-note" class="field-help"></p>
+        <label for="github-connection">호스트에 등록한 GitHub 연결</label>
+        <select id="github-connection" name="connection_id" required></select>
+        <label for="github-repo">저장소</label>
+        <select id="github-repo" name="repository_id" required></select>
+        <label for="github-folder">실행할 작업 폴더</label>
+        <select id="github-folder" name="folder_index" required></select>
+        <label for="github-branch">기준 브랜치</label>
+        <input id="github-branch" name="branch" required spellcheck="false" autocapitalize="none">
+        <button id="github-test" type="button" class="secondary">연결 테스트</button>
+        <p id="github-diagnostic" role="status"></p>
+        <label for="github-label">목표로 접수할 이슈 라벨</label>
+        <input id="github-label" name="label" required>
+        <label for="github-actors">접수 라벨을 붙일 수 있는 사용자 ID</label>
+        <input id="github-actors" name="allowed_actors" aria-describedby="github-id-help" spellcheck="false">
+        <p id="github-id-help" class="field-help">GitHub 숫자 사용자 ID를 쉼표로 구분하세요.</p>
+        <label for="github-answers">기술 질문에 답할 수 있는 사용자 ID</label>
+        <input id="github-answers" name="answer_actors" aria-describedby="github-id-help" spellcheck="false">
+        <label for="github-products">제품 결정과 미분류 질문에 답할 수 있는 사용자 ID</label>
+        <input id="github-products" name="product_actors" aria-describedby="github-id-help" spellcheck="false">
+        <p class="field-help">도구 권한 요청은 작업실 요청함에서만 처리합니다.</p>
+        <label class="checkbox"><input id="github-enabled" name="enabled" aria-describedby="github-owner-help" type="checkbox"> 라벨 이슈를 작업 목표로 자동 접수</label>
+        <p id="github-owner-help" class="field-help">자동 접수를 켜면 저장소에 <code>office:sync-owner</code> 라벨을 등록해 이 Studio가 작업을 담당하도록 지정합니다.</p>
+        <label class="checkbox"><input id="github-draft" name="draft_pr" type="checkbox"> 검증된 후보로 초안 PR 만들기</label>
+        <label for="github-checks">확인할 CI 검사 이름 (한 줄에 하나씩)</label>
+        <textarea id="github-checks" name="ci_checks" rows="2" spellcheck="false"></textarea>
+        <label for="github-retries">CI 실패 후 재시도 한도</label>
+        <input id="github-retries" name="ci_retries" type="number" min="0" max="3" step="1" required>
+        <button id="github-save" type="submit" class="primary">GitHub 연결 저장</button>
+      </form>
+      <p id="github-settings-note" class="form-note" role="status"></p>
+    </details>
     <details id="goal-policy" hidden>
       <summary>밤샘 목표 검증 설정</summary>
       <form method="post" id="goal-policy-form" class="settings-form">

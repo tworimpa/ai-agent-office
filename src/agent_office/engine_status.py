@@ -1,5 +1,6 @@
 """Fixed metadata probes only. Never inspect credentials or call a model."""
 from datetime import datetime, timezone
+import os
 import re
 import shutil  # Also used by executable resolution.
 import subprocess
@@ -21,11 +22,12 @@ FLAGS = {
 
 
 def _probe(argv, timeout):
+    from .github_connection import worker_env
     try:
         # Help and version should not inherit interactive input or project configuration.
         with tempfile.TemporaryDirectory(prefix="office-metadata-") as cwd:
             with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-                result = subprocess.run(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=stdout,
+                result = subprocess.run(argv, cwd=cwd, env=worker_env(os.environ), stdin=subprocess.DEVNULL, stdout=stdout,
                                         stderr=stderr, timeout=timeout, check=False)
                 for name, stream in (("stdout", stdout), ("stderr", stderr)):
                     stream.seek(0)

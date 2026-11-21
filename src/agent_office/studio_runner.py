@@ -214,7 +214,7 @@ class LocalRunner:
     def start(self, run_id: str, workspace_id: str, repo: Path, folders: list[str],
               task: str, allow_edits: bool, *, request_digest=None, developer_engine=DEFAULT_DEVELOPER,
               reviewer_engine=DEFAULT_REVIEWER, use_inbox=False, delegation=None, role_skills=None,
-              indices=None, subtasks=None, room_assignment=None, room_revision=None, room_choices=None):
+              indices=None, subtasks=None, room_assignment=None, room_revision=None, room_choices=None, external_origin=None):
         validate_id(run_id)
         team_runs.validate_task(task)
         if type(allow_edits) is not bool or not folders or not all(isinstance(f, str) for f in folders):
@@ -298,6 +298,9 @@ class LocalRunner:
                             if "goal_policy" in room_assignment:
                                 from .overnight_goals import register
                                 register(store.connection, run_id, workspace_id, task, room_revision, folders, room_assignment)
+                                if external_origin is not None:
+                                    from .github_office import register as register_origin
+                                    register_origin(store.connection, run_id, external_origin)
                             register_choices(store.connection, run_id, room_revision, room_choices)
                             if room_assignment.get("meeting"):
                                 meeting_store.register(store.connection, run_id, review_plan=room_assignment["review_plan"])
@@ -311,10 +314,11 @@ class LocalRunner:
             return self._detail(store, run_id)
 
     def _launch(self, store, run_id, prompt):
+        from .github_connection import worker_env
         try:
             child = subprocess.Popen(
                 [sys.executable, "-m", "agent_office.studio_process", str(self.path), run_id],
-                cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE,
+                cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE, env=worker_env(os.environ),
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=os.name != "nt",
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
@@ -552,10 +556,10 @@ def _worker(db_path, run_id):
             store.connection.execute("UPDATE studio_runs SET proposed_state=?,proposed_outcome=? WHERE id=?",
                                      (state, outcome, run_id))
 
-        def inbox_factory(role, engine):
+        def inbox_factory(role, engine, *, receive_directions=True):
             channel = InboxChannel(db_path, run_id, role, engine,
                                    goal_task_id=role if room and json.loads(room["assignment_json"]).get("goal_policy") else None)
-            if room:
+            if room and receive_directions:
                 channel.directions = DirectionChannel(db_path, run_id, role, engine)
             return channel
 

@@ -54,17 +54,21 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
     guidance = skill_guidance or {}
     windows_service = studio_preview is not None and windows_service_session()
 
-    def run_role(state, role, prompt):
+    def run_role(state, role, prompt, *, session="primary"):
         engine = state[role]
         options = {"workspace": Path(state["workspace"]), "allow_edits": role == "developer" and state["allow_edits"]}
-        if not inbox_factory:
+        if not inbox_factory or session == "consultation":
             if windows_service and engine == "codex":
                 prompt = WINDOWS_SERVICE_CODEX_CONTEXT + "\n\n" + prompt
             return adapters[engine].execute(prompt, **options)
-        channel = inbox_factory(role, engine)
+        # A reproducer is a separate provider session in the same developer attempt.
+        # It can ask questions; queued implementation directions belong to the main session.
+        channel = (inbox_factory(role, engine, receive_directions=False) if session == "reproduction"
+                   else inbox_factory(role, engine))
         try:
             if meeting is not None:
-                channel.directions.replan = meeting.update_directions
+                if getattr(channel, "directions", None) is not None:
+                    channel.directions.replan = meeting.update_directions
                 prompt += ("\n\nUse the approved meeting plan and operator answers below within the task scope. "
                            "Studio dispatches the separate roles. Work in this assigned session and collect the "
                            "terminal status of any command you start before sending your final answer. "
@@ -122,7 +126,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
                 "add only a new pytest regression file which calls the original application and asserts the "
                 "requested behavior. Keep existing source, configuration and tests intact. Never commit, push, "
                 "merge, deploy or change permissions. If expected behavior is unclear ask the operator.\n\n"
-                + folder_context(state, state["developer"]) + "\nTask:\n" + state["task"]))
+                + folder_context(state, state["developer"]) + "\nTask:\n" + state["task"]), session="reproduction")
             try:
                 if repro.returncode:
                     raise ValueError("재현 테스트를 준비하지 못했습니다. " + repro.message[:500])
@@ -194,7 +198,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
                     consultation = run_role(state, "reviewer",
                         "Independently compare the developer's hypothesis with the failed verification evidence. "
                         "Do not edit files or grant permissions. Identify the competing explanation and next check.\n"
-                        + state["task"] + "\n" + state.get("developer_output", "") + "\n" + output)
+                        + state["task"] + "\n" + state.get("developer_output", "") + "\n" + output, session="consultation")
                     usable = consultation.returncode == 0 and not consultation.truncated
                     bound = goal.review(state["attempts"], "consultation", "completed" if usable else "unverified",
                                         consultation.message)

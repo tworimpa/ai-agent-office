@@ -58,9 +58,14 @@ def server():
             send({"id": request["id"], "result": {"turn": {"id": turn, "status": "inProgress"}}})
             prompt = request["params"]["input"][0]["text"]
             if editing and turns == 1 and 'return "light"' in Path("settings.py").read_text(encoding="utf8") and "밝게" not in prompt:
-                text = "AGENT_OFFICE_QUESTION\n저장된 테마가 없을 때 기본 테마는 밝게와 어둡게 중 무엇인가요?"
+                if Path("github-journey.txt").exists():
+                    text = "AGENT_OFFICE_QUESTION\nAGENT_OFFICE_TECHNICAL_CHOICES\n" + json.dumps({
+                        "purpose": "diagnosis", "options": [{"path": "settings.py", "line": 3},
+                                                            {"path": "settings.py", "line": 4}]})
+                else:
+                    text = "AGENT_OFFICE_QUESTION\n저장된 테마가 없을 때 기본 테마는 밝게와 어둡게 중 무엇인가요?"
             else:
-                if editing and turns > 1:
+                if editing and turns > 1 and not Path("github-journey.txt").exists():
                     assert "밝게" in prompt
                 text = develop() if editing else "VERDICT: APPROVED\n설정 복원 경로를 검토했습니다."
             item = {"id": "reply-" + turn, "type": "agentMessage", "phase": "final_answer", "text": text}
