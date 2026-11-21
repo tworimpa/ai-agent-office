@@ -57,8 +57,10 @@ def server():
                                 "supportedReasoningEfforts": [{"reasoningEffort": name} for name in ("low","medium","high")]}],
                       "nextCursor": None}
         elif method == "account/rateLimits/read":
-            result = {"accountId": "disposable-office-fixture", "ordinaryUsageAllowed": True, "rateLimits": {
-                "limitId": "codex", "primary": {"usedPercent": 18, "windowDurationMins": 300, "resetsAt": 1990000000}}}
+            controls = Path(__file__).resolve().parent
+            allowed = not (controls/"quota-closed").is_file() or (controls/"quota-grant").is_file()
+            result = {"accountId": "disposable-office-fixture", "ordinaryUsageAllowed": allowed, "rateLimits": {
+                "limitId": "codex", "primary": {"usedPercent": 18 if allowed else 100, "windowDurationMins": 300, "resetsAt": 1990000000}}}
         elif method == "thread/start":
             editing = request["params"]["sandbox"] == "workspace-write"
             selected = request["params"].get("model", selected)

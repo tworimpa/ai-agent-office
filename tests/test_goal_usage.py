@@ -63,6 +63,10 @@ def test_shared_quota_never_sums_host_snapshots_or_guesses_identity(goal):
     assert usage.blockers(db,run_id,"developer",choice)
     record(other,"two",first,1,None)
     assert usage.blockers(db,run_id,"developer",choice)
+    secondary = rate(first,1,True)
+    secondary["windows"][0]["name"] = "secondary"
+    usage.record_rates(db,other,"developer","codex","team","two",secondary,"metadata_probe")
+    assert usage.blockers(db,run_id,"developer",choice)
     record(other,"two",first,1,True)
     assert not usage.blockers(db,run_id,"developer",choice)
     assert len([r for r in usage.describe(db,run_id)["rate_limits"] if r["name"]=="primary"
@@ -99,6 +103,7 @@ def until(check,diagnostic):
 
 
 def test_native_preflight_wait_restarts_only_declined_call_and_finishes_same_goal(goal,monkeypatch):
+    from agent_office.goal_checks import _unprivileged
     runner,store,source,_ = goal
     db = store.connection
     repo = store.get_task(store.get_run(source).task_id).project
@@ -109,6 +114,13 @@ def test_native_preflight_wait_restarts_only_declined_call_and_finishes_same_goa
         room_revision=receipt[0],room_assignment={"goal_policy":default_policy(["test_fixture.py"]),
         "goal_criteria":["fixture"],"work_profile":{"roles":{"developer":{"model":"fixture-model","effort":"medium"}}}})
     diag = lambda: [store.get_run(run_id).state,runner.detail(run_id)["diagnostic"],usage.describe(db,run_id)]
+    if not _unprivileged():
+        # The baseline runs repository pytest before any provider call. Service
+        # and elevated runners must refuse it; regular-user installer CI exercises recovery.
+        until(lambda:store.get_run(run_id).ended_at,diag)
+        assert store.get_run(run_id).state == "FAILED"
+        assert not usage.describe(db,run_id)["calls"] and not (fixture/"turns").exists()
+        return
     until(lambda:goal_stage_wait.drained(db,run_id),diag)
     assert not (fixture/"turns").exists()
     assert goal_recovery.detail(store,run_id)["disposition"] == "waiting_quota"

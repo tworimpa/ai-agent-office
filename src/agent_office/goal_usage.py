@@ -36,6 +36,7 @@ def schema(db):
     db.execute("""CREATE TABLE IF NOT EXISTS studio_usage_actions(
         id INTEGER PRIMARY KEY,run_id TEXT NOT NULL,role TEXT NOT NULL,stage TEXT NOT NULL,
         attempt INTEGER NOT NULL,action TEXT NOT NULL,reason TEXT NOT NULL,at TEXT NOT NULL)""")
+    db.execute("CREATE INDEX IF NOT EXISTS studio_usage_actions_run ON studio_usage_actions(run_id,at)")
     db.execute("CREATE INDEX IF NOT EXISTS studio_usage_actions_run ON studio_usage_actions(run_id,id)")
     db.execute("""CREATE TABLE IF NOT EXISTS studio_usage_holds(
         run_id TEXT PRIMARY KEY,role TEXT NOT NULL,stage TEXT NOT NULL,attempt INTEGER NOT NULL,
@@ -203,7 +204,8 @@ def blockers(db,run_id,role,selection):
         if row["engine"] == "codex" and row["limit_id"] not in ("default", "codex", model):
             continue
         if exhausted(row):
-            if not any(same_pool(row,grant) and (row["account_alias"] or row["account_key"])
+            if not any(same_pool(row,grant) and grant["name"] == row["name"]
+                       and (row["account_alias"] or row["account_key"])
                        and grant["observed_at"] > row["observed_at"] for grant in grants):
                 return row
         elif row["ordinary_usage_allowed"] == 1:

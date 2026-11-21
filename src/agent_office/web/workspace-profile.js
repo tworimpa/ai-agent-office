@@ -104,6 +104,8 @@ function editor({get, make, prefix, roleEngine, refreshModels}) {
   budget.placeholder = intake ? '작업실 기본값' : '미지정';
   const onLimit = control(make, goals, prefix + '-on-limit', '한도에 도달하면', 'select');
   choices(onLimit, [...(intake ? [['', blank]] : []), ['wait','대기'], ['stop','중지']], intake ? '' : 'wait');
+  const retry = control(make, goals, prefix + '-retry-deep', '같은 검사 실패에 새 가설이 기록된 다음 개발 시도', 'select');
+  choices(retry, [...(intake ? [['', blank]] : []), ['keep','지정한 추론 강도 유지'], ['deep','Codex의 검증된 심층 추론 1회 허용']], intake ? '' : 'keep');
   for (const [role, name] of Object.entries(roleNames)) {
     const group = make('fieldset', '', 'work-fields');
     group.append(make('legend', name + ' 대체 순서'));
@@ -155,6 +157,7 @@ function editor({get, make, prefix, roleEngine, refreshModels}) {
     mode.value = data.mode || (intake ? '' : 'auto');
     budget.value = data.token_budget ?? '';
     onLimit.value = data.on_limit || (intake ? '' : 'wait');
+    retry.value = data.retry_deep == null && intake ? '' : data.retry_deep ? 'deep' : 'keep';
     for (const role of Object.keys(roleNames)) {
       roleInputs[role].load(data.roles?.[role]);
       fallbackInputs[role].load(data.fallbacks?.[role]);
@@ -173,6 +176,7 @@ function editor({get, make, prefix, roleEngine, refreshModels}) {
     if (!goals.hidden) {
       if (Object.keys(fallbacks).length) result.fallbacks = fallbacks;
       if (onLimit.value) result.on_limit = onLimit.value;
+      if (retry.value === 'deep' || intake && retry.value === 'keep') result.retry_deep = retry.value === 'deep';
       if (budget.value || !intake) result.token_budget = budget.value ? Number(budget.value) : null;
       if (budget.validity.badInput || (budget.value && !(Number.isSafeInteger(result.token_budget) && result.token_budget > 0))) {
         throw Error('토큰 예산을 1 이상의 정수로 입력하세요.');

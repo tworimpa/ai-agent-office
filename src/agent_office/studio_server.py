@@ -292,7 +292,7 @@ class StudioHandler(ObserverHandler):
         write = data is not None
         profile = work_profile_views.route("POST" if write else "GET", path.removeprefix("/api"))
         if profile:
-            self._reply(200, work_profile_views.handle(self, *profile, data))
+            self._reply(200, work_profile_views.handle(self.server, *profile, data))
             return
         briefing = workspace_briefing.route("POST" if write else "GET", path.removeprefix("/api"))
         if briefing:

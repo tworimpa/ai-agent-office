@@ -13,7 +13,7 @@ LABELS = {"quick": "빠른 확인", "balanced": "균형 개발", "deep": "심층
 
 def defaults():
     return {"mode": "auto", "roles": {r: {"model": None, "effort": None, "account_alias": None} for r in ROLES},
-            "token_budget": None, "on_limit": "wait", "fallbacks": {r: [] for r in ROLES}}
+            "token_budget": None, "on_limit": "wait", "retry_deep": False, "fallbacks": {r: [] for r in ROLES}}
 
 
 def schema(db):
@@ -54,6 +54,8 @@ def merge(base, override):
         raise ValueError("지원되는 작업 방식을 선택하세요.")
     if result["on_limit"] not in ("wait", "stop"):
         raise ValueError("한도 도달 시 행동을 확인하세요.")
+    if type(result["retry_deep"]) is not bool:
+        raise ValueError("재작업 시 심층 추론 위임 여부를 확인하세요.")
     limit = result["token_budget"]
     if limit is not None and (type(limit) is not int or not 1 <= limit <= 10**12):
         raise ValueError("토큰 예산은 양의 정수로 입력하세요.")
@@ -79,8 +81,8 @@ def stored(db, workspace):
 
 def _validate(catalog, engine, pref):
     if pref["model"] or pref["effort"]:
-        if engine == "codex" and catalog.read()["status"] != "available":
-            catalog.refresh()
+        if engine == "codex":
+            catalog.refresh(if_stale=True)
         catalog.validate(engine, pref["model"], pref["effort"])
 
 
@@ -122,18 +124,23 @@ def resolve(saved, bound_engines, overrides, roles, catalog, *, edits, goal, rep
     if mode == "auto":
         mode = "quick" if not edits else "balanced"
     if not goal:
-        if (overrides.get("token_budget") is not None or overrides.get("on_limit") == "stop"
+        if (overrides.get("token_budget") is not None or overrides.get("on_limit") == "stop" or overrides.get("retry_deep")
                 or any(overrides.get("fallbacks", {}).values())):
             raise ValueError("토큰 예산과 한도 대기·전환 정책은 장시간 목표에서 설정하세요.")
-        profile.update(token_budget=None, on_limit="wait", fallbacks={r: [] for r in ROLES})
+        profile.update(token_budget=None, on_limit="wait", retry_deep=False, fallbacks={r: [] for r in ROLES})
     validate_targets(catalog, profile, {r: roles[r]["engine"] for r in ROLES})
     cached = catalog.read()
-    if cached["status"] == "unprobed" and any(roles[r]["engine"] == "codex" for r in ROLES):
-        cached = catalog.refresh()
+    if any(roles[r]["engine"] == "codex" for r in ROLES):
+        cached = catalog.refresh(if_stale=True)
     for role, pref in profile["roles"].items():
         if roles[role]["engine"] == "codex" and cached["status"] == "available" and not pref["effort"]:
             inferred = "deep" if role == "reviewer" and goal and reproduce and profile["mode"] == "auto" else mode
             pref["model"], pref["effort"] = _preset(cached["models"], pref["model"], inferred)
+    if profile["retry_deep"] and roles["developer"]["engine"] == "codex":
+        developer = profile["roles"]["developer"]
+        _, next_effort = _preset(cached["models"], developer["model"], "deep")
+        if developer["effort"] in ("minimal","low","medium") and next_effort in ("high","xhigh"):
+            profile["retry_effort"] = next_effort
     basis = "원본 실패를 재현하고 독립 리뷰를 거칩니다." if reproduce and goal else (
         "변경과 검증을 담당자별로 진행합니다." if edits else "읽기 전용으로 범위를 확인합니다.")
     profile["reason"] = f"{LABELS[mode]} · {basis}"

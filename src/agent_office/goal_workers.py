@@ -1,6 +1,7 @@
 """Admit provider work at durable goal boundaries and journal the selected provider."""
 from datetime import datetime, timedelta, timezone
 import json
+import re
 import threading
 from uuid import uuid4
 
@@ -67,6 +68,39 @@ def reason_for(block):
     return f'{block["engine"]} 공급자 한도 ({block["limit_id"]} / {block["name"]}) · 동일 계정의 사용 가능 응답 대기'
 
 
+def retry_choice(db, run_id, stage, attempt, choice, profile):
+    """Escalate one admitted implementation only, on a documented alternative and a repeated test."""
+    effort = profile.get("retry_effort")
+    if stage != "implement" or attempt < 2 or not effort or not profile.get("retry_deep") or choice["engine"] != "codex":
+        return choice
+    if db.execute("SELECT 1 FROM studio_usage_actions WHERE run_id=? AND action='retry_effort'", (run_id,)).fetchone():
+        return choice
+    row = db.execute("SELECT record FROM studio_goal_candidates WHERE run_id=? AND attempt=?",(run_id,attempt-1)).fetchone()
+    if not row:
+        return choice
+    candidate = json.loads(row[0])
+    checks = [json.loads(r[0]) for r in db.execute(
+        "SELECT receipt FROM studio_goal_checks WHERE run_id=? AND attempt=?", (run_id,attempt-1))]
+    repeated = [case for check in checks for case in check.get("still_failing", [])]
+    if not repeated:
+        return choice
+    pending = db.execute("""SELECT 1 FROM studio_requests WHERE run_id=? AND status='pending'
+        AND (kind='permission' OR decision_type='product_decision') LIMIT 1""",(run_id,)).fetchone()
+    hypothesis = re.search(r"^다음 가설\s*[:：]\s*(.{6,300})$",candidate.get("hypothesis",""),re.MULTILINE)
+    if pending:
+        reason = "제품 결정·권한 응답을 기다리는 요청이 있습니다. 설정을 유지합니다."
+    elif any(c.get("status") not in {"passed","failed"} or c.get("scope_changes") for c in checks):
+        reason = "검증 환경 또는 범위가 달라져 결과를 비교할 수 없습니다. 설정을 유지합니다."
+    elif hypothesis is None or not any(name in hypothesis[1] for name in candidate.get("files",[]) + repeated):
+        reason = "같은 검사가 실패했지만 변경 파일 또는 실패 검사에 연결된 다음 가설이 없습니다. 설정을 유지합니다."
+    else:
+        reason = f"사전 위임 · 반복 실패 {repeated[0][:120]} · 다음 가설 {hypothesis[1][:200]} · 이번 시도 {effort}"
+        usage.action(db,run_id,"developer",stage,attempt,"retry_effort",reason)
+        return dict(choice,effort=effort)
+    usage.action(db,run_id,"developer",stage,attempt,"retry_unchanged",reason)
+    return choice
+
+
 def hold(db,run_id,role,stage,attempt,kind,reason,engine=None,alias=None):
     previous = db.execute("SELECT * FROM studio_usage_holds WHERE run_id=?", (run_id,)).fetchone()
     if previous and (previous["role"],previous["stage"],previous["attempt"],previous["reason"],previous["kind"]) == (
@@ -91,7 +125,9 @@ def admission(db,run_id,stage,attempt,*,record=False):
     if not spec.get("goal_policy"):
         return None
     profile = spec.get("work_profile",{})
-    stop = budget(db,run_id,profile)
+    # Local verification can still preserve the changed tree and its receipts.
+    # A goal token cap gates the next provider call, not an already earned pytest result.
+    stop = budget(db,run_id,profile) if stage_roles(stage,spec) else None
     if stop:
         if record:
             hold(db,run_id,"operator",stage,attempt,"budget_stop",stop[1])
@@ -177,6 +213,8 @@ class RoomWorkers:
                 stop = OperatorStop("PROVIDER_LIMIT_STOPPED",reason)
             else:
                 stop = None
+                if not blocked and role == "developer":
+                    choice = retry_choice(db,self.run_id,stage,attempt,choice,self.profile)
                 if stage in ("implement","review","reproduce","parallel_implementation"):
                     db.execute("INSERT OR REPLACE INTO studio_usage_roles VALUES(?,?,?,?)",
                                (self.run_id,role,attempt,choice["engine"]))
@@ -211,9 +249,16 @@ class BoundWorker:
         def telemetry(event):
             with TaskStore(room.path,existing=True) as journal,journal._write():
                 usage.observe(journal.connection,ident,event)
+        if room.profile.get("retry_effort") and self.stage == "implement":
+            prompt += ("\n다른 가설이 있고 추가 검증이 필요하면 '다음 가설: ' 한 줄에 변경 파일 또는 실패 검사와 "
+                       "다음에 확인할 원인을 명시하세요. 환경 문제나 제품 질문은 해당 절차를 사용하세요.")
         result = room.adapters[self.engine].execute(prompt,**options, model=choice.get("model"),
                         effort=choice.get("effort"), telemetry=telemetry)
         with TaskStore(room.path,existing=True) as store:
+            if getattr(result, "preflight_blocked", False):
+                # No model turn was started. An explicit token cap can safely survive this declined dispatch.
+                store.connection.execute("""UPDATE studio_usage_calls SET total_tokens=0,source='preflight_not_started',
+                    observed_at=? WHERE id=? AND total_tokens IS NULL""", (now(),ident))
             store.connection.execute("UPDATE studio_usage_calls SET finished_at=? WHERE id=?",(now(),ident))
         if not (room.enforce and getattr(result, "preflight_blocked", False)):
             return result

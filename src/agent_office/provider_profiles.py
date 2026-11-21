@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 
 from .acp import _unique_fields, close_stdio_process
 from .engines import codex_backend_args, resolve_executable
@@ -134,12 +135,15 @@ class ModelCatalog:
     def __init__(self):
         self._refresh_lock = threading.Lock()
         self._snapshot = {"engine": "codex", "status": "unprobed", "models": [], "refreshed_at": None}
+        self._expires = 0.
 
     def read(self):
         return deepcopy(self._snapshot)
 
-    def refresh(self):
+    def refresh(self, *, if_stale=False):
         with self._refresh_lock:
+            if if_stale and time.monotonic() < self._expires:
+                return self.read()
             try:
                 models = asyncio.run(_metadata("catalog"))
                 status = "available"
@@ -147,6 +151,7 @@ class ModelCatalog:
                 status, models = "unavailable", []
             self._snapshot = {"engine": "codex", "models": models, "status": status,
                               "refreshed_at": datetime.now(timezone.utc).isoformat()}
+            self._expires = time.monotonic() + (300 if status == "available" else 30)
             return self.read()
 
     def validate(self, engine, model=None, effort=None):

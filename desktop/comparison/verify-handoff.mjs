@@ -5,6 +5,7 @@ import {join, resolve} from 'node:path'
 import {launch, until} from './drivers.mjs'
 import {prepare} from './handoff-fixture.mjs'
 import {sha256} from './journal-receipt.mjs'
+import {verifyQuota} from './verify-quota.mjs'
 import {finishVerification} from '../verify-lifecycle.mjs'
 
 const [electron, rust, output] = process.argv.slice(2)
@@ -208,7 +209,7 @@ async function readRecords() {
     return {journalId:identity.journal_id,bootId:identity.boot_id,workspaceId:detail.workspace_id,runId:detail.id,
       task:detail.task,goalId:goal.run_id,questions:(await read('/inbox')).requests,directions:(await read('/directions')).directions,
       boardCandidates:board.candidates.filter(row => row.run_id === run),candidates:goal.candidates,checks:goal.checks,
-      events:goal.events,state:goal.state,meeting:detail.meeting,review:detail.review_output}
+      events:goal.events,state:goal.state,meeting:detail.meeting ?? null,review:detail.review_output}
   },workspace,runId)
 }
 async function renderResult(label,candidate,representative) {
@@ -374,3 +375,4 @@ for (const name of ['tasks.sqlite3','tasks.sqlite3.studio.sqlite3']) {
 await writeFile(join(evidence,'journal-receipt.json'),JSON.stringify({
   journal:runtime.journalId, runs:results.map(r => r.runId), files:journalFiles
 },null,2))
+await verifyQuota(exes.electron,exes.rust,join(evidence,'quota-restart'))

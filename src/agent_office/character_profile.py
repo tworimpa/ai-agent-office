@@ -109,7 +109,17 @@ def describe(db, workspace, name, role):
         LEFT JOIN studio_goals g ON g.id=s.id WHERE s.workspace_id=? AND r.host_name=?
         AND julianday(r.started_at)>=julianday(?) ORDER BY r.started_at DESC,r.run_id LIMIT ?""",
                       (workspace, platform.node(), since, RUN_LIMIT)).fetchall()
-    facts = _facts(db, [r["run_id"] for r in rows])
+    ids = [r["run_id"] for r in rows]
+    facts = _facts(db, ids)
+    calls_by_run = defaultdict(list)
+    changed = set()
+    if ids and role != "coordinator" and goal_usage.exists(db):
+        marks = ",".join("?" for _ in ids)
+        for call in db.execute(f"""SELECT run_id,engine,actual_model,actual_effort,total_tokens FROM studio_usage_calls
+                       WHERE role=? AND run_id IN ({marks})""", (role,*ids)):
+            calls_by_run[call["run_id"]].append(call)
+        changed = {r[0] for r in db.execute(f"""SELECT DISTINCT run_id FROM studio_usage_actions
+            WHERE role=? AND run_id IN ({marks}) AND action='provider_change'""",(role,*ids))}
     axes, cohorts = defaultdict(list), {}
     for row in rows:
         assignment = json.loads(row["assignment_json"])
@@ -118,20 +128,24 @@ def describe(db, workspace, name, role):
         rid = row["run_id"]
         for axis, evidence in _evidence(row, facts[rid], role).items():
             axes[axis].append(evidence)
-        if role == "coordinator" or not row["ended_at"] or not assignment.get("goal_policy"):
+        if role == "coordinator" or not row["ended_at"] or rid in changed:
             continue
-        calls = [c for c in goal_usage.describe(db, rid)["calls"] if c["role"] == role]
+        calls = calls_by_run[rid]
         combination = {(c["engine"], c["actual_model"], c["actual_effort"]) for c in calls}
         if len(combination) != 1 or not all(next(iter(combination))):
             continue
         engine, model, effort = next(iter(combination))
-        group = "reproduction" if assignment.get("reproduce_required") else "development"
+        group = "reproduction" if assignment.get("reproduce_required") else "development" if row["allow_edits"] else "read_only"
         entry = cohorts.setdefault((group,engine,model,effort), dict(group=group,engine=engine,model=model,effort=effort,
             samples=0,adopted=0,rework=0,active_seconds=0,tokens=0))
         entry["samples"] += 1
         entry["adopted"] += int(row["adopted_attempt"] is not None)
         entry["rework"] += max(0, row["attempts"]-1)
-        entry["active_seconds"] += goal_recovery.timing(db, rid)["active_seconds"]
+        if entry["active_seconds"] is not None:
+            if assignment.get("goal_policy"):
+                entry["active_seconds"] += goal_recovery.timing(db, rid)["active_seconds"]
+            else:
+                entry["active_seconds"] = None
         total = [c["total_tokens"] for c in calls]
         entry["tokens"] = None if entry["tokens"] is None or None in total else entry["tokens"] + sum(total)
     output = []

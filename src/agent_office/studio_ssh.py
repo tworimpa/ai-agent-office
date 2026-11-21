@@ -322,7 +322,9 @@ def _check_assignment(row, required=False):
         profile = assignment["work_profile"]
         if not isinstance(profile,dict) or not isinstance(profile.get("reason"),str) or not isinstance(profile.get("role_reasons"),dict):
             raise RemoteUnavailable()
-        body = {k:v for k,v in profile.items() if k not in {"reason","role_reasons"}}
+        if "retry_effort" in profile and (profile["retry_effort"] not in ("high","xhigh") or profile.get("retry_deep") is not True):
+            raise RemoteUnavailable()
+        body = {k:v for k,v in profile.items() if k not in {"reason","role_reasons","retry_effort"}}
         if work_profiles.merge(work_profiles.defaults(), body) != body:
             raise RemoteUnavailable()
     if goal_fields.intersection(assignment):
