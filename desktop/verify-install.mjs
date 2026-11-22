@@ -203,7 +203,7 @@ async function submitAssignment(window, message) {
   const submission = await accepted
   const payload = await submission.json()
   assert.equal(submission.status(), 202, JSON.stringify(payload))
-  assert.equal(payload.run.assignment.meeting, true)
+  assert.equal(Boolean(payload.run.assignment.meeting), payload.run.allow_edits)
   await window.locator('#assignment-receipt').waitFor()
   const title = await window.locator('#receipt-task').textContent()
   assert.ok(title && message.startsWith(title.replace(/…$/, '')))
@@ -294,13 +294,11 @@ try {
     const directions = (await read(local.origin, '/api/runs/' + simple.id + '/directions')).directions
     assert.equal(directions.length, 1)
     assert.equal(directions[0].delivery, 'delivered')
-    assert.equal(automatic.meeting.revision, 2)
-    assert.equal(automatic.meeting.revisions.at(-1).direction_id, directions[0].id)
+    assert.ok(!automatic.meeting)
     assert.deepEqual((await read(local.origin, '/api/rooms/' + simple.workspace_id)).runs.map(item => item.id), [simple.id])
-    assert.equal(automatic.meeting.revisions[0].approved_by, 'coordinator')
-    assert.deepEqual(automatic.meeting.contributions.filter(entry => entry.revision === 1).map(entry => entry.role), ['developer', 'reviewer'])
-    assert.deepEqual(automatic.meeting.choices, [])
-    assert.equal(automatic.meeting.decision, null)
+    const report = await read(local.origin, '/api/rooms/' + simple.workspace_id + '/usage/' + simple.id)
+    assert.deepEqual(report.active_roles, ['developer'])
+    assert.deepEqual(report.usage.calls.map(c => [c.role, c.stage]), [['developer', 'implement']])
     assert.equal(automatic.test_output, '')
     assert.equal((await readFile(join(automatic.workspace, 'note.txt'), 'utf8')).replaceAll('\r\n', '\n'), 'original\n')
     simpleId = simple.id

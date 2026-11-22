@@ -372,8 +372,10 @@ def _check_room_reply(status, data, headers, journal, method, route, payload):
             raise RemoteUnavailable()
         _check_assignment(row, required=True)
         overrides = payload.get("role_engines", {})
+        active_roles = ROLES if row["allow_edits"] or row["assignment"].get("meeting") else ("developer",)
         if not isinstance(overrides, dict) or any(
-                role not in ROLES or row["assignment"]["roles"][role]["engine"] != engine
+                role not in ROLES or engine not in SUPPORTED_ENGINES
+                or role in active_roles and row["assignment"]["roles"][role]["engine"] != engine
                 for role, engine in overrides.items()):
             raise RemoteUnavailable()
         from .workspace_coordination import markdown_settings

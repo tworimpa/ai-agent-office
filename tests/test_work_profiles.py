@@ -26,6 +26,8 @@ def test_coordinator_routes_before_assigning_reviewers(tmp_path,monkeypatch,defa
         assert request(server,base+"/work-policy",{"mode":default})[0] == 200
         body = dict(id=uuid4().hex,message="프로젝트 설정 확인",allow_edits=edits,delegation=False,
                     meeting="auto",goal=goal,review_plan=confirm)
+        if not edits and not expected:
+            body["role_engines"] = {"reviewer":"cline"}  # The unused reviewer cannot block intake or SSH replay.
         if override:
             body["work_profile"]={"mode":override}
         status,data = request(server,base+"/assignments",body)
