@@ -11,10 +11,68 @@ from test_remote_studio import LoopbackLink, RemoteHost
 from test_studio_http import studio
 
 
+@pytest.mark.parametrize("default,override,edits,goal,confirm,expected", [
+    ("auto", None, False, False, False, False),
+    ("balanced", "quick", False, False, False, False),
+    ("quick", None, True, True, False, False),
+    ("quick", "deep", False, False, False, True),
+    ("auto", None, True, False, False, True),
+    ("quick", None, False, False, True, True),
+])
+def test_coordinator_routes_before_assigning_reviewers(tmp_path,monkeypatch,default,override,edits,goal,confirm,expected):
+    with office(tmp_path,monkeypatch) as (server,ws,base,_):
+        available(server.rooms.models)
+        monkeypatch.setattr(server.runner,"_launch",lambda *_: None)
+        assert request(server,base+"/work-policy",{"mode":default})[0] == 200
+        body = dict(id=uuid4().hex,message="프로젝트 설정 확인",allow_edits=edits,delegation=False,
+                    meeting="auto",goal=goal,review_plan=confirm)
+        if not edits and not expected:
+            body["role_engines"] = {"reviewer":"cline"}  # The unused reviewer cannot block intake or SSH replay.
+        if override:
+            body["work_profile"]={"mode":override}
+        status,data = request(server,base+"/assignments",body)
+        assert status == 202,data
+        assigned = data["run"]["assignment"]
+        assert bool(assigned.get("meeting")) is expected
+        assert bool(assigned.get("review_plan")) is confirm
+        if goal:
+            assert assigned["planning_mode"] == ("meeting" if expected else "direct")
+            assert assigned["goal_policy"]["checks"]
+        _check_reply(202,data,[server.journal_id.encode()],server.journal_id,"POST",base[4:]+"/assignments",body)
+        assert request(server,base+"/work-policy",{"mode":"deep"})[0] == 200
+        assert request(server,base+"/assignments",body)[1]["run"]["assignment"] == assigned
+
+
 def available(catalog):
     catalog._expires = float("inf")
     catalog._snapshot = {"engine":"codex","status":"available","refreshed_at":now(),"models":[
         {"id":"fixture","label":"Fixture","efforts":["low","medium","high"],"default_effort":"medium","is_default":True}]}
+
+
+def test_quick_readonly_dispatch_runs_one_provider_call(tmp_path,monkeypatch):
+    from test_goal_usage import install_fixture
+    from test_studio_http import project, wait_for
+    from test_workspace_rooms import engine_snapshot, register
+
+    repo, _ = project(tmp_path)
+    control = install_fixture(tmp_path, monkeypatch)
+    (control / "grant").touch()
+    with studio(tmp_path/"direct.db") as server:
+        available(server.rooms.models)
+        monkeypatch.setattr(server.engines,"snapshot",lambda:engine_snapshot("codex"))
+        ws = register(server,[repo.parent])
+        base = f"/api/rooms/{ws}"
+        rid = uuid4().hex
+        body = dict(id=rid,message="설정 파일의 기본값을 읽어 주세요.",allow_edits=False,delegation=False,meeting="auto")
+        status, response = request(server,base+"/assignments",body)
+        assert status == 202, response
+        run = wait_for(server,rid,{"PLAN_ONLY","FAILED"})
+        assert run["state"] == "PLAN_ONLY",run["diagnostic"]
+        detail = request(server,base+"/usage/"+rid)[1]
+        assert detail["active_roles"] == ["developer"]
+        assert [(c["role"],c["stage"]) for c in detail["usage"]["calls"]] == [("developer","implement")]
+        assert len((control/"turns").read_text().splitlines()) == 1
+        assert not run.get("meeting") and not run["allow_edits"]
 
 
 def test_settings_inheritance_host_validation_and_shared_visit_replay(tmp_path, monkeypatch):

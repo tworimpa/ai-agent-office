@@ -264,7 +264,7 @@ class WorkspaceRooms:
             if cursor is None:
                 page.update(workspace=workspace, settings=self._settings(db, workspace_id), engines=engines,
                             meeting_supported=True, goal_supported=True, github_supported=True, briefing_supported=True,
-                            work_profiles_supported=True, shared_visits_supported=True, journal_id=self.journal_id,
+                            work_profiles_supported=True, shared_visits_supported=True, quick_dispatch_supported=True, journal_id=self.journal_id,
                             goal_default=db.execute("SELECT 1 FROM studio_goal_policies WHERE workspace_id=?",
                                                     (workspace_id,)).fetchone() is not None)
         return page
@@ -278,7 +278,8 @@ class WorkspaceRooms:
         if not required <= data.keys() or data.keys() - required - {"indices", "test_files", "meeting", "review_plan",
                                                                     "role_engines", "goal", "goal_criteria", "reproduce_required", "coordination", "work_profile"}:
             raise ValueError("조정자에게 보낼 요청을 확인하세요.")
-        meeting = data.get("meeting", False)
+        requested_meeting = data.get("meeting", False)
+        meeting = requested_meeting is True or requested_meeting == "auto"
         review_plan = data.get("review_plan", False)
         goal = data.get("goal", False)
         coordination = None
@@ -292,7 +293,8 @@ class WorkspaceRooms:
         if (type(goal) is not bool or goal and data["allow_edits"] is not True or
                 not goal and ("goal_criteria" in data or "reproduce_required" in data)):
             raise ValueError("개발 목표의 실행 범위를 확인하세요.")
-        if type(meeting) is not bool or type(review_plan) is not bool or (review_plan and not meeting):
+        if ((type(requested_meeting) is not bool and requested_meeting != "auto")
+                or type(review_plan) is not bool or (review_plan and not meeting)):
             raise ValueError("회의와 계획 검토 방식을 확인하세요.")
         overrides = data.get("role_engines", {})
         if (not isinstance(overrides, dict) or overrides.keys() - set(ROLES)
@@ -318,6 +320,10 @@ class WorkspaceRooms:
                     return prior
                 settings = self._settings(store.connection, workspace_id)
                 saved_profile, bound_engines = work_profiles.stored(store.connection, workspace_id)
+                options = data.get("work_profile", {})
+                if not isinstance(options, dict):
+                    raise ValueError("작업 방식의 설정 항목을 확인하세요.")
+                quick = work_profiles.effective_mode(options.get("mode", saved_profile["mode"]), allow_edits) == "quick"
                 if specification is not None:
                     coordination = workspace_coordination.bind_references(
                         store.connection, workspace_id, specification, origin)
@@ -330,6 +336,8 @@ class WorkspaceRooms:
                         raise ValueError("재현 기준을 확인하세요.")
                     # A named reproduction or explicit acceptance criteria provide a direct starting point.
                     meeting = review_plan or not (reproduce or data.get("goal_criteria") or test_files)
+                if quick and not review_plan:
+                    meeting = False
             workspace = self._workspace(workspace_id)
             indices = data.get("indices", list(range(len(workspace["folders"]))))
             repo, folders = self.catalog.select(workspace_id, indices)
@@ -359,12 +367,15 @@ class WorkspaceRooms:
             assignment = {"roles": roles, "delegation": delegated,
                           "note": _assignment_note(settings, roles, allow_edits, delegated, choices)}
             effective = work_profiles.resolve(saved_profile, bound_engines, data.get("work_profile", {}), roles,
-                                              self.models, engines, edits=allow_edits, goal=goal, reproduce=goal and reproduce)
+                                              self.models, engines, edits=allow_edits, goal=goal, reproduce=goal and reproduce,
+                                              active_roles=ROLES if allow_edits or meeting else ("developer",))
             effective["role_reasons"] = {
                 role: ("Workspace의 기본 엔진" if roles[role]["engine"] == settings[role]["engine"]
                        else "이번 작업에서 선택한 엔진" if role in overrides else "호스트에서 실행 가능한 대체 엔진")
                 + " · " + roles[role]["engine"] for role in ROLES
             }
+            if quick and not meeting:
+                effective["reason"] += " 사전 회의 없이 담당자에게 바로 배정했습니다."
             assignment["work_profile"] = effective
             if goal:
                 assignment.update(goal_policy=goal_policy, goal_criteria=criteria, reproduce_required=reproduce,

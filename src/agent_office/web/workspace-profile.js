@@ -205,6 +205,7 @@ export function mountWorkProfiles({get, make, api, context}) {
   const roleEngine = (role, intake) => (intake && get('assignment-' + role + '-engine').value) || context().settings?.[role]?.engine;
   let version = 0, catalogVersion = 0, loaded = false, saving = false;
   let active = null;
+  let inheritedMode = null;
   const settings = editor({get, make, prefix: 'policy', roleEngine, refreshModels: () => models(settings, true)});
   const intake = editor({get, make, prefix: 'assignment', roleEngine, refreshModels: () => models(intake, true)});
   async function models(target, update) {
@@ -219,6 +220,7 @@ export function mountWorkProfiles({get, make, api, context}) {
   function start(target, existing) {
     ++version;
     active = target;
+    inheritedMode = null;
     loaded = saving = false;
     get('policy-note').textContent = '';
     get('policy-save').disabled = true;
@@ -232,7 +234,7 @@ export function mountWorkProfiles({get, make, api, context}) {
     api(path() + '/work-policy').then(response => {
       if (seq !== version || identity !== context().identity) return;
       if (!response.policy || response.workspace_id !== context().workspaceId) throw Error();
-      if (target === intake) { intake.inherited(response.policy); return; }
+      if (target === intake) { inheritedMode = response.policy?.mode; intake.inherited(response.policy); return; }
       settings.load(response.policy);
       loaded = true;
       get('policy-note').textContent = '';
@@ -274,6 +276,10 @@ export function mountWorkProfiles({get, make, api, context}) {
     intake(saved) { start(intake, saved); },
     controls,
     intakeControls(assignment, locked, goal) { intake.controls(context().supported && assignment, locked, goal); },
-    value() { return context().supported ? intake.value() : {}; }
+    value() { return context().supported ? intake.value() : {}; },
+    quick(mode, edits) {
+      const selected = mode || inheritedMode;
+      return context().supported && (selected === 'quick' || selected === 'auto' && !edits);
+    }
   };
 }

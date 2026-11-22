@@ -19,7 +19,7 @@ def route(method, path):
 def _usage(db, workspace, rid):
     from . import goal_recovery, goal_usage
 
-    row = db.execute("""SELECT r.attempts,a.assignment_json FROM runs r JOIN studio_runs s ON r.run_id=s.id
+    row = db.execute("""SELECT r.attempts,s.allow_edits,a.assignment_json FROM runs r JOIN studio_runs s ON r.run_id=s.id
         LEFT JOIN studio_room_assignments a ON a.run_id=s.id WHERE s.workspace_id=? AND s.id=? AND r.host_name=?""",
                      (workspace, rid, platform.node())).fetchone()
     if row is None:
@@ -28,7 +28,8 @@ def _usage(db, workspace, rid):
     profile = assignment.get("work_profile")
     limits = assignment.get("goal_policy", {})
     clock = goal_recovery.timing(db,rid) if limits else {}
-    return dict(run_id=rid,profile=profile,usage=goal_usage.describe(db, rid),
+    active_roles = list(work_profiles.ROLES) if row["allow_edits"] or assignment.get("meeting") else ["developer"]
+    return dict(run_id=rid,profile=profile,active_roles=active_roles,usage=goal_usage.describe(db, rid),
                 budget=dict(active_seconds=limits.get("active_seconds"),max_attempts=limits.get("max_attempts"),
                             active_used=clock.get("active_seconds"),attempts_used=row["attempts"],
                             token_budget=(profile or {}).get("token_budget")))
