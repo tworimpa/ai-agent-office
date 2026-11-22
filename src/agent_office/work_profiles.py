@@ -86,12 +86,12 @@ def _validate(catalog, engine, pref):
         catalog.validate(engine, pref["model"], pref["effort"])
 
 
-def validate_targets(catalog, profile, engines, host_entries):
+def validate_targets(catalog, profile, engines, host_entries, active_roles=ROLES):
     from .provider_profiles import host_capabilities
     capabilities = host_capabilities(host_entries,catalog.read())
     by_engine = {row["engine"]: row for row in host_entries}
     aliases = {}
-    for role in ROLES:
+    for role in active_roles:
         choices = [dict(engine=engines[role], **profile["roles"][role]), *profile["fallbacks"][role]]
         for fallback in profile["fallbacks"][role]:
             host = by_engine.get(fallback["engine"], {})
@@ -127,26 +127,29 @@ def _preset(model_list, model, mode):
     return selected["id"], effort
 
 
-def resolve(saved, bound_engines, overrides, roles, catalog, host_entries, *, edits, goal, reproduce):
+def effective_mode(mode, edits):
+    return ("balanced" if edits else "quick") if mode == "auto" else mode
+
+
+def resolve(saved, bound_engines, overrides, roles, catalog, host_entries, *, edits, goal, reproduce, active_roles=ROLES):
     base = merge(defaults(), saved)
     for role in ROLES:
         if bound_engines.get(role, roles[role]["engine"]) != roles[role]["engine"]:
             # A model or billing alias for one CLI must not follow an automatic switch to another CLI.
             base["roles"][role] = defaults()["roles"][role]
     profile = merge(base, overrides)
-    mode = profile["mode"]
-    if mode == "auto":
-        mode = "quick" if not edits else "balanced"
+    mode = effective_mode(profile["mode"], edits)
     if not goal:
         if (overrides.get("token_budget") is not None or overrides.get("on_limit") == "stop" or overrides.get("retry_deep")
                 or any(overrides.get("fallbacks", {}).values())):
             raise ValueError("토큰 예산과 한도 대기·전환 정책은 장시간 목표에서 설정하세요.")
         profile.update(token_budget=None, on_limit="wait", retry_deep=False, fallbacks={r: [] for r in ROLES})
-    validate_targets(catalog, profile, {r: roles[r]["engine"] for r in ROLES},host_entries)
+    validate_targets(catalog, profile, {r: roles[r]["engine"] for r in ROLES},host_entries,active_roles)
     cached = catalog.read()
-    if any(roles[r]["engine"] == "codex" for r in ROLES):
+    if any(roles[r]["engine"] == "codex" for r in active_roles):
         cached = catalog.refresh(if_stale=True)
-    for role, pref in profile["roles"].items():
+    for role in active_roles:
+        pref = profile["roles"][role]
         inferred = "deep" if role == "reviewer" and goal and reproduce and profile["mode"] == "auto" else mode
         if roles[role]["engine"] == "codex" and cached["status"] == "available" and not pref["effort"]:
             pref["model"], pref["effort"] = _preset(cached["models"], pref["model"], inferred)

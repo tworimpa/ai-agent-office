@@ -1667,8 +1667,11 @@ export function mountWorkspaceOffice(win = window) {
       if (criteria.length) body.goal_criteria = criteria;
     }
     if (supportsMeetings()) {
-      body.meeting = true;
-      if (get('review-plan').checked) body.review_plan = true;
+      if (get('review-plan').checked) {
+        body.meeting = body.review_plan = true;
+      } else {
+        body.meeting = room.quick_dispatch_supported ? 'auto' : !profiles.quick(workProfile.mode, body.allow_edits);
+      }
       const overrides = {};
       for (const role of Object.keys(roleLabels)) {
         const engine = get('assignment-' + role + '-engine').value;

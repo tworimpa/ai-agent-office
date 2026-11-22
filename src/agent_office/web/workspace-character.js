@@ -52,6 +52,7 @@ function usageView(make, data) {
     const block = make('section');
     block.append(make('h3', '이번 작업 방식'), make('p', [modes[profile.mode] || profile.mode, profile.reason].filter(Boolean).join(' · ')));
     for (const [role, prefs] of Object.entries(profile.roles || {})) {
+      if (data.active_roles && !data.active_roles.includes(role)) continue;
       block.append(make('p', [roleNames[role] || role, prefs.engine, prefs.model || 'CLI 기본 모델', prefs.effort || 'CLI 기본 강도'].filter(Boolean).join(' · ')));
       if (profile.role_reasons?.[role]) block.append(make('small', profile.role_reasons[role]));
     }

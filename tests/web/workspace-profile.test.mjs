@@ -73,6 +73,26 @@ test('ordinary intake inherits automatically and a legacy room never reads or su
   }
 });
 
+test('meeting selection respects automatic host routing, older profile hosts and explicit plan review', async t => {
+  for (const [native, confirm, expected] of [[true,false,'auto'],[false,false,false],[true,true,true]]) {
+    await t.test(String(expected), async t => {
+      const {get,person,calls,submit}=mount(t,fixture(path=>path===base ? {
+        ...room(), journal_id:journal, work_profiles_supported:true,meeting_supported:true,quick_dispatch_supported:native
+      } : undefined));
+      await until(()=>!get('settings').disabled);
+      person('coordinator').click();
+      await until(()=>get('assignment-mode').options[0].textContent.includes('자동'));
+      if (confirm) get('review-plan').click();
+      get('message').value='읽기 전용 확인';
+      submit('chat-form');
+      await until(()=>calls.some(call=>call.path.endsWith('/assignments')));
+      const body=calls.find(call=>call.path.endsWith('/assignments')).body;
+      assert.equal(body.meeting,expected);
+      assert.equal(Boolean(body.review_plan),confirm);
+    });
+  }
+});
+
 test('workspace policy persists model and fallback settings separately, and model refresh requires a click', async t => {
   const {get, calls, submit, window} = mount(t, fixture());
   await until(() => !get('settings').disabled);

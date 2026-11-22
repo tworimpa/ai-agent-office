@@ -379,8 +379,19 @@ def _check_room_reply(status, data, headers, journal, method, route, payload):
         from .workspace_coordination import markdown_settings
         goal = bool(payload.get("goal")) or (payload.get("allow_edits") is True and
                ("coordination" in payload or bool(markdown_settings(payload["message"]))))
+        requested = payload.get("meeting", False)
+        recorded = bool(row["assignment"].get("meeting"))
+        profile = row["assignment"].get("work_profile", {})
+        override_mode = payload.get("work_profile", {}).get("mode")
+        if requested == "auto" and (not profile or override_mode is not None and override_mode != profile.get("mode")):
+            raise RemoteUnavailable()
+        quick = bool(profile) and work_profiles.effective_mode(profile.get("mode"),row["allow_edits"]) == "quick"
+        expected = bool(payload.get("review_plan")) or bool(requested) and not quick
+        # Older hosts and idempotently returned older receipts can have a meeting for a boolean request.
+        legacy = requested is True and recorded
         if (bool(row["assignment"].get("goal_policy")) != goal or
-                (not goal and bool(row["assignment"].get("meeting")) != bool(payload.get("meeting"))) or
+                (requested == "auto" and quick and not payload.get("review_plan") and recorded) or
+                (not goal and recorded != expected and not legacy) or
                 bool(row["assignment"].get("review_plan")) != bool(payload.get("review_plan"))):
             raise RemoteUnavailable()
         if row["assignment"].get("test_files") != payload.get("test_files"):
