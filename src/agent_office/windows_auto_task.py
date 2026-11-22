@@ -31,16 +31,18 @@ def _environment(system, profile, roaming, local, tools=None):
     }
 
 
-def _prepare(tools=None):
+def _prepare(tools=None, *, standalone=None):
     import ctypes
 
     if not sys.flags.isolated or ctypes.windll.shell32.IsUserAnAdmin():
         raise ValueError("Use an unelevated operator session and isolated Python (-I)")
-    package = CONTROLLER / "Lib" / "site-packages" / "agent_office"
-    if (Path(sys.executable) != CONTROLLER / "Scripts" / "python.exe"
+    root = standalone or CONTROLLER
+    python = root / "python.exe" if standalone else root / "Scripts" / "python.exe"
+    package = root / "Lib" / "site-packages" / "agent_office"
+    if (Path(sys.executable) != python
             or Path(__file__).resolve(strict=True).parent != package):
         raise ValueError("Install the trusted controller wheel in the fixed operator environment")
-    os.chdir(CONTROLLER)
+    os.chdir(root)
 
     def folder(kind):
         value = ctypes.create_unicode_buffer(260)  # SHGetFolderPathW returns a MAX_PATH buffer

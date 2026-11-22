@@ -221,7 +221,9 @@ def claim_session(root, target, reviewed, session_id, roles):
         enroll(root, target, reviewed, session_roles=roles)
     with _state(root, write=True) as db:
         policy = _policy(db, ident)
-        if not policy["enabled"] or policy["binding"] != {**reviewed, "session_roles": roles}:
+        prior = policy["binding"].get("session_roles", {})
+        if (not policy["enabled"] or prior.get("validator_sid") != roles["validator_sid"] or
+                policy["binding"] != {**reviewed, "session_roles": prior}):
             raise ValueError("Operator session does not match the enabled enrollment")
         db.execute("""CREATE TABLE IF NOT EXISTS operator_sessions
             (id TEXT PRIMARY KEY, target TEXT NOT NULL, generation TEXT NOT NULL)""")
@@ -229,6 +231,11 @@ def claim_session(root, target, reviewed, session_id, roles):
             db.execute("INSERT INTO operator_sessions VALUES(?,?,?)", (session_id, ident, policy["generation"]))
         except sqlite3.IntegrityError:
             raise ValueError("This operator session has already started") from None
+        # Each UAC session creates a new non-admin principal. The native entry point has
+        # verified the protected descriptor, group membership and exact local account name.
+        if prior != roles:
+            db.execute("UPDATE policies SET binding=? WHERE target=?",
+                       (_json({**reviewed, "session_roles": roles}), ident))
         _audit(db, ident, policy["generation"], "session_started", {"session_id": session_id, **roles})
 
 
@@ -328,7 +335,7 @@ def _settle_started(root, target, policy, intent, validator, evidence):
             return _finish(db, intent, result["state"])
 
 
-def _run(root, target, policy, validator=None, session_evidence=None):
+def _run(root, target, policy, validator=None, session_evidence=None, mirror_root=None):
     b = policy["binding"]
     ident, gen = b["target_id"], policy["generation"]
     if not _bound_target_matches(root, target, b):
@@ -343,7 +350,7 @@ def _run(root, target, policy, validator=None, session_evidence=None):
         if recovered is not None:
             return recovered
     current = stable_history.page(root, limit=1)["current"]
-    mirror = _mirror(root)
+    mirror = _mirror(root if mirror_root is None else mirror_root)
     base = pending["base"] if pending else current["sha"]
     seq = pending["base_seq"] if pending else current["seq"]
     sha = _next(mirror, base)
@@ -461,7 +468,7 @@ def _run(root, target, policy, validator=None, session_evidence=None):
         return _finish(db, pending, result["state"])
 
 
-def run_once(root, target, *, validator=None, session_evidence=None):
+def run_once(root, target, *, validator=None, session_evidence=None, mirror_root=None):
     config, _ = deployment.read_selection(target)
     ident = config["target_id"]
     with RunGuard(Path(root).resolve() / DB, ident), _state(root) as db:
@@ -471,7 +478,7 @@ def run_once(root, target, *, validator=None, session_evidence=None):
         if not policy["enabled"]:
             return dict(state="disabled", target_id=ident)
         try:
-            return _run(root, target, policy, validator, session_evidence)
+            return _run(root, target, policy, validator, session_evidence, mirror_root)
         except runtime_ops.JournalBusy:
             return dict(state="busy", target_id=ident)
         except (ValueError, sqlite3.Error, OSError, RuntimeError, subprocess.SubprocessError) as exc:

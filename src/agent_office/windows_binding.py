@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import re
 import socket
+import subprocess
+import time
 
 
 def _split(command):
@@ -182,39 +184,103 @@ def _parents():
 
 def _birth_time(pid):
     import win32api
-    import win32process
 
     handle = win32api.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
     try:
-        return win32process.GetProcessTimes(handle)["CreationTime"]
+        query = ctypes.WinDLL("kernel32", use_last_error=True).GetProcessTimes
+        query.argtypes = [win.HANDLE] + [ctypes.POINTER(win.FILETIME)] * 4
+        query.restype = win.BOOL
+        times = [win.FILETIME() for _ in range(4)]
+        if not query(int(handle), *(ctypes.byref(value) for value in times)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
     finally:
         handle.Close()
 
 
-def owns_windows_process(pid, parent_pid, port):
+_MAX_ANCESTORS = 64
+
+
+def _ancestry(listener, parent_pid, parents):
+    chain = []
+    current = listener
+    while current and current not in chain and len(chain) < _MAX_ANCESTORS:
+        if current not in parents or type(current) is not int or not 0 < current <= 0xffffffff:
+            break
+        chain.append(current)
+        if current == parent_pid:
+            return chain
+        current = parents[current]
+    raise ValueError("Incomplete Windows service ancestry")
+
+
+def _cim_birth_times(chain):
+    """One local query of the identified PIDs, with no command lines or paths."""
+    import win32api
+
+    directory = Path(win32api.GetSystemDirectory())
+    shell = directory / "WindowsPowerShell/v1.0/powershell.exe"
+    where = " OR ".join(f"ProcessId={pid:d}" for pid in chain)
+    script = (
+        "$ErrorActionPreference='Stop'; $env:PSModulePath=$PSHOME + '\\Modules'; "
+        f"$rows=@(CimCmdlets\\Get-CimInstance -OperationTimeoutSec 3 -Query "
+        f"'SELECT ProcessId,ParentProcessId,CreationDate FROM Win32_Process WHERE {where}'); "
+        f"if ($rows.Count -ne {len(chain)}) {{ exit 1 }}; "
+        "foreach ($r in $rows) { "
+        "if ($null -eq $r.ParentProcessId) { exit 1 }; "
+        "[Console]::WriteLine(('{0} {1} {2}' -f $r.ProcessId,$r.ParentProcessId,"
+        "$r.CreationDate.ToFileTimeUtc())) }"
+    )
+    result = subprocess.run(
+        [str(shell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        cwd=directory, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        timeout=6, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if result.returncode or len(result.stdout) > 64 * len(chain):
+        raise ValueError("Cannot read Windows process creation metadata")
+    records = {}
+    for line in result.stdout.splitlines():
+        if not re.fullmatch(rb"[0-9]{1,10} [0-9]{1,10} [0-9]{1,19}", line):
+            raise ValueError("Invalid Windows process creation metadata")
+        pid, parent, birth = map(int, line.split())
+        if pid not in chain or pid in records or birth <= 0:
+            raise ValueError("Unexpected Windows process record")
+        records[pid] = (parent, birth)
+    if (len(records) != len(chain) or
+            any(records[child][0] != parent for child, parent in zip(chain, chain[1:]))):
+        raise ValueError("Windows process ancestry changed")
+    return [records[pid][1] for pid in chain]
+
+
+def owns_windows_process(pid, parent_pid, port, *, service=None):
     """Require the actual listener to be alive under the SCM-owned process."""
     import pywintypes
 
     if not parent_pid:
         return False
     try:
+        # UTC FILETIME uses 100 ns ticks since 1601. A PID created during this
+        # observation cannot attest an earlier SCM or listening-table result.
+        started = time.time_ns() // 100 + 116444736000000000
+        if service is not None and _sc_config(service)[2] != parent_pid:
+            return False
         listener = _listener(port)
         if not listener or (pid is not None and listener != pid):
             return False
-        parents = _parents()
-        current, born = listener, _birth_time(listener)
-        seen = set()
-        while current != parent_pid:
-            if not current or current in seen:
-                return False
-            seen.add(current)
-            current = parents.get(current)
-            if not current:
-                return False
-            earlier = _birth_time(current)
-            if earlier > born:
-                return False  # PID recycled after the child was created.
-            born = earlier
-        return _listener(port) == listener
-    except (ValueError, OSError, pywintypes.error):
+        chain = _ancestry(listener, parent_pid, _parents())
+        if _listener(port) != listener:
+            return False
+        try:
+            births = [_birth_time(process) for process in chain]
+            precision = 1
+        except (OSError, pywintypes.error) as exc:
+            if getattr(exc, "winerror", None) != 5:  # ERROR_ACCESS_DENIED only
+                raise
+            births = _cim_birth_times(chain)
+            precision = 10  # CIM_DATETIME reports microseconds.
+        return (0 < births[0] and births[0] + precision <= started and
+                all(0 < parent < child for child, parent in zip(births, births[1:])) and
+                (service is None or _sc_config(service)[2] == parent_pid) and
+                _listener(port) == listener)
+    except (ValueError, OSError, pywintypes.error, subprocess.TimeoutExpired):
         return False

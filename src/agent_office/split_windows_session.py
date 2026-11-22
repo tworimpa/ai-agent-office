@@ -8,6 +8,7 @@ import re
 import sqlite3
 import stat
 import sys
+import tempfile
 import time
 
 from . import auto_deploy, release_store
@@ -83,6 +84,8 @@ def _binding(directory):
     if not all(isinstance(sid, str) and LOCAL_SID.fullmatch(sid) for sid in sids) or len(set(sids)) != 3:
         raise ValueError("Expected distinct local validator, deployment operator and session group")
     release_store._check_image(fields["image"])
+    if not isinstance(fields["runtime_sha256"], str) or not re.fullmatch("[0-9a-f]{64}", fields["runtime_sha256"]):
+        raise ValueError("Invalid operator runtime digest")
     if fields["enroll"] is not True:
         raise ValueError("Administrator enrollment is required for this session")
     return fields
@@ -157,7 +160,7 @@ class _WindowsValidator(SessionValidator):
         return super().ping()
 
 
-def _operate(directory, binding):
+def _operate(directory, binding, mirror_root):
     _service_rights()
     reviewed = auto_deploy.binding(RELEASE, TARGET, binding["image"])
     if ((reviewed["manager"], reviewed["service"]) != ("windows", "AgentOfficeStudio")
@@ -172,7 +175,8 @@ def _operate(directory, binding):
     while _binding(directory) == binding:
         validator.ping()
         try:
-            result = auto_deploy.run_once(RELEASE, TARGET, validator=validator, session_evidence=evidence)
+            result = auto_deploy.run_once(RELEASE, TARGET, validator=validator, session_evidence=evidence,
+                                          mirror_root=mirror_root)
         except (ValueError, OSError, RuntimeError, sqlite3.Error) as exc:
             result = {"state": "refused", "reason": str(exc)[:600]}
         print(json.dumps(result, ensure_ascii=False), flush=True)
@@ -193,13 +197,21 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if os.name != "nt":
         raise ValueError("The split deployment session requires Windows")
-    _prepare(tools=("git",) if args.role == "operator" else ("git", "gh", "docker"))
     binding = _binding(args.session_dir)
+    if args.role == "operator":
+        runtime = SESSIONS.parent / "SplitRuntime" / binding["runtime_sha256"]
+        _acl(runtime.parent)
+        _acl(runtime)
+        _prepare(tools=("git",), standalone=runtime)
+    else:
+        _prepare()
     _check_principal(binding, args.role)
     if args.role == "validator":
         _serve(args.session_dir, binding)
     else:
-        _operate(args.session_dir, binding)
+        with tempfile.TemporaryDirectory(prefix="office-operator-git-") as mirror:
+            with release_store.use_session_object_store(RELEASE / "objects.git"):
+                _operate(args.session_dir, binding, Path(mirror))
 
 
 if __name__ == "__main__":

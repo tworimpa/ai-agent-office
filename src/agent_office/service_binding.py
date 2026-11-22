@@ -135,7 +135,7 @@ def owns_listener(binding, receipt, port):
     try:
         if binding["manager"] == "windows" and os.name == "nt":
             from .windows_binding import owns_windows_process
-            return owns_windows_process(child, parent, port)
+            return owns_windows_process(child, parent, port, service=binding["service"])
         return sys.platform.startswith("linux") and (child is None or child == parent) and _linux_owns(parent, port)
     except (OSError, PermissionError):
         return False

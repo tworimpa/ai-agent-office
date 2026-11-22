@@ -1,6 +1,7 @@
 """Operator-owned Git objects, release journal and atomic stable source selection."""
 
 from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -18,6 +19,22 @@ from .engines import resolve_executable
 from .improvement_proposal import _digest, validate_proposal
 from .models import validate_id
 from .ownership import RunBusyError, RunGuard
+
+
+_session_git = ContextVar("operator_release_git", default=None)
+
+
+@contextmanager
+def use_session_object_store(path):
+    """Trust only the existing host-provisioned bare store for this operator session."""
+    path = Path(path)
+    if path.resolve(strict=True) != path:
+        raise ValueError("Expected a direct path to the enrolled release object store")
+    token = _session_git.set((path, path.stat()))
+    try:
+        yield
+    finally:
+        _session_git.reset(token)
 
 
 def run_git(repo: Path, *args: str, data: bytes | None = None,
@@ -39,6 +56,11 @@ def run_git(repo: Path, *args: str, data: bytes | None = None,
                "-c", "core.autocrlf=false", "-c", f"core.attributesFile={os.devnull}",
                "-c", "core.protectNTFS=true", "-c", "core.protectHFS=true",
                "-c", "gc.auto=0", *args]
+    trusted = _session_git.get()
+    if trusted and repo == trusted[0]:
+        if repo.resolve(strict=True) != repo or not os.path.samestat(trusted[1], repo.stat()):
+            raise ValueError("Enrolled Git object store changed during the session")
+        command[1:1] = ["-c", "safe.directory=" + repo.as_posix()]
     try:
         result = subprocess.run(command, cwd=repo, env=settings, input=data or b"",
                                 capture_output=True, timeout=120)
