@@ -23,6 +23,8 @@ def add_commands(actions):
     recover = actions.add_parser("deployment-recover", help="Review and reconcile an interrupted deployment")
     for command in (init, deploy, status, recover):
         command.add_argument("--target", type=Path, required=True)
+    from .auto_deploy_cli import add_commands as add_policy_commands
+    add_policy_commands(actions)
 
 
 def _phrase(reviewed):

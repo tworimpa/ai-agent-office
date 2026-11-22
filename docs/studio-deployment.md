@@ -71,3 +71,52 @@ agent-office improve --release /srv/office/release deployment-recover --target /
 **안정 버전 이력 → 서비스 배포 상태**에서 선택한 호스트의 지정 서비스와 **대상 버전**을 비교한다. 서비스 이름과 실제 응답에서 확인한 순번·SHA, 마지막 배포 및 복원 결과가 표시된다. 같은 SHA로 돌아온 다른 안정 순번과, 다른 릴리스의 같은 번호도 구분한다. 원격 호스트는 기존 SSH 연결로 상태를 읽고, 운영 명령은 그 서비스를 소유한 호스트의 터미널에서 실행한다.
 
 배포 대상은 관제 Studio를 시작한 운영자가 경로로 지정한 서비스다. 서비스 이름 옆 런타임 저널 ID로 실제 대상을 식별한다. 관제 저널과 대상 서비스 저널을 별도로 운용할 수 있다. 포트 연결이 끊기거나 부팅 정보·서비스 소유권을 확인할 수 없으면 화면은 확인된 실행 버전을 표시하지 않는다. [구현 계획](superpowers/plans/2026-11-19-stable-deployment.md)
+
+## Windows 운영자 예약 작업
+
+### 최초 위임과 취소
+
+운영자가 이미 등록된 정상 서비스의 대상·저널·저장소·검증 이미지를 확인하고 정책을 한 번 등록한다. 기본 검증 이미지는 현재 안정 버전을 승격할 때 사용한 이미지다. 등록할 때의 짧은 확인 뒤에는 일치하는 배포마다 `approve …`와 `deploy …`를 입력할 필요가 없다.
+
+```text
+agent-office improve --release RELEASE deployment-auto-enable --target TARGET
+agent-office improve --release RELEASE deployment-auto-status --target TARGET
+agent-office improve --release RELEASE deployment-auto-run --target TARGET
+agent-office improve --release RELEASE deployment-auto-disable --target TARGET
+```
+
+`deployment-auto-run`은 한 번 검사한다. `--watch`는 운영자 프로세스가 살아 있는 동안 5분마다 검사한다. 작업실 프로세스, 웹 API와 코딩 에이전트에는 정책 등록·변경·호출 기능을 제공하지 않는다. 독립된 신뢰 런타임에서 이 명령을 실행한다. 후보가 배포 도구를 변경해도 현재 검증을 담당하는 운영자 런타임과 정책 파일을 자동으로 덮어쓰지 않는다.
+
+- 등록 대상은 `tworimpa/ai-agent-office`의 `main`과 한 서비스다. 운영자 소유의 별도 Git 미러에 공식 HTTPS 원격의 객체를 받아 기존 안정 버전 바로 다음의 병합을 순서대로 처리한다. 직접 푸시·미병합·불일치·만료된 검증 로그는 보류한다.
+- 해당 PR의 최종 헤드와 병합 부모, 실제 checkout된 테스트 트리를 GitHub 자료와 로컬 Git 객체로 대조한다. Windows·Ubuntu × Python 3.11·3.13 및 두 OS의 Electron·Rust 설치 검사까지 8개가 모두 성공해야 한다. 워크플로 이름뿐 아니라 등록된 워크플로 ID, 최신 시도와 각 작업의 checkout 증거를 확인한다. 테스트 코드의 품질은 PR 리뷰 대상이다.
+- 배포 도구가 포함된 변경에도 같은 조건이 적용된다. 기존 격리 검증이 통과해야 하며, 승격 직전 정책 세대와 CI 증거를 재확인한다. 실제 서비스 등록·프로세스·저널 파일을 대조하고 SQLite에서 작업 진입을 예약한다. 실행 중인 작업이 있으면 다음 회차로 미룬다. 이전 프로세스가 멈춘 뒤 새 프로세스를 시작하기 전에 예약을 해제한다.
+- 승인 근거, 대상 커밋, 후보, 서비스 작업 ID와 결과는 운영자 원장의 `operator-policy.sqlite3`와 기존 안정·배포 이력에 남긴다. 새 버전 기동 실패는 기존 직전 버전 복구 경로를 사용한다. 복원이 필요할 때 이미 새 작업이 시작됐거나 운영자의 수동 선택이 바뀌면 운영자 확인 상태를 남긴다. 실패한 같은 버전을 타이머가 반복 배포하지 않는다.
+
+`AgentOfficeStudio-DeploymentWatch`는 **운영자가 Windows에 로그인한 동안** 5분마다 정책을 확인한다. 화면을 잠가도 실행되고, 로그아웃하거나 재부팅하면 다시 로그인해야 한다. 이전 회차가 실행 중이면 다음 회차를 기다린다. 대상은 `C:\ProgramData\AI-Agent-Office\release`, `deploy`, 서비스 `AgentOfficeStudio`로 고정된다. [Microsoft 작업 스케줄러 로그온 유형](https://learn.microsoft.com/en-us/windows/win32/taskschd/principal-logontype)
+
+1. 작업자·서비스와 다른 Windows 운영자 계정을 사용한다. 이 계정의 **일반 권한 토큰**에 기존 원장 읽기·쓰기와 해당 서비스의 `SERVICE_QUERY_CONFIG`, `SERVICE_QUERY_STATUS`, `SERVICE_START`, `SERVICE_STOP` 권한이 필요하다. NSSM의 Application·AppParameters 조회, 리스닝 프로세스부터 NSSM까지 각 프로세스의 생성 시각 조회(`PROCESS_QUERY_LIMITED_INFORMATION`), 루프백 Studio 응답 확인도 필요하다. 필요한 권한은 호스트 관리자가 별도로 구성한다.
+2. 운영자가 검토한 병합 버전의 컨트롤러 wheel과 의존성 wheel을 준비한다. 아래는 검증된 wheel을 운영자 전용 `D:\OfficeWheels`에 둔 경우다. 기반 인터프리터는 `python-install` 바로 아래 **버전 번호가 있는 실제 CPython 디렉터리**에서 선택한다. 컨트롤러 패키지와 의존성을 전용 venv 안에 설치하고 운영자가 갱신한다. 작업자와 서비스에는 이 환경, 상위 폴더 및 원장에 대한 쓰기 권한이 없어야 한다.
+
+   ```powershell
+   $controller = 'C:\ProgramData\AI-Agent-Office\operator'
+   $basePython = 'C:\ProgramData\AI-Agent-Office\python-install\cpython-3.11.15-windows-x86_64-none\python.exe'
+   & $basePython -I -m venv --copies $controller
+   & "$controller\Scripts\python.exe" -I -m pip --isolated install --no-index --find-links D:\OfficeWheels D:\OfficeWheels\ai_agent_office-0.1.0-py3-none-any.whl
+   ```
+
+3. 운영자 프로필의 `gh` 로그인으로 해당 저장소와 Actions 증거를 읽을 수 있어야 한다. Git, GitHub CLI, Docker CLI는 `C:\Program Files` 아래의 기본 설치를 사용한다. 로컬 Docker 엔진의 `docker_engine` 파이프와 원장에 고정된 Linux 검증 이미지에도 접근할 수 있어야 한다. 작업 정의에는 암호나 토큰을 저장하지 않는다.
+4. 정책을 등록한 뒤 검토한 버전의 저장소에서 **일반 PowerShell**로 아래 명령을 실행한다. 첫 명령은 작업 XML을 출력한다. 두 번째는 경로·ACL, 서비스 제어 권한과 실제 서비스 신원, GitHub 읽기, Docker 이미지 접근을 확인한 뒤 새 작업을 등록한다. 같은 이름의 작업이 있으면 등록이 실패한다.
+
+   ```powershell
+   .\scripts\register-deployment-watch.ps1 -Preview
+   .\scripts\register-deployment-watch.ps1
+   Get-ScheduledTaskInfo -TaskName AgentOfficeStudio-DeploymentWatch
+   ```
+
+다음 예약 실행을 중단하려면 `Disable-ScheduledTask -TaskName AgentOfficeStudio-DeploymentWatch`, 다시 허용하려면 `Enable-ScheduledTask -TaskName AgentOfficeStudio-DeploymentWatch`를 사용한다. 스케줄러의 최근 결과 코드는 프로세스 종료 상태다. 실제 배포·복원 결과는 대상 원장과 Studio 상태에서 확인한다.
+
+스케줄러 없이 **같은 권한으로 열어 둔 운영자의 일반 PowerShell 세션**에서 아래처럼 실행할 수도 있다. 사전 점검과 각 회차가 성공하면 다음 회차까지 대기한다. 대기 중 Ctrl+C로 끝낸다.
+
+```powershell
+.\scripts\register-deployment-watch.ps1 -WatchSession
+```

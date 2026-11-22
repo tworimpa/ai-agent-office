@@ -221,6 +221,10 @@ def test_systemd_fixed_commands(monkeypatch, manager, scope):
     prefix = ["/usr/bin/systemctl", scope, "--no-ask-password", "--no-pager"]
     assert seen == [[*prefix, "restart", "--", "office.service"],
                     [*prefix, "show", "--property=ActiveState", "--property=LoadState", "--", "office.service"]]
+    seen.clear()
+    runtime_ops.start_service(cfg)
+    assert seen == [[*prefix, "start", "--", "office.service"],
+                    [*prefix, "show", "--property=ActiveState", "--property=LoadState", "--", "office.service"]]
     for name in ("--all", "other.target", "../office.service", "*.service", "a.service\nstart"):
         with pytest.raises(ValueError):
             runtime_ops.restart_service({**cfg, "service": name})

@@ -1,13 +1,18 @@
 import io
 import json
+import shutil
 import sqlite3
 import sys
+from contextlib import closing
 from uuid import uuid4
 
 import pytest
 
 from agent_office import cli, deploy_cli, deployment as deploy, runtime_ops, stable_history
 from agent_office.ownership import RunBusyError, RunGuard
+from agent_office.models import OwnerInfo, TaskSpec
+from agent_office.store import TaskStore
+from agent_office.workspace import plan_worktree
 from test_improvement_cli import OperatorTerminal
 from test_release_store import proposal, release, source
 from test_stable_history import approve, passed, passing
@@ -28,9 +33,10 @@ class NativeFixture:
         self.crash_after_boot = False
         self.signature = "1" * 64
         self.owns = True
+        self.journal = target.parent / "runtime.db"
         monkeypatch.setattr(service_binding, "inspect_service", lambda config, target, **kwargs: {
             "manager": config["manager"], "service": config["service"], "pid": 111 if self.state == "running" else 0,
-            "signature": self.signature})
+            "signature": self.signature, "journal_path": str(self.journal)})
         monkeypatch.setattr(service_binding, "owns_listener", lambda binding, receipt, port: self.owns)
         monkeypatch.setattr(runtime_ops, "manager_state", lambda config: self.state)
         monkeypatch.setattr(runtime_ops, "probe", self.probe)
@@ -80,6 +86,122 @@ def machine(release, tmp_path, monkeypatch):
     deploy.init_target(root, target, manager="systemd", service="office.service", port=8766,
                        journal_id="a" * 32)
     return NativeFixture(root, target, monkeypatch)
+
+
+@pytest.fixture
+def journal(machine):
+    with TaskStore(machine.journal) as store:
+        store.connection.execute("CREATE TABLE studio_identity(singleton INTEGER PRIMARY KEY, id TEXT)")
+        store.connection.execute("INSERT INTO studio_identity VALUES(1,?)", ("a" * 32,))
+    return machine.journal
+
+
+def admit(journal):
+    run = uuid4().hex
+    spec = TaskSpec(uuid4().hex, str(journal.parent), "test", "codex", "antigravity", 1)
+    with TaskStore(journal, existing=True) as store:
+        store.connection.execute("PRAGMA busy_timeout=0")
+        return store.create_run(spec, run, plan_worktree(journal.parent, run), OwnerInfo("test", uuid4().hex))
+
+
+def idle_apply(machine, journal, seq=None, *, recover=False):
+    reviewed = deploy.review(machine.root, machine.target, seq, recover=recover)
+    with runtime_ops.idle_journal(journal, reviewed["config"]["journal_id"]) as release_idle:
+        return deploy.apply_review(machine.root, machine.target, reviewed, release_idle=release_idle)
+
+
+def test_idle_lease_blocks_admission_until_native_stop_and_releases_before_start(
+        machine, journal, release, passing, monkeypatch):
+    root, base = release
+    approve(root, passed(root, proposal(base)))
+    machine.run(1)
+    def stop(config):
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            admit(journal)
+        machine.stop(config)
+
+    def start(config):
+        assert machine.state == "stopped"
+        admit(journal)
+        machine.restart(config)
+
+    monkeypatch.setattr(runtime_ops, "stop_service", stop)
+    monkeypatch.setattr(runtime_ops, "start_service", start)
+    assert idle_apply(machine, journal, 2)["state"] == "healthy"
+    before = list(machine.actions)
+    with pytest.raises(runtime_ops.JournalBusy, match="active run"):
+        idle_apply(machine, journal, 1)
+    assert machine.actions == before
+    assert len(deploy.recent_operations(machine.target)) == 2
+
+
+def test_idle_guard_rejects_wrong_identity_copied_journal_active_writer_and_generation(machine, journal):
+    with pytest.raises(ValueError, match="identity"), runtime_ops.idle_journal(journal, "b" * 32):
+        pytest.fail("unexpected lease")
+    clone = shutil.copyfile(journal, journal.with_suffix(".copy"))
+    with pytest.raises(ValueError, match="reserved runtime journal"):
+        idle_apply(machine, clone, 1)
+    with closing(sqlite3.connect(journal)) as db:
+        db.execute("BEGIN IMMEDIATE")
+        with pytest.raises(runtime_ops.JournalBusy, match="active writer"):
+            idle_apply(machine, journal, 1)
+        db.execute("CREATE TABLE studio_improvements(state TEXT)")
+        db.execute("INSERT INTO studio_improvements VALUES('generating')")
+        db.commit()
+    with pytest.raises(runtime_ops.JournalBusy, match="improvement"):
+        idle_apply(machine, journal, 1)
+    from agent_office.studio_improvements import _slot
+    with closing(sqlite3.connect(journal)) as db, db:
+        db.execute("UPDATE studio_improvements SET state='ready'")
+    with _slot(journal), pytest.raises(runtime_ops.JournalBusy, match="improvement"):
+        idle_apply(machine, journal, 1)
+    assert machine.actions == []
+    assert deploy.recent_operations(machine.target) == []
+
+
+def test_replaced_journal_at_same_path_stops_further_native_control(machine, journal, monkeypatch):
+    def start(config):
+        machine.restart(config)
+        copy = journal.with_suffix(".replacement")
+        shutil.copyfile(journal, copy)
+        copy.replace(journal)
+
+    monkeypatch.setattr(runtime_ops, "start_service", start)
+    assert idle_apply(machine, journal, 1)["state"] == "restore_failed"
+    assert len(machine.actions) == 1
+
+
+@pytest.mark.parametrize("fault,accept_work", [("stop", False), ("unhealthy", False), ("unhealthy", True)])
+def test_idle_recovery_restores_previous_unless_candidate_has_admitted_work(
+        machine, journal, release, passing, monkeypatch, fault, accept_work):
+    root, base = release
+    approve(root, passed(root, proposal(base)))
+    machine.run(1)
+    previous_boot = machine.actual["boot_id"]
+    machine.failures = [fault]
+    def start(config):
+        with closing(sqlite3.connect(journal, timeout=0)) as db:
+            db.execute("BEGIN IMMEDIATE")  # A starting Studio initializes its journal.
+        machine.restart(config)
+        if accept_work and machine.actual["seq"] == 2:
+            admit(journal)
+
+    monkeypatch.setattr(runtime_ops, "start_service", start)
+    if accept_work:
+        with pytest.raises(runtime_ops.JournalBusy):
+            idle_apply(machine, journal, 2)
+        assert machine.actual["seq"] == 2
+        assert machine.actions.count(("stop", None)) == 1
+        assert deploy.recent_operations(machine.target)[0]["state"] == "restore_failed"
+        with TaskStore(journal, existing=True) as store:
+            run = store.connection.execute("SELECT run_id FROM runs").fetchone()[0]
+            store.record_transition(run, operation_key="done", event_type="RUN_FINISHED",
+                                    state="CANCELED", outcome="CANCELED")
+        result = idle_apply(machine, journal, recover=True)
+    else:
+        result = idle_apply(machine, journal, 2)
+    assert result["state"] == "deploy_failed_restored"
+    assert machine.actual["sha"] == base and machine.actual["boot_id"] != previous_boot
 
 
 def test_historical_deploy_and_verified_noop(machine, release, passing):
