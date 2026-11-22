@@ -575,7 +575,7 @@ def _restore(session, op, selected):
         return _finish(session, op, selected, "restore_failed", "운영자 복구가 필요합니다. " + op["recovery_failure"])
 
 
-def apply_review(root, target, reviewed, *, release_idle=None, operation_id=None):
+def apply_review(root, target, reviewed, *, release_idle=None, operation_id=None, before_operation=None):
     """Recheck the reviewed target; an idle_journal reservation guards policy-driven stops."""
     config = reviewed["config"]
     target = Path(target).resolve()
@@ -605,6 +605,8 @@ def apply_review(root, target, reviewed, *, release_idle=None, operation_id=None
                     raise ValueError("Running predecessor changed during source verification")
                 if selected and (selected["seq"], selected["sha"]) == (requested["seq"], requested["sha"]):
                     return {"state": "unchanged", "requested": {"seq": selected["seq"], "sha": selected["sha"]}}
+                if before_operation is not None:
+                    before_operation()
                 op = {"id": validate_id(operation_id) if operation_id is not None else uuid4().hex,
                       "target_id": config["target_id"], "release_id": config["release_id"],
                       "requested": requested, "signature": session.signature,

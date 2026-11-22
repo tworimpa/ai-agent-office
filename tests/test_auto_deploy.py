@@ -1,3 +1,6 @@
+from dataclasses import replace
+from uuid import uuid4
+
 import pytest
 
 from agent_office import (
@@ -14,12 +17,10 @@ from test_stable_history import passing
 
 
 @pytest.fixture
-def enrolled(machine, journal, release, source, passing, monkeypatch):
+def prepared(machine, journal, release, source, passing, monkeypatch):
     root, base = release
     target = machine.target
     deployment.apply_review(root, target, deployment.review(root, target, 1))
-    bound = auto.binding(root, target, IMAGE)
-    assert auto.enroll(root, target, bound)["state"] == "enabled"
     # A normal merged commit, with genuine local objects imported into the release object store.
     git = lambda *args: release_store.run_git(source, *args).decode().strip()
     (source / "example.txt").write_text("reviewed\n")
@@ -34,6 +35,79 @@ def enrolled(machine, journal, release, source, passing, monkeypatch):
     monkeypatch.setattr(policy_github, "attest", lambda repo, sha, b, path: proof)
     monkeypatch.setattr(runtime_ops, "start_service", machine.restart)
     return root, target, merge, proof
+
+
+@pytest.fixture
+def enrolled(prepared):
+    root, target, *_ = prepared
+    assert auto.enroll(root, target, auto.binding(root, target, IMAGE))["state"] == "enabled"
+    return prepared
+
+
+@pytest.fixture
+def split(prepared, monkeypatch):
+    root, target, _, proof = prepared
+    roles = {"operator_sid": "operator", "validator_sid": "validator"}
+    evidence = {**roles, "session_id": uuid4().hex, "signer": "b" * 64}
+    bound = auto.binding(root, target, IMAGE)
+    auto.claim_session(root, target, bound, evidence["session_id"], roles)
+
+    class Validator:
+        def attest(self, *args):
+            return proof
+
+        def validate(self, sha, base, image):
+            return {"passed": True, "exit_code": 0, "output": "session Docker", "image": image, "sha": sha}
+
+        def ping(self):
+            return True
+
+    monkeypatch.setattr(policy_github, "attest", lambda *args: pytest.fail("operator tried GitHub"))
+    monkeypatch.setattr(release_store.release_validation, "validate_candidate",
+                        lambda *args: pytest.fail("operator tried Docker"))
+    return Validator(), evidence, roles, bound
+
+
+def test_split_deployment_checks_signed_tree_and_journals_the_actors(prepared, split):
+    root, target, sha, _ = prepared
+    validator, evidence, roles, bound = split
+    with pytest.raises(ValueError, match="already started"):
+        auto.claim_session(root, target, bound, evidence["session_id"], roles)
+    with pytest.raises(ValueError, match="requires its authorized split"):
+        auto.run_once(root, target)
+    result = auto.run_once(root, target, validator=validator, session_evidence=evidence)
+    assert result["state"] == "healthy" and result["sha"] == sha
+    assert release_store.review(root, result["candidate"])["validation"]["output"] == "session Docker"
+    attested = next(r["details"] for r in auto.status(root, target)["history"] if r["action"] == "attested")
+    assert all(attested[k] == v for k, v in evidence.items())
+    auto.disable(root, target)
+    with pytest.raises(ValueError, match="enabled enrollment"):
+        auto.claim_session(root, target, bound, uuid4().hex, roles)
+
+
+def test_split_rejects_different_tree_and_old_logon(prepared, split, monkeypatch):
+    root, target, _, proof = prepared
+    validator, evidence, roles, bound = split
+    monkeypatch.setattr(validator, "attest", lambda *args: replace(proof, tree="0" * 40))
+    with pytest.raises(ValueError, match="local merge tree"):
+        auto.run_once(root, target, validator=validator, session_evidence=evidence)
+    auto.claim_session(root, target, bound, uuid4().hex, roles)
+    with pytest.raises(ValueError, match="superseded"):
+        auto.run_once(root, target, validator=validator, session_evidence=evidence)
+    assert stable_history.page(root)["current"]["seq"] == 1
+
+
+def test_disconnected_validator_can_retry_same_candidate(prepared, split, monkeypatch):
+    root, target, _, _ = prepared
+    validator, evidence, *_ = split
+    with monkeypatch.context() as patch:
+        def disconnect(*args):
+            raise OSError("disconnected")
+        patch.setattr(validator, "validate", disconnect)
+        with pytest.raises(OSError, match="disconnected"):
+            auto.run_once(root, target, validator=validator, session_evidence=evidence)
+    assert stable_history.page(root)["current"]["seq"] == 1
+    assert auto.run_once(root, target, validator=validator, session_evidence=evidence)["state"] == "healthy"
 
 
 def test_eligible_release_uses_existing_validation_promotes_once_and_restarts(enrolled, machine):

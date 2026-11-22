@@ -388,7 +388,7 @@ def _guard(root, id):
         raise ValueError("Another operation is active for this candidate") from exc
 
 
-def verify_candidate(root, id, *, first_attempt_only=False, on_started=None):
+def verify_candidate(root, id, *, first_attempt_only=False, on_started=None, session_report=None):
     """Record an exact-tree validation. Only the explicit operator command can retry."""
     _, git = _paths(root)
     with _guard(root, id):
@@ -407,7 +407,8 @@ def verify_candidate(root, id, *, first_attempt_only=False, on_started=None):
         if on_started is not None:
             on_started()
         try:
-            report = release_validation.validate_candidate(git, sha, image)
+            report = (release_validation.validate_candidate(git, sha, image)
+                      if session_report is None else session_report)
             if (not isinstance(report, dict) or report.get("sha") != sha or report.get("image") != image
                     or type(report.get("passed")) is not bool or not isinstance(report.get("output"), str)
                     or ("exit_code" not in report or (report["exit_code"] is not None

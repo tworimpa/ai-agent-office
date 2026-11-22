@@ -18,9 +18,10 @@ TOOLS = {
 }
 
 
-def _environment(system, profile, roaming, local):
+def _environment(system, profile, roaming, local, tools=None):
+    paths = TOOLS.values() if tools is None else (TOOLS[name] for name in tools)
     return {
-        "PATH": os.pathsep.join(map(str, [*(tool.parent for tool in TOOLS.values()), system])),
+        "PATH": os.pathsep.join(map(str, [*(tool.parent for tool in paths), system])),
         "PATHEXT": ".EXE", "SystemRoot": str(system.parent), "WINDIR": str(system.parent),
         "COMSPEC": str(system / "cmd.exe"), "USERPROFILE": str(profile), "HOME": str(profile),
         "APPDATA": str(roaming), "LOCALAPPDATA": str(local),
@@ -30,7 +31,7 @@ def _environment(system, profile, roaming, local):
     }
 
 
-def _prepare():
+def _prepare(tools=None):
     import ctypes
 
     if not sys.flags.isolated or ctypes.windll.shell32.IsUserAnAdmin():
@@ -51,11 +52,12 @@ def _prepare():
     if not 0 < ctypes.windll.kernel32.GetSystemDirectoryW(system, len(system)) < len(system):
         raise ValueError("Cannot identify the Windows system directory")
     # CSIDL_PROFILE, CSIDL_APPDATA, CSIDL_LOCAL_APPDATA from the current Windows token.
-    clean = _environment(Path(system.value), folder(0x28), folder(0x1A), folder(0x1C))
+    clean = _environment(Path(system.value), folder(0x28), folder(0x1A), folder(0x1C), tools)
     os.environ.clear()
     os.environ.update(clean)
     from .engines import resolve_executable
-    for name, path in TOOLS.items():
+    for name in TOOLS if tools is None else tools:
+        path = TOOLS[name]
         found = resolve_executable(name + ".exe")
         if found is None or Path(found).resolve(strict=True) != path:
             raise ValueError(f"Missing trusted executable at {path}")
