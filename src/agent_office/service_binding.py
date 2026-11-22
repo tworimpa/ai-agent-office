@@ -79,6 +79,7 @@ def _validate_launcher(command, config, target):
     if (options.get("--target") != Path(target).resolve() or "--db" not in options or
             options["--db"].is_relative_to(options["--target"]) or _journal_id(options["--db"]) != config["journal_id"]):
         raise ValueError("Service command belongs to a different deployment target or runtime journal")
+    return options["--db"]
 
 
 def inspect_service(config, target, *, for_control=True):
@@ -96,13 +97,14 @@ def inspect_service(config, target, *, for_control=True):
             raise ValueError("This target requires its configured native service manager")
         if same_account:
             raise ValueError("Service and deployment operator require separate accounts")
-        _validate_launcher(native["command"], config, target)
+        journal = _validate_launcher(native["command"], config, target)
         pid = native["pid"]
         if type(pid) is not int or pid < 0:
             raise ValueError("Invalid service process owner")
         pinned = [config["manager"], config["service"], native["binding"], native["command"]]
         signature = hashlib.sha256(json.dumps(pinned, ensure_ascii=True).encode("ascii")).hexdigest()
-        return {"manager": config["manager"], "service": config["service"], "pid": pid, "signature": signature}
+        return {"manager": config["manager"], "service": config["service"], "pid": pid, "signature": signature,
+                "journal_path": str(journal)}
     except (KeyError, TypeError, OSError, subprocess.SubprocessError) as exc:
         raise ValueError("Cannot verify the registered service binding") from exc
 

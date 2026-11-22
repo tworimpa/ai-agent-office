@@ -144,6 +144,12 @@ def run_command(args, db_path):
             result = {"file": str(args.out), "base": proposal["base"], "title": proposal["title"]}
         elif root is None:
             raise ValueError("Specify the operator directory with improve --release PATH")
+        elif action.startswith("deployment-auto-"):
+            from . import auto_deploy_cli
+            result = auto_deploy_cli.run(root,args)
+            if result.get("state") == "needs_operator":
+                print(json.dumps(result,ensure_ascii=False,indent=2))
+                return 2
         elif action in {"deployment-init", "deploy", "deployment-status", "deployment-recover"}:
             from . import deploy_cli
             result = deploy_cli.run(root, args)

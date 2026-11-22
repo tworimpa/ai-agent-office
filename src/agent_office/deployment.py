@@ -367,7 +367,7 @@ def review(root, target, seq=None, *, recover=False):
 class _TargetSession:
     """Keep one target DB handle and compare its on-disk identity and last durable state."""
 
-    def __init__(self, target, connection, reviewed):
+    def __init__(self, target, connection, reviewed, release_idle=None):
         self.path = target
         self.db = connection
         self.config = reviewed["config"]
@@ -375,6 +375,7 @@ class _TargetSession:
         self.signature = reviewed["observed"]["binding"]["signature"]
         self.selected = deepcopy(reviewed["selected"])
         self.last = deepcopy(reviewed["last"])
+        self.release_idle = release_idle
 
     def check(self):
         if _file_id(self.path) != self.file_id:
@@ -401,15 +402,42 @@ class _TargetSession:
     def observe(self):
         self.check()
         observed = _observed(self.config, self.path, self.signature)
+        if self.release_idle is not None:
+            self.release_idle.verify(observed["binding"]["journal_path"])
         self.check()
         return observed
 
-    def act(self, function, expected):
+    def check_observed(self, expected):
         # The listener, unit command and target selection must still match the
         # immediately preceding observation, including when recovering a failure.
         if self.observe() != expected:
             raise ValueError("Native service or running predecessor changed before mutation")
+
+    def act(self, function, expected):
+        self.check_observed(expected)
         function(self.config)
+
+    def stop(self, expected):
+        if self.release_idle is None:
+            return self.act(runtime_ops.stop_service, expected)
+        try:
+            # A failed candidate may have admitted work after its first boot.
+            # Reacquire before every recovery stop; never interrupt that work.
+            self.release_idle.acquire()
+            self.check_observed(expected)
+            if expected["manager"] != "stopped":
+                runtime_ops.stop_service(self.config)
+        finally:
+            self.release_idle()
+
+    def restart(self, expected):
+        if self.release_idle is None:
+            return self.act(runtime_ops.restart_service, expected)
+        self.stop(expected)
+        stopped = self.observe()
+        if stopped["manager"] != "stopped" or stopped["probe"]["state"] != "refused":
+            raise ValueError("Could not verify stopped service and unused port")
+        self.act(runtime_ops.start_service, stopped)
 
 
 def _finish(session, op, selected, state, message):
@@ -498,7 +526,7 @@ def _quiesce_unresponsive(session, op, selected, observed):
                                                   ((manager == "running" or backoff) and observed["owns"])):
         raise ValueError("Unresponsive listener is not owned by a running managed service")
     _finish(session, op, selected, "restoring", "등록 서비스를 중지하고 포트 해제를 확인하는 중")
-    session.act(runtime_ops.stop_service, observed)
+    session.stop(observed)
     stopped = session.observe()
     if stopped["manager"] != "stopped" or stopped["probe"]["state"] != "refused":
         raise ValueError("A listener remained after the registered service stopped")
@@ -526,7 +554,7 @@ def _restore(session, op, selected):
                     excluded.add(identity["boot_id"])
                 selected = restored
                 _finish(session, op, restored, "restoring", "직전 정상 버전으로 복원 중")
-                session.act(runtime_ops.restart_service, observed)
+                session.restart(observed)
                 op["confirmed"] = _wait(session, restored, excluded)
             else:
                 op["confirmed"] = observed["probe"]["identity"]
@@ -534,24 +562,29 @@ def _restore(session, op, selected):
         _finish(session, op, None, "restoring", "첫 배포 실패 후 서비스를 중지하는 중")
         selected = None
         if observed["manager"] != "stopped":
-            session.act(runtime_ops.stop_service, observed)
+            session.stop(observed)
         check = session.observe()
         if check["manager"] != "stopped" or check["probe"]["state"] != "refused":
             raise ValueError("Could not verify stopped service and unused port")
         return _finish(session, op, None, "deploy_failed_stopped", "첫 배포 실패 후 서비스 중지를 확인했습니다.")
+    except runtime_ops.JournalBusy:
+        _finish(session, op, selected, "restore_failed", "작업실 사용 중으로 복원을 보류했습니다.")
+        raise
     except (RuntimeError, OSError, ValueError, sqlite3.Error) as error:
         op["recovery_failure"] = _failure(error)
         return _finish(session, op, selected, "restore_failed", "운영자 복구가 필요합니다. " + op["recovery_failure"])
 
 
-def apply_review(root, target, reviewed):
-    """Serialize with other operators and recheck reviewed state before any native action."""
+def apply_review(root, target, reviewed, *, release_idle=None, operation_id=None):
+    """Recheck the reviewed target; an idle_journal reservation guards policy-driven stops."""
     config = reviewed["config"]
     target = Path(target).resolve()
     requested = reviewed["versions"]["requested"]
     uri = (target / DB_NAME).as_uri() + "?mode=rw"
     with RunGuard(target / DB_NAME, config["target_id"]), closing(sqlite3.connect(uri, uri=True)) as connection:
-        session = _TargetSession(target, connection, reviewed)
+        session = _TargetSession(target, connection, reviewed, release_idle)
+        if release_idle is not None:
+            release_idle.acquire()
         session.check()
         # Hold the release writer lock through the final review and durable intent.
         # No release transition can race confirmation or slot preparation.
@@ -560,6 +593,8 @@ def apply_review(root, target, reviewed):
             checked = review(root, target, requested["seq"], recover=reviewed["recover"])
             if checked != reviewed:
                 raise ValueError("Deployment target or running version changed during review")
+            if release_idle is not None:
+                release_idle.verify(checked["observed"]["binding"]["journal_path"])
             selected = checked["selected"]
             op = checked["last"]
             if not checked["recover"]:
@@ -570,7 +605,8 @@ def apply_review(root, target, reviewed):
                     raise ValueError("Running predecessor changed during source verification")
                 if selected and (selected["seq"], selected["sha"]) == (requested["seq"], requested["sha"]):
                     return {"state": "unchanged", "requested": {"seq": selected["seq"], "sha": selected["sha"]}}
-                op = {"id": uuid4().hex, "target_id": config["target_id"], "release_id": config["release_id"],
+                op = {"id": validate_id(operation_id) if operation_id is not None else uuid4().hex,
+                      "target_id": config["target_id"], "release_id": config["release_id"],
                       "requested": requested, "signature": session.signature,
                       "previous": checked["observed"]["probe"]["identity"],
                       "previous_event": checked["versions"]["previous"]}
@@ -583,7 +619,7 @@ def apply_review(root, target, reviewed):
                 return _finish(session, op, selected, "healthy", "새 부팅과 작업실 응답을 확인했습니다.")
             return _restore(session, op, selected)
         try:
-            session.act(runtime_ops.restart_service, checked["observed"])
+            session.restart(checked["observed"])
             op["confirmed"] = _wait(session, selected, excluded)
         except (RuntimeError, OSError, ValueError, sqlite3.Error) as error:
             op["failure"] = _failure(error)

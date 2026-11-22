@@ -1,4 +1,5 @@
 """Fixed loopback probes and native controls for an already provisioned service."""
+from contextlib import contextmanager
 import ctypes
 from http.client import HTTPConnection, HTTPException
 import json
@@ -6,12 +7,78 @@ import os
 from pathlib import Path
 import re
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 
 from .models import MAX_SQLITE_INT, validate_id
+from .store import TaskStore
+
+
+class JournalBusy(RuntimeError):
+    """The bound Studio journal cannot be reserved for an idle-only stop."""
+
+
+class _IdleJournal:
+    def __init__(self, path, expected):
+        self.path = Path(path).expanduser().resolve(strict=True)
+        self.identity = self.path.stat()
+        self.expected = validate_id(expected)
+        self.store = None
+
+    def verify(self, registered_path):
+        if (self.path != Path(registered_path)
+                or not os.path.samestat(self.identity, self.path.stat())):
+            raise ValueError("Service is not using the reserved runtime journal")
+
+    def acquire(self):
+        self.verify(self.path)
+        if self.store is not None:
+            return
+        try:
+            self.store = TaskStore(self.path, existing=True)
+            db = self.store.connection
+            db.execute("PRAGMA busy_timeout=0")
+            db.execute("BEGIN IMMEDIATE")
+            self.verify(self.path)
+            row = db.execute("SELECT id FROM studio_identity WHERE singleton=1").fetchone()
+            if row is None or row[0] != self.expected:
+                raise ValueError("Unexpected runtime journal identity")
+            if db.execute("SELECT 1 FROM runs WHERE ended_at IS NULL LIMIT 1").fetchone():
+                raise JournalBusy("Runtime journal has an active run")
+            # Improvement generation launches a separate provider supervisor.
+            # Older Studio journals predate this table.
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='studio_improvements'").fetchone():
+                from .studio_improvements import _slot
+                if (db.execute("SELECT 1 FROM studio_improvements WHERE state='generating' LIMIT 1").fetchone()
+                        or _slot(self.path).is_held()):
+                    raise JournalBusy("Runtime journal has an active improvement job")
+        except sqlite3.OperationalError as exc:
+            self()
+            if getattr(exc, "sqlite_errorcode", 0) & 255 in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise JournalBusy("Runtime journal has an active writer") from exc
+            raise
+        except BaseException:
+            self()
+            raise
+
+    def __call__(self):
+        if self.store is not None:
+            self.store.close()  # Releases the unmodified write transaction.
+            self.store = None
+
+
+@contextmanager
+def idle_journal(path, expected_journal):
+    """Reserve existing Studio admissions through the predecessor's native stop."""
+    lease = _IdleJournal(path, expected_journal)
+    try:
+        lease.acquire()
+        yield lease
+    finally:
+        lease()
 
 
 def validate_config(config):
@@ -145,7 +212,7 @@ def _command(config, action):
                    "--no-ask-password", "--no-pager"]
         if action == "query":
             return [*command, "show", "--property=ActiveState", "--property=LoadState", "--", service]
-        if action in ("restart", "stop"):
+        if action in ("restart", "stop", "start"):
             return [*command, action, "--", service]
     raise ValueError("Unsupported operation for the native service manager")
 
@@ -224,11 +291,16 @@ def stop_service(config):
         raise RuntimeError("Service did not stop")
 
 
+def start_service(config):
+    _require_success(config, "start")
+    if _wait_transition(config) != "running":
+        raise RuntimeError("Service did not reach running state")
+
+
 def restart_service(config):
     if config["manager"] == "windows":
         stop_service(config)
-        _require_success(config, "start")
-    else:
-        _require_success(config, "restart")
+        return start_service(config)
+    _require_success(config, "restart")
     if _wait_transition(config) != "running":
         raise RuntimeError("Service did not reach running state")
