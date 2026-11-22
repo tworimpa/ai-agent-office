@@ -38,6 +38,30 @@ def test_preview_performs_no_provisioning():
 
 
 @WINDOWS
+def test_inline_elevated_command_parses_without_executing_it(tmp_path):
+    launcher = LAUNCHER.read_text(encoding="utf-8")
+    strings = launcher[launcher.index("$attest = @'"):launcher.index("$elevated = $null")]
+    script = tmp_path / "parse.ps1"
+    script.write_text("""
+$ErrorActionPreference='Stop'
+$pins=@(('a'*64),('b'*64))
+$id='c'*32
+$sid='S-1-5-21-100-200-300-400'
+$pipeName='AgentOfficeSetup-'+('d'*32)
+$recoverFlag='$false'
+$pidStart='111111111111111111'
+$TargetId=$ReleaseId=$JournalId=$id
+$Image='sha256:'+('e'*64)
+$RuntimeSha256='f'*64
+$RuntimeArtifactId='1234'
+""" + strings + """
+[void][scriptblock]::Create($firstStage)
+if([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($firstStage)).Length -gt 31000){throw 'Oversized command line'}
+""", encoding="utf-8-sig")
+    subprocess.run([shell(), "-NoProfile", "-NonInteractive", "-File", script], check=True, timeout=30)
+
+
+@WINDOWS
 def test_acl_grant_and_undo_on_disposable_databases_and_slots(tmp_path):
     """Compile the production handle code with a disposable root in place of the host anchor."""
     root = tmp_path / "office"

@@ -2,6 +2,7 @@
 param($SessionId, $ValidatorSid, $TargetId, $ReleaseId, $JournalId, $Image, $Recovery, $LauncherPid, $StartTicks, $AclSource, $RuntimeSha256, $Pipe, $RuntimeArtifactId, $OfficialLauncher, $OfficialBootstrap, $ExpectedPins)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$script:SetupPhase = 'Checking official runtime provenance'
 function Assert-ReleaseArtifact([long]$artifactId, [string]$digest) {
     if ($artifactId -le 0 -or $digest -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid GitHub artifact identifier.' }
     $api = 'https://api.github.com/repos/tworimpa/ai-agent-office'
@@ -212,6 +213,7 @@ try {
         Assert-Private $session
         Assert-Private $private
     } else {
+        $script:SetupPhase = 'Installing verified runtime archive'
         if ([IO.Directory]::Exists($session) -or [IO.File]::Exists($session)) { throw 'A session ID cannot be reused.' }
         PrivateDirectory $session "(A;OICI;0x1200a9;;;$ValidatorSid)"
         PrivateDirectory $private
@@ -222,6 +224,7 @@ try {
     [Environment]::CurrentDirectory = $private
     Set-Location -LiteralPath $private
     $sourceFile = "$private\source-$([Guid]::NewGuid().ToString('N')).cs"
+    $script:SetupPhase = 'Building verified Windows ACL helper'
     $assembly = "$private\acl-$([Guid]::NewGuid().ToString('N')).dll"
     Save-New $sourceFile $AclSource
     $framework = "$([IO.Directory]::GetParent($system).FullName)\Microsoft.NET\Framework64\v4.0.30319"
@@ -253,8 +256,12 @@ try {
                 if ($group -and $group.Description -ceq "AgentOffice split session $SessionId") { $createdGroup=$group.SID.Value }
             } else { return } # No host grants or temporary accounts could have been created.
         } else {
+            $script:SetupPhase = 'Checking launcher and provisioning isolated local account'
             $launchProcess = [Diagnostics.Process]::GetProcessById($LauncherPid)
             if ($launchProcess.StartTime.ToUniversalTime().Ticks -ne $StartTicks -or $launchProcess.HasExited) { throw 'Launching process no longer exists.' }
+            $launcher = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$([int]$LauncherPid)" -OperationTimeoutSec 10
+            $owner = Invoke-CimMethod -InputObject $launcher -MethodName GetOwnerSid -OperationTimeoutSec 10
+            if ($owner.ReturnValue -ne 0 -or $owner.Sid -cne $ValidatorSid -or $launchProcess.HasExited) { throw 'Launcher token differs from the authorized validator.' }
             $stop = [Threading.EventWaitHandle]::OpenExisting("Local\AgentOfficeStop-$SessionId",[Security.AccessControl.EventWaitHandleRights]::Synchronize)
             $serviceKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Services\AgentOfficeStudio')
             try {
@@ -288,6 +295,7 @@ try {
                 if (Get-LocalGroup -SID ([Security.Principal.SecurityIdentifier]::new($old.session_group_sid)) -ErrorAction SilentlyContinue) { throw 'Previous session group is still present.' }
                 $aclHelper.AcceptRetiredSession($old.operator_sid,$old.session_group_sid)
             }
+            $script:SetupPhase = 'Granting scoped file and service rights'
             $aclHelper.Provision()
             $aclHelper.Service($false)
             $readRules = "(A;OICI;0x1200a9;;;$ValidatorSid)(A;OICI;0x1200a9;;;$createdGroup)"
@@ -298,6 +306,7 @@ try {
             $desc = @{validator_sid=$ValidatorSid;operator_sid=$createdUser;session_group_sid=$createdGroup;target_id=$TargetId;release_id=$ReleaseId;journal_id=$JournalId;image=$Image;runtime_sha256=$RuntimeSha256;enroll=$true}
             Save-New "$session\binding.new" ($desc | ConvertTo-Json -Compress)
             [IO.File]::Move("$session\binding.new",$binding)
+            $script:SetupPhase = 'Waiting for the validator endpoint'
             $deadline = [DateTime]::UtcNow.AddMinutes(3)
             while (![IO.File]::Exists("$session\channel\endpoint.json")) {
                 if ($launchProcess.HasExited -or $stop.WaitOne(250)) { return }
@@ -316,6 +325,7 @@ try {
             $start.LoadUserProfile = $true
             # Leave EnvironmentVariables untouched so CreateProcessWithLogonW
             # receives NULL and constructs the temporary account's profile environment.
+            $script:SetupPhase = 'Starting isolated deployment operator'
             $operator = [Diagnostics.Process]::Start($start)
             try {
                 Save-New "$session\operator-started.json" (@{pid=$operator.Id;sid=$createdUser;start=$operator.StartTime.ToUniversalTime().Ticks} | ConvertTo-Json -Compress)

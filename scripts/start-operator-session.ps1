@@ -19,7 +19,7 @@ $base = 'C:\Program Files\AI-Agent-Office\SplitSession'
 $utf8 = [Text.UTF8Encoding]::new($false,$true)
 # These digests bind exactly the text compiled/executed by the elevated process.
 # Canonical source is UTF-8, LF line endings. Recompute only after code review.
-$pins = @('67FBB68396224571C5AA97BE74DA9A43F0ABE25F73749E3F615A3CDF1BAB5446','0DF27CDA3579E2024FD37E7B176298DCF5CEDCAA5196B1B02214834490891E9A')
+$pins = @('CF942E619C5EE6DD43A81998527952819FBC322ECACAA6CCC4A8185BFCBB6F83','0DF27CDA3579E2024FD37E7B176298DCF5CEDCAA5196B1B02214834490891E9A')
 $source = @()
 foreach ($name in @('split-session-bootstrap.ps1','SplitSessionAcl.cs')) {
     $bytes = $utf8.GetBytes([IO.File]::ReadAllText("$PSScriptRoot\$name",$utf8).Replace("`r`n","`n"))
@@ -61,6 +61,8 @@ foreach ($identity in @($sid,'S-1-5-32-544','S-1-5-18')) {
     $pipeAcl.AddAccessRule([IO.Pipes.PipeAccessRule]::new([Security.Principal.SecurityIdentifier]::new($identity),'FullControl','Allow'))
 }
 $pipe = [IO.Pipes.NamedPipeServerStream]::new($pipeName,'Out',1,'Byte','Asynchronous',65536,65536,$pipeAcl)
+$notice = [IO.Pipes.NamedPipeServerStream]::new("$pipeName-status",'In',1,'Byte','Asynchronous',8192,8192,$pipeAcl)
+$noticeConnect = $notice.BeginWaitForConnection($null,$null)
 $eventSecurity = [Security.AccessControl.EventWaitHandleSecurity]::new()
 foreach ($identity in @($sid,'S-1-5-32-544','S-1-5-18')) {
     $eventSecurity.AddAccessRule([Security.AccessControl.EventWaitHandleAccessRule]::new([Security.Principal.SecurityIdentifier]::new($identity),'FullControl','Allow'))
@@ -74,7 +76,7 @@ $recoverFlag = if ($Recover) { '$true' } else { '$false' }
 # from the unelevated client is interpreted. A successfully verified installation
 # also keeps the reviewed launcher and sources under an administrators-only writer ACL.
 $attest = @'
-function Assert-CacheObject($item) {
+function Assert-CacheObject($item, [switch]$VolumeRoot) {
   if (!$item.Exists -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {throw 'Invalid protected setup cache'}
   $acl=$item.GetAccessControl()
   $trusted=@('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
@@ -83,13 +85,15 @@ function Assert-CacheObject($item) {
   if($null -eq $sd.DiscretionaryAcl){throw 'Missing setup cache DACL'}
   foreach($ace in $sd.DiscretionaryAcl){
     if($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback){throw 'Unsupported setup cache DACL'}
-    if(($ace.AceFlags -band 8) -and $ace.SecurityIdentifier.Value -eq 'S-1-3-0'){continue}
-    if($ace.AceQualifier -eq 'AccessAllowed' -and ($ace.AccessMask -band 0x500d0156) -and $ace.SecurityIdentifier.Value -notin $trusted){throw 'Writable setup cache'}
+    if(($ace.AceFlags -band 8) -and ($VolumeRoot -or $ace.SecurityIdentifier.Value -eq 'S-1-3-0')){continue}
+    $mask=if($VolumeRoot){0x500d0040}else{0x500d0156}
+    if($ace.AceQualifier -eq 'AccessAllowed' -and ($ace.AccessMask -band $mask) -and $ace.SecurityIdentifier.Value -notin $trusted){throw 'Writable setup cache'}
   }
 }
 $cache="C:\Program Files\AI-Agent-Office\SplitTools\$($expectedPins[0])-$($expectedPins[1])"
 $cached=[IO.Directory]::Exists($cache)
 $names=@('split-session-bootstrap.ps1','SplitSessionAcl.cs','start-operator-session.ps1')
+Assert-CacheObject ([IO.DirectoryInfo]::new('C:\')) -VolumeRoot
 if($cached){
   foreach($dir in @('C:\Program Files','C:\Program Files\AI-Agent-Office','C:\Program Files\AI-Agent-Office\SplitTools',$cache)){
     Assert-CacheObject ([IO.DirectoryInfo]::new($dir))
@@ -122,12 +126,17 @@ for($i=0;$i -lt $names.Count;$i++){
 # Client connects only to a local pipe and explicitly prohibits server impersonation.
 $firstStage = @"
 `$ErrorActionPreference='Stop'
+`$script:SetupPhase='Starting trusted Windows PowerShell'
+`$notice=`$null
 try {
   `$sys=[Environment]::SystemDirectory
   `$env:PSModulePath="`$sys\WindowsPowerShell\v1.0\Modules"
   `$env:PATH="`$sys;`$sys\WindowsPowerShell\v1.0"
   [Environment]::CurrentDirectory=`$sys
   Set-Location -LiteralPath `$sys
+  `$notice=[IO.Pipes.NamedPipeClientStream]::new('.','$pipeName-status','Out','None','Anonymous')
+  `$notice.Connect(30000)
+  `$script:SetupPhase='Checking bootstrap sources'
   `$pipe=[IO.Pipes.NamedPipeClientStream]::new('.','$pipeName','In','None','Anonymous')
   `$pipe.Connect(30000)
   `$reader=[IO.BinaryReader]::new(`$pipe)
@@ -145,14 +154,32 @@ try {
   $attest
   & ([ScriptBlock]::Create(`$items[0])) '$id' '$sid' '$TargetId' '$ReleaseId' '$JournalId' '$Image' $recoverFlag $PID ([long]$pidStart) `$items[1] '$RuntimeSha256' `$pipe '$RuntimeArtifactId' `$officialLauncher `$items[0] `$expectedPins
   exit 0
-}catch{[Console]::Error.WriteLine(`$_.Exception.Message);exit 1}
+}catch{
+  if(`$notice -and `$notice.IsConnected){
+    `$e=`$_.Exception.GetBaseException()
+    `$code=if(`$e -is [ComponentModel.Win32Exception]){`$e.NativeErrorCode}else{`$e.HResult}
+    `$message=([string]`$e.Message -replace '[\x00-\x1f]',' ')
+    `$message=`$message.Substring(0,[Math]::Min(500,`$message.Length))
+    `$line="[`$script:SetupPhase] `$(`$e.GetType().Name) (`$code) `$message"
+    `$bytes=[Text.Encoding]::UTF8.GetBytes(`$line)
+    `$notice.Write(`$bytes,0,`$bytes.Length)
+    `$notice.Flush()
+  }
+  exit 1
+}finally{if(`$notice){`$notice.Dispose()}}
 "@
 $elevated = $null
 $validator = $null
 try {
     $connect = $pipe.BeginWaitForConnection($null,$null)
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($firstStage))
-    $elevated = Start-Process -FilePath $ps -ArgumentList "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded" -Verb RunAs -WorkingDirectory $system -WindowStyle Hidden -PassThru
+    $savedModules = $env:PSModulePath
+    $savedPath = $env:PATH
+    try {
+        $env:PSModulePath = "$system\WindowsPowerShell\v1.0\Modules"
+        $env:PATH = "$system;$system\WindowsPowerShell\v1.0"
+        $elevated = Start-Process -FilePath $ps -ArgumentList "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded" -Verb RunAs -WorkingDirectory $system -WindowStyle Hidden -PassThru
+    } finally { $env:PSModulePath=$savedModules; $env:PATH=$savedPath }
     Write-Output "Deployment session $id"
     while (!$connect.AsyncWaitHandle.WaitOne(250)) { if ($elevated.HasExited) { throw 'Administrator setup exited before connecting.' } }
     $pipe.EndWaitForConnection($connect)
@@ -176,8 +203,21 @@ try {
     if ($archive) { $archive.Dispose() }
     if ($elevated) {
         $elevated.WaitForExit()
-        if ($elevated.ExitCode -ne 0) { Write-Error "Setup or recovery failed for session $id. Inspect the protected receipt before retrying." -ErrorAction Continue }
+        if ($elevated.ExitCode -ne 0) {
+            $detail = "No diagnostic was returned by the administrator process."
+            if ($noticeConnect.AsyncWaitHandle.WaitOne(0)) {
+                $notice.EndWaitForConnection($noticeConnect)
+                $bytes = [byte[]]::new(4096)
+                $read = $notice.BeginRead($bytes,0,$bytes.Length,$null,$null)
+                if ($read.AsyncWaitHandle.WaitOne(2000)) {
+                    $count = $notice.EndRead($read)
+                    if ($count) { $detail = [Text.Encoding]::UTF8.GetString($bytes,0,$count) }
+                }
+            }
+            Write-Error "Session $id. $detail" -ErrorAction Continue
+        }
     }
+    $notice.Dispose()
     if ($validator) { $validator.WaitForExit(); $validator.Dispose() }
     $event.Dispose()
 }

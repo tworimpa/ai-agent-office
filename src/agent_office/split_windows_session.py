@@ -92,6 +92,7 @@ def _binding(directory):
 
 
 def _check_principal(binding, role):
+    import pywintypes
     import win32api
     import win32con
     import win32security as sec
@@ -104,12 +105,23 @@ def _check_principal(binding, role):
         raise ValueError("Session operator differs from the dedicated local account")
     token = sec.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
     try:
-        enabled = {sec.ConvertSidToStringSid(sid) for sid, flags in sec.GetTokenInformation(token, sec.TokenGroups)
-                   if flags & 4 and not flags & 16}
+        groups = {sec.ConvertSidToStringSid(sid): flags for sid, flags in sec.GetTokenInformation(token, sec.TokenGroups)}
     finally:
         token.Close()
-    if (binding["session_group_sid"] in enabled) != (role == "operator"):
+    flags = groups.get(binding["session_group_sid"], 0)
+    if bool(flags & 4 and not flags & 16) != (role == "operator"):
         raise ValueError("Operator session group is missing or shared with the validator")
+    if role == "operator":
+        if "S-1-5-32-544" in groups:
+            raise ValueError("Deployment operator cannot belong to Administrators")
+        try:
+            docker_sid, _, _ = sec.LookupAccountName(None, win32api.GetComputerName() + "\\docker-users")
+        except pywintypes.error as exc:
+            if exc.winerror != 1332:  # ERROR_NONE_MAPPED
+                raise
+        else:
+            if sec.ConvertSidToStringSid(docker_sid) in groups:
+                raise ValueError("Deployment operator cannot belong to docker-users")
 
 
 def _channel(directory, binding, *, endpoint=False):
