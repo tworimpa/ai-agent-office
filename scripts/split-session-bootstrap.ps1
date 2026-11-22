@@ -303,6 +303,10 @@ try {
             Assert-Private $session
             $channelRules = "(A;;0x1201bf;;;$ValidatorSid)(A;OICIIO;0x1301bf;;;$ValidatorSid)(A;OICI;0x1200a9;;;$createdGroup)"
             [void][IO.Directory]::CreateDirectory("$session\channel",(DirectoryAcl $channelRules))
+            # The operator may list/create files and modify or atomically replace its
+            # status records. The status directory and validator channel remain distinct.
+            $statusRules = "(A;OICI;0x1200a9;;;$ValidatorSid)(A;;0x1200ab;;;$createdGroup)(A;OIIO;0x1301bf;;;$createdGroup)"
+            [void][IO.Directory]::CreateDirectory("$session\status",(DirectoryAcl $statusRules))
             $desc = @{validator_sid=$ValidatorSid;operator_sid=$createdUser;session_group_sid=$createdGroup;target_id=$TargetId;release_id=$ReleaseId;journal_id=$JournalId;image=$Image;runtime_sha256=$RuntimeSha256;enroll=$true}
             Save-New "$session\binding.new" ($desc | ConvertTo-Json -Compress)
             [IO.File]::Move("$session\binding.new",$binding)

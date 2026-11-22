@@ -62,6 +62,33 @@ if([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($firstStage)).Len
 
 
 @WINDOWS
+def test_status_directory_grants_only_children_modify(tmp_path):
+    bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
+    helpers = bootstrap[bootstrap.index("function DirectoryAcl("):bootstrap.index("function Assert-Private(")]
+    rules = next(line.strip() for line in bootstrap.splitlines() if line.strip().startswith("$statusRules = "))
+    script = tmp_path / "status-acl.ps1"
+    script.write_text(helpers + """
+$ErrorActionPreference='Stop'
+$ValidatorSid='S-1-5-21-1-2-3-1001'
+$createdGroup='S-1-5-21-1-2-3-1002'
+""" + rules + """
+$acl=DirectoryAcl $statusRules
+if(!$acl.AreAccessRulesProtected -or $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544') {throw 'Unprotected status directory'}
+$entries=$acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])
+$validator=@($entries | Where-Object {$_.IdentityReference.Value -eq $ValidatorSid})
+$operator=@($entries | Where-Object {$_.IdentityReference.Value -eq $createdGroup})
+if($validator.Count -ne 1 -or $validator[0].FileSystemRights.value__ -ne 0x1200a9) {throw 'Validator must be read only'}
+if($operator.Count -ne 2) {throw 'Unexpected operator rights'}
+$folder=@($operator | Where-Object {$_.PropagationFlags -eq 'None'})
+$children=@($operator | Where-Object {$_.PropagationFlags -eq 'InheritOnly'})
+if($folder.Count -ne 1 -or $folder[0].FileSystemRights.value__ -ne 0x1200ab) {throw 'Operator may only create files in status'}
+if($children.Count -ne 1 -or $children[0].FileSystemRights.value__ -ne 0x1301bf -or
+   $children[0].InheritanceFlags -ne 'ObjectInherit') {throw 'Modify should apply only to child files'}
+""", encoding="utf-8-sig")
+    subprocess.run([shell(), "-NoProfile", "-NonInteractive", "-File", script], check=True, timeout=30)
+
+
+@WINDOWS
 def test_acl_grant_and_undo_on_disposable_databases_and_slots(tmp_path):
     """Compile the production handle code with a disposable root in place of the host anchor."""
     root = tmp_path / "office"

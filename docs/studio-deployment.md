@@ -137,3 +137,5 @@ agent-office improve --release RELEASE deployment-auto-disable --target TARGET
 ```
 
 정상 종료는 세션 창에서 Ctrl+C를 사용한다. 종료 처리가 중단된 경우 `start-operator-session.ps1 -Recover $sessionId`로 기록된 서비스·파일 권한의 복구를 요청한다. 원래 접근 권한이나 파일 신원이 다른 작업에 의해 바뀌었으면 충돌 내용을 확인한다.
+
+로그인한 사용자는 세션 디렉터리의 `status/last.json`에서 최근 검사 결과를, `status/last-deployment.json`에서 마지막 서비스 전환의 커밋·안정 순번·작업 ID를 읽을 수 있다. 세션 중 새로 생성된 파일에는 종료 후 삭제된 계정이나 그룹의 SID가 남을 수 있다. 접근 권한 복원은 기존 객체의 DACL과 살아 있는 운영자 프로세스의 종료를 확인한다.

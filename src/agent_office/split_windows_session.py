@@ -1,6 +1,7 @@
 """Foreground processes for an administrator-authorized Windows deployment session."""
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -172,6 +173,27 @@ class _WindowsValidator(SessionValidator):
         return super().ping()
 
 
+def _publish_status(directory, binding, result):
+    status = directory / "status"
+    _acl(status, writers={binding["session_group_sid"], binding["operator_sid"]},
+         readers={binding["validator_sid"]})
+    payload = {key: result[key] for key in ("state", "seq", "sha", "operation", "candidate",
+                                             "service_outcome", "reason") if key in result}
+    payload.update(at=datetime.now(timezone.utc).isoformat(), session_id=directory.name,
+                   operator_sid=binding["operator_sid"], validator_sid=binding["validator_sid"])
+    files = ["last.json"]
+    if "operation" in payload:
+        files.append("last-deployment.json")
+    for name in files:
+        with tempfile.NamedTemporaryFile(mode="w", dir=status, delete=False, encoding="utf-8") as out:
+            staged = Path(out.name)
+            json.dump(payload, out, ensure_ascii=False)
+        try:
+            staged.replace(status / name)
+        finally:
+            staged.unlink(missing_ok=True)
+
+
 def _operate(directory, binding, mirror_root):
     _service_rights()
     reviewed = auto_deploy.binding(RELEASE, TARGET, binding["image"])
@@ -191,6 +213,7 @@ def _operate(directory, binding, mirror_root):
                                           mirror_root=mirror_root)
         except (ValueError, OSError, RuntimeError, sqlite3.Error) as exc:
             result = {"state": "refused", "reason": str(exc)[:600]}
+        _publish_status(directory, binding, result)
         print(json.dumps(result, ensure_ascii=False), flush=True)
         if result["state"] in {"disabled", "needs_operator"}:
             return
@@ -221,9 +244,14 @@ def main(argv=None):
     if args.role == "validator":
         _serve(args.session_dir, binding)
     else:
-        with tempfile.TemporaryDirectory(prefix="office-operator-git-") as mirror:
-            with release_store.use_session_object_store(RELEASE / "objects.git"):
-                _operate(args.session_dir, binding, Path(mirror))
+        _publish_status(args.session_dir, binding, {"state": "starting"})
+        try:
+            with tempfile.TemporaryDirectory(prefix="office-operator-git-") as mirror:
+                with release_store.use_session_object_store(RELEASE / "objects.git"):
+                    _operate(args.session_dir, binding, Path(mirror))
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+            _publish_status(args.session_dir, binding, {"state": "stopped", "reason": str(error)[:600]})
+            raise
 
 
 if __name__ == "__main__":
