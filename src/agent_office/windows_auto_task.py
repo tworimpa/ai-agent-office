@@ -1,6 +1,7 @@
 """Fixed entry point for the operator's least-privilege Windows scheduled task."""
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -108,15 +109,15 @@ def _probe(command, label):
 
 def main(args=None):
     args = sys.argv[1:] if args is None else args
-    if os.name != "nt" or args not in ([], ["--preflight"]):
+    if os.name != "nt" or args not in ([], ["--preflight"], ["--watch"]):
         raise ValueError("Expected the Windows scheduled task or its --preflight check")
     _prepare()
     _service_rights()
-    if args:
+    if args == ["--preflight"]:
         _preflight()
         return 0
     from .cli import main as office
-    return office(["improve", "--release", str(RELEASE), "deployment-auto-run", "--target", str(TARGET)])
+    return office(["improve", "--release", str(RELEASE), "deployment-auto-run", "--target", str(TARGET), *args])
 
 
 if __name__ == "__main__":

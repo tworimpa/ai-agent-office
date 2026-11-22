@@ -131,11 +131,9 @@ if ($CheckOnly) {
     return
 }
 if ($WatchSession) {
-    while ($true) {
-        & $python -I -m agent_office.windows_auto_task
-        if ($LASTEXITCODE -ne 0) { throw "Policy run exited with code $LASTEXITCODE." }
-        Start-Sleep -Seconds 300
-    }
+    & $python -I -m agent_office.windows_auto_task --watch
+    if ($LASTEXITCODE -ne 0) { throw "Policy watch exited with code $LASTEXITCODE." }
+    return
 }
 $taskFolder = $scheduler.GetFolder('\')
 # TASK_CREATE; no password, overwrite, service account or highest-privilege fallback.
