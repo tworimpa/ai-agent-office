@@ -44,6 +44,7 @@ jobs:
         shell: pwsh
         env:
           OFFICE_NSSM_ACCEPTANCE: '1'
+          OFFICE_SPLIT_ACL_ACCEPTANCE: '1'
         run: |
           $scratch = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP "office-nssm-$([guid]::NewGuid())")
           $zip = Join-Path $scratch.FullName "nssm.zip"
@@ -67,7 +68,7 @@ jobs:
           $env:OFFICE_NSSM_EXE = Join-Path $scratch.FullName 'nssm-2.24-101-g897c7ad/win64/nssm.exe'
           python -m pip install pywinpty==3.0.2 playwright==1.55.0
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pytest -q -rA tests/test_deployment_nssm.py
+          python -m pytest -q -rA tests/test_deployment_nssm.py tests/test_split_session_host_ci.py
       - name: Unit and subprocess smoke tests
         run: python -m pytest -q
       - name: Isolated release validator with real Docker

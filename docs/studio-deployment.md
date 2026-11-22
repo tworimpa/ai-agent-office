@@ -120,3 +120,22 @@ agent-office improve --release RELEASE deployment-auto-disable --target TARGET
 ```powershell
 .\scripts\register-deployment-watch.ps1 -WatchSession
 ```
+
+### Windows에서 검증 계정과 배포 계정을 분리하는 세션
+
+로그인한 사용자가 이미 GitHub CLI와 Docker를 사용할 수 있고, Studio는 전용 서비스 계정으로 실행되는 PC에 적용한다. 시작할 때 관리자가 UAC로 승인한다. 시작한 창을 열어 두면 화면을 잠가도 5분마다 다음 병합을 확인한다. 세션 종료 또는 재부팅 뒤에는 운영자가 다시 시작한다.
+
+- **검증기**는 로그인한 일반 사용자로 실행된다. 별도 Git 미러에서 해당 병합의 GitHub 검사 8개와 checkout 트리를 확인하고 고정 이미지에서 검증한다. 요청마다 대상 서비스·릴리스·저널·기준 및 후보 커밋·이미지·일회용 난수를 포함한 결과에 서명한다.
+- **배포기**는 임시 로컬 계정 `AgentOfficeOperator`로 실행된다. UAC로 만든 세션에 소속된 토큰으로만 시작할 수 있다. 자기 미러에서 병합 부모와 트리를 대조하고, 검증기 응답·실행 중인 작업·실제 서비스 신원을 다시 확인한다. 승인 근거에는 두 SID와 세션 ID, 검증기의 공개키가 기록된다.
+- **종료와 복구** 시 새 승격과 재시작에는 유효한 세션이 필요하다. 기동 도중 이미 시작한 배포는 같은 작업 ID로 확인하거나 직전 정상 버전으로 복원한다. 중단된 Windows 권한 설정은 시작 시 출력한 세션 ID로 복구할 수 있다.
+
+관리자는 공식 Windows 설치 CI가 발행한 `split-operator-runtime-Windows` 아카이브를 사용한다. 설치 도구는 GitHub가 기록한 아카이브 ID와 SHA-256을 대조한다. 보호된 Program Files 아래에 설치한 Python은 배포 계정의 일반 권한으로 기동한다. Windows PowerShell에서 실행하는 예시는 다음과 같다.
+
+```powershell
+.\scripts\start-operator-session.ps1 -Preview
+.\scripts\start-operator-session.ps1 -TargetId $targetId -ReleaseId $releaseId -JournalId $journalId -Image $image -RuntimeArchive $archive -RuntimeArtifactId $artifactId -RuntimeSha256 $digest
+```
+
+정상 종료는 세션 창에서 Ctrl+C를 사용한다. 종료 처리가 중단된 경우 `start-operator-session.ps1 -Recover $sessionId`로 기록된 서비스·파일 권한의 복구를 요청한다. 원래 접근 권한이나 파일 신원이 다른 작업에 의해 바뀌었으면 충돌 내용을 확인한다.
+
+로그인한 사용자는 세션 디렉터리의 `status/last.json`에서 최근 검사 결과를, `status/last-deployment.json`에서 마지막 서비스 전환의 커밋·안정 순번·작업 ID를 읽을 수 있다. 세션 중 새로 생성된 파일에는 종료 후 삭제된 계정이나 그룹의 SID가 남을 수 있다. 접근 권한 복원은 기존 객체의 DACL과 살아 있는 운영자 프로세스의 종료를 확인한다.

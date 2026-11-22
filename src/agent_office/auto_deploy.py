@@ -87,7 +87,7 @@ def binding(root, target, image):
     )
 
 
-def enroll(root, target, reviewed):
+def enroll(root, target, reviewed, *, session_roles=None):
     # Bind the consent to the actual registration seen in the enrollment UI.
     if binding(root, target, reviewed["image"]) != reviewed:
         raise ValueError("Deployment target changed during enrollment")
@@ -100,8 +100,12 @@ def enroll(root, target, reviewed):
     ):
         raise ValueError("Enrollment requires the healthy running stable version")
     ident = reviewed["target_id"]
+    if session_roles is not None:
+        reviewed = {**reviewed, "session_roles": dict(session_roles)}
     with _state(root, create=True) as db:
         previous = db.execute("SELECT * FROM policies WHERE target=?", (ident,)).fetchone()
+        if previous and session_roles is not None and not previous["enabled"]:
+            raise ValueError("The operator revoked this policy. Review enrollment before restarting")
         if previous and previous["enabled"]:
             if json.loads(previous["binding"]) == reviewed:
                 return dict(state="enabled", generation=previous["generation"], binding=reviewed)
@@ -203,6 +207,65 @@ def _insist(db, ident, expected):
         raise ValueError("Deployment policy was revoked or replaced")
 
 
+def claim_session(root, target, reviewed, session_id, roles):
+    """Consume a protected bootstrap descriptor once, including across process restarts."""
+    from .models import validate_id
+
+    validate_id(session_id)
+    ident = reviewed["target_id"]
+    existing = None
+    if (Path(root) / DB).is_file():
+        with _state(root) as db:
+            existing = db.execute("SELECT 1 FROM policies WHERE target=?", (ident,)).fetchone()
+    if existing is None:
+        enroll(root, target, reviewed, session_roles=roles)
+    with _state(root, write=True) as db:
+        policy = _policy(db, ident)
+        prior = policy["binding"].get("session_roles", {})
+        if (not policy["enabled"] or prior.get("validator_sid") != roles["validator_sid"] or
+                policy["binding"] != {**reviewed, "session_roles": prior}):
+            raise ValueError("Operator session does not match the enabled enrollment")
+        db.execute("""CREATE TABLE IF NOT EXISTS operator_sessions
+            (id TEXT PRIMARY KEY, target TEXT NOT NULL, generation TEXT NOT NULL)""")
+        try:
+            db.execute("INSERT INTO operator_sessions VALUES(?,?,?)", (session_id, ident, policy["generation"]))
+        except sqlite3.IntegrityError:
+            raise ValueError("This operator session has already started") from None
+        # Each UAC session creates a new non-admin principal. The native entry point has
+        # verified the protected descriptor, group membership and exact local account name.
+        if prior != roles:
+            db.execute("UPDATE policies SET binding=? WHERE target=?",
+                       (_json({**reviewed, "session_roles": roles}), ident))
+        _audit(db, ident, policy["generation"], "session_started", {"session_id": session_id, **roles})
+
+
+def _check_session(db, policy, validator, evidence):
+    roles = policy["binding"].get("session_roles")
+    if roles is None and validator is None and evidence is None:
+        return
+    if (roles is None or validator is None or not evidence
+            or any(evidence.get(key) != value for key, value in roles.items())):
+        raise ValueError("This policy requires its authorized split operator session")
+    latest = db.execute("SELECT id FROM operator_sessions WHERE target=? AND generation=? ORDER BY rowid DESC LIMIT 1",
+                        (policy["binding"]["target_id"], policy["generation"])).fetchone()
+    if not latest or latest["id"] != evidence.get("session_id"):
+        raise ValueError("The operator session has been superseded")
+
+
+def _bound_target_matches(root, target, enrolled):
+    return binding(root, target, enrolled["image"]) == {k: v for k, v in enrolled.items() if k != "session_roles"}
+
+
+def _attest(validator, repository, sha, base, mirror):
+    if validator is None:
+        return policy_github.attest(repository, sha, base, mirror)
+    proof = validator.attest(repository, sha, base, mirror)
+    local = release_store.run_git(mirror, "show", "-s", "--format=%H %T %P", sha).decode("ascii").split()
+    if local != [proof.merge, proof.tree, base, proof.head] or proof.merge != sha:
+        raise ValueError("Validator proof differs from the operator's local merge tree or parents")
+    return proof
+
+
 def _pending(db, ident, gen):
     return db.execute(
         """SELECT * FROM intents WHERE target=? AND generation=? AND state!='healthy'
@@ -237,7 +300,7 @@ def _finish(db, intent, native_state):
     return result
 
 
-def _settle_started(root, target, policy, intent):
+def _settle_started(root, target, policy, intent, validator, evidence):
     """Only finish or restore our own already recorded operation, including when GitHub is offline."""
     b = policy["binding"]
     _, _, op = deployment._snapshot(target)
@@ -252,7 +315,8 @@ def _settle_started(root, target, policy, intent):
         raise ValueError("Service operation disagrees with the durable policy intent")
     with _state(root, write=True) as db:
         _insist(db, b["target_id"], policy)
-        if binding(root, target, b["image"]) != b:
+        _check_session(db, policy, validator, evidence)
+        if not _bound_target_matches(root, target, b):
             raise ValueError("Deployment target changed during recovery")
         if op["state"] in {"deploy_failed_restored", "deploy_failed_stopped", "restore_failed"}:
             return _finish(db, intent, op["state"])
@@ -271,21 +335,22 @@ def _settle_started(root, target, policy, intent):
             return _finish(db, intent, result["state"])
 
 
-def _run(root, target, policy):
+def _run(root, target, policy, validator=None, session_evidence=None, mirror_root=None):
     b = policy["binding"]
     ident, gen = b["target_id"], policy["generation"]
-    if binding(root, target, b["image"]) != b:
+    if not _bound_target_matches(root, target, b):
         raise ValueError("Operator policy no longer matches the registered service and journal")
     with _state(root) as db:
+        _check_session(db, policy, validator, session_evidence)
         pending = _pending(db, ident, gen)
     if pending and pending["state"] == "needs_operator":
         return dict(state="needs_operator", sha=pending["sha"])
     if pending:
-        recovered = _settle_started(root, target, policy, pending)
+        recovered = _settle_started(root, target, policy, pending, validator, session_evidence)
         if recovered is not None:
             return recovered
     current = stable_history.page(root, limit=1)["current"]
-    mirror = _mirror(root)
+    mirror = _mirror(root if mirror_root is None else mirror_root)
     base = pending["base"] if pending else current["sha"]
     seq = pending["base_seq"] if pending else current["seq"]
     sha = _next(mirror, base)
@@ -304,10 +369,18 @@ def _run(root, target, policy):
         # Defer early for busy studios; retry atomically under the final idle lease below.
         with runtime_ops.idle_journal(Path(b["journal"]), b["journal_id"]):
             pass
-        proof = policy_github.attest(b["repository"], sha, base, mirror)
+        proof = _attest(validator, b["repository"], sha, base, mirror)
         ref = f"https://github.com/{b['repository']}/pull/{proof.pr}"
         record = release_store.import_revision(root, mirror, sha, ref, image=b["image"])
-        if record["state"] == "submitted":
+        if validator is not None and record["state"] in {"submitted", "passed"}:
+            report = validator.validate(sha, base, b["image"])
+            if report.get("sha") != sha or report.get("image") != b["image"]:
+                raise ValueError("Session validator returned a different commit or image")
+            if record["state"] == "submitted":
+                record = release_store.verify_candidate(root, record["id"], session_report=report)
+            if report.get("passed") is not True or type(report.get("exit_code")) is not int or report["exit_code"] != 0:
+                raise ValueError("Session validator refused this candidate")
+        elif record["state"] == "submitted":
             record = release_store.verify_candidate(root, record["id"])
         if record["state"] != "passed" or (record["sha"], record["base"], record["image"]) != (
             sha,
@@ -327,6 +400,7 @@ def _run(root, target, policy):
         operation = uuid4().hex
         with _state(root, write=True) as db:
             _insist(db, ident, policy)
+            _check_session(db, policy, validator, session_evidence)
             db.execute(
                 "INSERT INTO intents VALUES(?,?,?,?,?,?,?,?,?,'authorized')",
                 (ident, gen, sha, seq, base, cid, _json(asdict(proof)), origin, operation),
@@ -336,13 +410,14 @@ def _run(root, target, policy):
                 ident,
                 gen,
                 "authorized",
-                dict(candidate=cid, base_seq=seq, base=base, operation=operation, **asdict(proof)),
+                dict(candidate=cid, base_seq=seq, base=base, operation=operation,
+                     **(session_evidence or {}), **asdict(proof)),
             )
             pending = _pending(db, ident, gen)
     else:
         cid = pending["candidate"]
     # Refresh external evidence after expensive validation and again on crash recovery.
-    proof = policy_github.attest(b["repository"], sha, base, mirror)
+    proof = _attest(validator, b["repository"], sha, base, mirror)
     rec, current, base_seq, release_id = release_store.review_with_version(root, cid)
     if (
         (rec["sha"], rec["base"], base_seq, release_id, rec["image"])
@@ -358,11 +433,14 @@ def _run(root, target, policy):
         runtime_ops.idle_journal(Path(b["journal"]), b["journal_id"]) as idle,
     ):
         _insist(db, ident, policy)
-        if binding(root, target, b["image"]) != b:
+        _check_session(db, policy, validator, session_evidence)
+        if not _bound_target_matches(root, target, b):
             raise ValueError("Target changed since attestation")
         prior = deployment.review(root, target, seq)
         if _predecessor(prior) != json.loads(pending["predecessor"]):
             raise ValueError("Running predecessor or manual service decision changed since authorization")
+        if validator is not None:
+            validator.ping()
         if (current["seq"], current["sha"], rec["state"]) == (seq, base, "passed"):
             release_store.decide(
                 root, cid, sha, "approve", reviewed_version=current, expected_release_id=b["release_id"]
@@ -382,14 +460,15 @@ def _run(root, target, policy):
             raise ValueError("Operator changed the stable version before deployment")
         if _predecessor(reviewed) != json.loads(pending["predecessor"]):
             raise ValueError("Registered service or live predecessor changed")
-        _audit(db, ident, gen, "attested", asdict(proof))
+        _audit(db, ident, gen, "attested", asdict(proof) | (session_evidence or {}))
         result = deployment.apply_review(
-            root, target, reviewed, release_idle=idle, operation_id=pending["operation_id"]
+            root, target, reviewed, release_idle=idle, operation_id=pending["operation_id"],
+            before_operation=validator.ping if validator is not None else None,
         )
         return _finish(db, pending, result["state"])
 
 
-def run_once(root, target):
+def run_once(root, target, *, validator=None, session_evidence=None, mirror_root=None):
     config, _ = deployment.read_selection(target)
     ident = config["target_id"]
     with RunGuard(Path(root).resolve() / DB, ident), _state(root) as db:
@@ -399,7 +478,7 @@ def run_once(root, target):
         if not policy["enabled"]:
             return dict(state="disabled", target_id=ident)
         try:
-            return _run(root, target, policy)
+            return _run(root, target, policy, validator, session_evidence, mirror_root)
         except runtime_ops.JournalBusy:
             return dict(state="busy", target_id=ident)
         except (ValueError, sqlite3.Error, OSError, RuntimeError, subprocess.SubprocessError) as exc:
