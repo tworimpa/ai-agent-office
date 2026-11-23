@@ -209,6 +209,13 @@ class Inbox:
                               (run_id,)).fetchall()
             return [_public(db, _refresh(db, self.path, row, run)) for row in rows]
 
+    @staticmethod
+    def settled_history(db, run_id):
+        rows = db.execute("SELECT * FROM studio_requests WHERE run_id=? ORDER BY rowid", (run_id,)).fetchall()
+        if any(row["status"] in ("pending", "decided") for row in rows):
+            return None  # The holder may have exited; reconcile through history().
+        return [_public(db, row) for row in rows]
+
     def decide(self, run_id, request_id, payload):
         action, answer = _action(payload)
         with TaskStore(self.path, existing=True) as store, store._write():
@@ -360,6 +367,8 @@ class InboxChannel:
                     raise ValueError("Invalid choice evidence")
             elif receipt["path"] != plan.path:
                 raise ValueError("Invalid delegation evidence path")
+            elif evidence.get("method") == "committed_fact":
+                receipt["method"] = "committed_fact"
             evidence = receipt
         except DelegationDeferred as exc:
             reason = DEFERRED_REASONS.get(exc.reason, away_ledger.FAILED)

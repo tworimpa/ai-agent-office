@@ -37,6 +37,7 @@ def policy(*rules):
 
 
 RULE = {"topic": "test_command", "path": "README.md"}
+INDEPENDENT = dict(RULE, verification="independent")
 
 
 def test_coordinator_policy_uses_only_eligible_facts_at_pinned_revision(repo, monkeypatch):
@@ -187,13 +188,12 @@ def test_committed_project_title_uses_main_repository_or_selected_package_name(r
     linked = tmp_path / "task-unrelated-id"
     run_git(root, "worktree", "add", "--detach", str(linked), revision)
     (linked / "README.md").write_text(source.format("Uncommitted title"), encoding="utf-8")
-    monkeypatch.setattr(expert, "execute_fixture", lambda engine, prompt, **kwargs:
-                        AgentResult(0, json.dumps(good_answer(prompt))))
+    monkeypatch.setattr(expert, "execute_fixture", lambda *a, **k: pytest.fail("unexpected provider"))
     for path in ("README.md", "packages/web_client/README.md"):
         result = expert.assess(linked, revision, dict(RULE, path=path), "codex", "claude",
                                folders=["packages/web_client"])
         assert result["evidence"] == {"path": path, "line": 6, "quote": "python -m pytest -q",
-                                      "revision": revision}
+                                      "revision": revision, "method": "committed_fact"}
     with pytest.raises(DelegationDeferred, match="evidence_ambiguous"):
         expert.assess(linked, revision, dict(RULE, path="packages/web_client/README.md"), "codex", "claude",
                       folders=["packages"])
@@ -241,7 +241,7 @@ def test_false_or_unconfirmed_provider_outputs_defer(repo, monkeypatch, mode, re
     monkeypatch.setattr(expert, "execute_fixture", reply)
     stages = []
     with pytest.raises(DelegationDeferred, match=reason):
-        expert.assess(*repo, RULE, "codex", "antigravity", on_stage=lambda *stage: stages.append(stage))
+        expert.assess(*repo, INDEPENDENT, "codex", "antigravity", on_stage=lambda *stage: stages.append(stage))
     expected = [("specialist", "RUNNING")]
     if reason == "specialist_failed":
         expected.append(("specialist", "FAILED"))
@@ -288,7 +288,7 @@ def test_changed_revision_between_sessions_defers_before_verifier(repo, monkeypa
         return AgentResult(0, json.dumps(good_answer(prompt)))
     monkeypatch.setattr(expert, "execute_fixture", change_head)
     with pytest.raises(DelegationDeferred, match="worktree_changed"):
-        expert.assess(root, revision, RULE, "codex", "antigravity")
+        expert.assess(root, revision, INDEPENDENT, "codex", "antigravity")
 
 
 def test_two_supervised_readonly_cli_processes_use_only_committed_evidence(repo, tmp_path, monkeypatch):
@@ -348,7 +348,7 @@ def test_two_supervised_readonly_cli_processes_use_only_committed_evidence(repo,
         pin_selection(store.connection, run_id, selection)
         guidance = role_guidance(store.connection, run_id, ("specialist", "verifier"))
     stages = []
-    assert asyncio.run(run_consultation(root, revision, RULE, "codex", "codex", ["."], skill_guidance=guidance,
+    assert asyncio.run(run_consultation(root, revision, INDEPENDENT, "codex", "codex", ["."], skill_guidance=guidance,
                                         on_stage=lambda *stage: stages.append(stage))) == {
         "answer": "python -m pytest -q",
         "evidence": {"path": "README.md", "line": 2, "quote": "python -m pytest -q", "revision": revision},

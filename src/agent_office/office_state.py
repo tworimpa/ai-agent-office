@@ -171,7 +171,7 @@ def _away_roles(db, run_ids, delegated):
             'COMPLETED',q.decided_at,q.id
         FROM questions q JOIN studio_away_checks c ON c.request_id=q.id
         CROSS JOIN (SELECT 'specialist' AS role UNION ALL SELECT 'verifier') AS legacy
-        WHERE c.evidence IS NOT NULL
+        WHERE c.evidence IS NOT NULL AND c.specialist_engine IS NOT NULL AND c.verifier_engine IS NOT NULL
         ORDER BY updated_at DESC,id DESC""", run_ids)
     by_run = {run_id: {} for run_id in run_ids}
     for row in rows:

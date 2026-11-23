@@ -21,6 +21,7 @@
     "active": true,
     "targets": ["nsis", "deb"],
     "publisher": "AI Agent Office",
+    "resources": {"../LICENSE": "LICENSE-ai-agent-office.txt"},
     "category": "DeveloperTool",
     "shortDescription": "AI Agent Office Studio 연결용 Rust 비교판",
     "icon": ["icons/128x128.png", "icons/icon.ico"],

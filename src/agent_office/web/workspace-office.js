@@ -1381,7 +1381,8 @@ export function mountWorkspaceOffice(win = window) {
     info.dataset.evidence = row.run_id + ':' + row.id;
     const source = delegated.evidence;
     info.append(make('summary', '대리 결정 근거'),
-      make('p', '전문가 · ' + engineName(delegated.specialist_engine) + ' / 독립 검증자 · ' + engineName(delegated.verifier_engine)),
+      make('p', source.method === 'committed_fact' ? '기준 커밋의 파일에서 확인 · 모델 호출 0회' :
+        '전문가 · ' + engineName(delegated.specialist_engine) + ' / 독립 검증자 · ' + engineName(delegated.verifier_engine)),
       make('p', source.path + ' ' + source.line + '행 · 기준 커밋 ' + source.revision), make('p', source.quote));
     return info;
   }

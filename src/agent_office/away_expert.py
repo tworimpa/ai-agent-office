@@ -16,14 +16,15 @@ RULES = {
     "node_version": "이 프로젝트가 요구하는 Node.js 버전은 무엇인가요?",
 }
 EVIDENCE_FILES = {
-    "test_command": ("README.md", "AGENTS.md"),
+    "test_command": ("README.md", "AGENTS.md", "TESTING.md"),
     "python_version": ("pyproject.toml",),
     "node_version": ("package.json",),
 }
 
 
 def validate_rule(value) -> dict:
-    if not isinstance(value, dict) or set(value) != {"topic", "path"}:
+    if (not isinstance(value, dict) or set(value) - {"topic", "path", "verification"}
+            or not {"topic", "path"} <= value.keys() or value.get("verification", "fact") not in ("fact", "independent")):
         raise ValueError("위임 규칙에는 질문 종류와 근거 파일을 지정하세요.")
     topic, path = value["topic"], value["path"]
     if not isinstance(topic, str) or topic not in RULES:
@@ -37,7 +38,10 @@ def validate_rule(value) -> dict:
                    for part in parts[:-1])
             or any(word in path.casefold() for word in ("secret", "credential", "password", "private_key", "token"))):
         raise ValueError("질문에 맞는 저장소 상대 근거 파일을 지정하세요.")
-    return {"topic": topic, "path": path}
+    rule = {"topic": topic, "path": path}
+    if value.get("verification") == "independent":
+        rule["verification"] = "independent"
+    return rule
 
 
 def validate_policy(value) -> dict:
@@ -57,7 +61,7 @@ def validate_policy(value) -> dict:
 
 def in_scope(path: str, folders: list[str]) -> bool:
     relative = PurePosixPath(path)
-    return (any(path in names for names in EVIDENCE_FILES.values())
+    return (path == "docs/TESTING.md" or any(path in names for names in EVIDENCE_FILES.values())
             or any(relative.is_relative_to(folder) for folder in folders))
 
 
@@ -138,6 +142,10 @@ def assess(repo: Path, revision: str, rule: dict, specialist_engine: str, verifi
         raise DelegationDeferred("out_of_scope")
     document = read_document(repo, revision, path)
     answer, citations = document_fact(repo, topic, path, document, folders)
+    if rule.get("verification") != "independent":
+        require_base(repo, revision)
+        return {"answer": answer, "evidence": {"path": path, **citations[0], "revision": revision,
+                                                "method": "committed_fact"}}
     material = {"topic": topic, "question": RULES[topic], "path": path, "revision": revision, "evidence": citations}
     guidance = skill_guidance or {}
     proposal = _consult("specialist", specialist_engine, material, answer, guidance.get("specialist", ""),

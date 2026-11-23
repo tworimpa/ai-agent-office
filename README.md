@@ -115,7 +115,7 @@ agent-office --db ../remote-office/tasks.sqlite3 verify-engine gemini read
 
 | 위임할 질문 | 지정할 수 있는 근거 |
 | --- | --- |
-| 이 프로젝트의 테스트 명령은 무엇인가요? | `AGENTS.md` 또는 `README.md`에 명시된 단일 테스트 명령. 예를 들어 ‘테스트’ 절의 `python -m pytest -q` |
+| 이 프로젝트의 테스트 명령은 무엇인가요? | `AGENTS.md`, `README.md`, `TESTING.md`에 명시된 단일 테스트 명령. 예를 들어 ‘테스트’ 절의 `python -m pytest -q` |
 | 이 프로젝트가 요구하는 Python 버전은 무엇인가요? | `pyproject.toml`의 `[project]` 아래 `requires-python` |
 | 이 프로젝트가 요구하는 Node.js 버전은 무엇인가요? | `package.json`의 `engines.node` |
 
@@ -123,7 +123,7 @@ agent-office --db ../remote-office/tasks.sqlite3 verify-engine gemini read
 
 테스트 명령은 `## Tests`나 `## 테스트` 절에 한 줄로 적을 수 있습니다. 문서의 첫 제목에 저장소 이름을 넣어도 됩니다. 예를 들어 `ai-agent-office` 저장소는 `# AI Agent Office`를 인식합니다. 선택한 하위 폴더에 둔 문서는 그 폴더 이름도 첫 제목으로 사용할 수 있습니다. 예전 버전이나 특정 환경에서만 쓰는 명령은 사람이 확인합니다.
 
-위임된 질문 문구가 그대로 들어오면 전문가가 근거에 따라 답하고, 별도 세션의 검증자가 전문가의 답을 보지 않고 같은 자료를 확인합니다. 두 역할에 같은 엔진을 지정해도 세션은 분리됩니다. 해당 호스트의 CLI 계정을 사용하며 질문 한 건에 최대 두 번의 추가 제공자 호출이 발생할 수 있습니다. 답과 인용이 일치하면 대리 답변을 원래 작업자에게 전달합니다. 다른 질문, 모호한 근거, 검증 실패는 사람이 처리할 질문으로 남습니다. **권한 요청은 항상 기존 사용자 요청함에서 처리합니다.**
+등록한 질문과 일치하고 기준 커밋의 근거에서 답이 하나로 확정되면 모델 호출 없이 답과 인용 줄을 기록합니다. 독립 재확인 옵션을 켜면 전문가와 검증자가 별도 세션에서 같은 자료를 확인합니다. 이 경우 합의한 답과 인용만 원래 작업자에게 전달합니다. 다른 질문, 모호한 근거, 검증 실패는 사람이 처리할 질문으로 남습니다. **권한 요청은 항상 기존 사용자 요청함에서 처리합니다.**
 
 돌아오면 **부재중 복귀 보고**에서 대리 답변과 남은 질문·권한 요청 수를 확인합니다. 결정마다 질문, 답, 전문가·검증자, 근거 파일·행·커밋, 전달 상태와 원래 실행을 볼 수 있습니다. 보고에는 최근 40건을 표시하고, 이전 결정의 근거는 각 실행 상세에 보관합니다. **이 실행의 위임 종료**를 누르면 원래 작업은 계속되며 아직 전송되지 않은 대리 답변은 같은 요청에서 사람의 답을 기다립니다. [구현 계획과 검증 기준](docs/superpowers/plans/2026-11-19-away-delegation.md)
 
@@ -252,4 +252,4 @@ Tasks are transferred to CLI subprocesses through standard input rather than she
 - Keep agent roles separate from the selected CLI engines.
 - Fail closed on unrecognized reviewer verdicts or provider errors.
 
-See [docs/architecture.md](docs/architecture.md) for the planned system and AO-000 scope.
+현재 구성과 책임 경계는 [아키텍처](docs/architecture.md)를 참조하세요. 프로젝트 라이선스는 [Apache-2.0](LICENSE)입니다.

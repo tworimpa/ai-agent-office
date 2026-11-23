@@ -64,7 +64,8 @@ function samePolicy(expected, received) {
   return Object.keys(received).length === 3 && expected.specialist_engine === received.specialist_engine &&
     expected.verifier_engine === received.verifier_engine && Array.isArray(expected.rules) && Array.isArray(received.rules) &&
     received.rules.length === expected.rules.length && expected.rules.every(rule =>
-      received.rules.some(item => item && Object.keys(item).length === 2 && item.topic === rule.topic && item.path === rule.path));
+      received.rules.some(item => item && Object.keys(item).length === Object.keys(rule).length &&
+        item.verification === rule.verification && item.topic === rule.topic && item.path === rule.path));
 }
 const checkedTime = new Intl.DateTimeFormat('ko-KR', {dateStyle: 'short', timeStyle: 'medium'});
 function timeLabel(value) {
@@ -416,7 +417,7 @@ export function mountStudio(win) {
     const pickers = get('use-parallel').checked ? [...get('subtasks').children].flatMap((group, i) =>
       roles.map(([role, title]) => ['하위 작업 ' + (i + 1) + ' ' + title, group.querySelector('[data-role=' + role + ']').value])) :
       roles.map(([role, title]) => [title, get(role + '-engine').value]);
-    if (get('use-delegation').checked) {
+    if (get('use-delegation').checked && get('independent-facts').checked) {
       pickers.push(...delegationRoles.map(([role, title]) => [title, get(role + '-engine').value]));
     }
     for (const [title, id] of pickers) {
@@ -472,6 +473,7 @@ export function mountStudio(win) {
   get('use-delegation').checked = Boolean(pending?.delegation);
 
   function resetDelegation() {
+    get('independent-facts').checked = false;
     get('use-delegation').checked = false;
     for (const [topic, , path] of topics) {
       const box = get('topic-' + topic), input = get('path-' + topic);
@@ -668,7 +670,8 @@ export function mountStudio(win) {
   function delegationEvidence(row) {
     const meta = make('p'), citation = make('p'), quote = make('pre');
     meta.className = citation.className = 'inbox-meta';
-    meta.textContent = delegationRoles.map(([role, name]) => name + ' ' + (engineNames.get(row[role + '_engine']) ?? '미확인')).join(' · ');
+    meta.textContent = row.evidence?.method === 'committed_fact' ? '기준 커밋에서 확인 · 모델 호출 0회' :
+      delegationRoles.map(([role, name]) => name + ' ' + (engineNames.get(row[role + '_engine']) ?? '미확인')).join(' · ');
     const source = row.evidence;
     const choice = row.topic === 'technical_choice' && Object.hasOwn(choicePurposes, source?.purpose) &&
       Number.isSafeInteger(source.option) ? choicePurposes[source.purpose] + ' 선택지 ' + source.option + '번 · ' : '';
@@ -1440,6 +1443,7 @@ export function mountStudio(win) {
           get('topic-' + topics[0][0]).focus();
           return say('start-note', '위임할 질문을 하나 이상 선택하세요.');
         }
+        if (get('independent-facts').checked) for (const rule of rules) rule.verification = 'independent';
         request.delegation = {rules, specialist_engine: get('specialist-engine').value, verifier_engine: get('verifier-engine').value};
       }
       keepPending(request);
@@ -1496,6 +1500,7 @@ export function mountStudio(win) {
   get('workspace').addEventListener('change', () => { renderFolders(); updateSubtaskFolders(true); });
   get('use-inbox').addEventListener('change', controls);
   get('use-delegation').addEventListener('change', () => { updateEngineWarning(); controls(); });
+  get('independent-facts').addEventListener('change', updateEngineWarning);
   get('primary').addEventListener('change', () => {
     renderExtras(checkedExtras());
     updateSubtaskFolders();

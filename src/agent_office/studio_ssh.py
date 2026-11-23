@@ -473,6 +473,12 @@ def _check_citation(prompt, details, answer):
         return
     if RULES.get(topic) != prompt:
         raise RemoteUnavailable()
+    if evidence.get("method") == "committed_fact":
+        from .away_expert import validate_rule
+        if details.get("specialist_engine") is not None or details.get("verifier_engine") is not None:
+            raise RemoteUnavailable()
+        validate_rule({"topic": topic, "path": evidence.get("path")})
+        return
     validate_policy({"rules": [{"topic": topic, "path": evidence.get("path")}],
                      "specialist_engine": details.get("specialist_engine"), "verifier_engine": details.get("verifier_engine")})
 

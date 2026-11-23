@@ -41,3 +41,25 @@ def test_project_recipe_runs_the_fixture_and_reports_command_scope(tmp_path, too
 def test_unregistered_argv_rejected(argv):
     with pytest.raises(ValueError):
         recipe(argv)
+
+
+def test_external_web_project_opts_into_its_script_without_changing_saved_office_recipes():
+    assert recipe(["npm", "--ignore-scripts", "run", "test:web"]) == "npm"
+    assert recipe(["npm", "run", "test:web"]) == "web"
+
+
+def test_node_dependency_content_is_part_of_the_environment(tmp_path):
+    import hashlib
+    from agent_office.goal_recovery import _environment
+
+    if not shutil.which("node") or not shutil.which("npm"):
+        pytest.skip("needs host Node.js and npm")
+    (tmp_path / "package.json").write_text('{"scripts":{"test":"node test.js"}}')
+    module = tmp_path / "node_modules" / "lib" / "helper.js"
+    module.parent.mkdir(parents=True)
+    def fingerprint(source):
+        module.write_text(source)
+        digest = hashlib.sha256()
+        _environment(tmp_path, [dict(argv=["npm", "test"], host="local")], digest.update)
+        return digest.hexdigest()
+    assert fingerprint("a") != fingerprint("b")

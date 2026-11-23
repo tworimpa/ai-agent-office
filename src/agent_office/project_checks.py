@@ -7,12 +7,20 @@ import re
 from .engines import resolve_executable
 
 
+def _npm_args(argv):
+    # The explicit form lets another repository run a script named test:web
+    # while keeping existing Office check policies bound to their original suite.
+    return argv[2:] if argv[1:2] == ["--ignore-scripts"] else argv[1:]
+
+
 def project_recipe(argv):
     if argv == ["cargo", "test"] or argv == ["go", "test", "./..."]:
         return argv[0]
-    if argv == ["npm", "test"] or (len(argv) == 3 and argv[:2] == ["npm", "run"]
-                                    and re.fullmatch(r"test:[a-zA-Z0-9][a-zA-Z0-9:_-]{0,63}", argv[2])):
-        return "npm"
+    if argv[:1] == ["npm"]:
+        args = _npm_args(argv)
+        if args == ["test"] or (len(args) == 2 and args[0] == "run"
+                                and re.fullmatch(r"test:[a-zA-Z0-9][a-zA-Z0-9:_-]{0,63}", args[1])):
+            return "npm"
     return None
 
 
@@ -45,14 +53,14 @@ def command(root, argv, kind):
         cli = Path(installed).resolve() if installed else None
     if not cli or cli.name != "npm-cli.js" or not cli.is_file() or cli.resolve().is_relative_to(root):
         raise ValueError("호스트의 npm CLI를 확인할 수 없습니다.")
-    return [str(node), str(cli), "--ignore-scripts", "--offline", *argv[1:]]
+    return [str(node), str(cli), "--ignore-scripts", "--offline", *_npm_args(argv)]
 
 
 def invocation_matches(kind, argv, planned):
     exe = PureWindowsPath(argv[0]).name.lower()
     if kind == "npm":
         return (exe in ("node", "node.exe") and len(argv) >= 5 and PureWindowsPath(argv[1]).name == "npm-cli.js"
-                and argv[2:] == ["--ignore-scripts", "--offline", *planned[1:]])
+                and argv[2:] == ["--ignore-scripts", "--offline", *_npm_args(planned)])
     tail = ["test", "-mod=readonly", "./..."] if kind == "go" else ["test", "--locked", "--offline"]
     return exe in (kind, kind + ".exe") and argv[1:] == tail
 

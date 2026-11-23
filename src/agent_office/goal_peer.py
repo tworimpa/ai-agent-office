@@ -191,9 +191,9 @@ def _invocation_matches(result):
     from .goal_checks import _pytest_files
     argv, planned = result["argv"], result["recipe_argv"]
     kind = recipe(planned)
-    if kind in {"npm", "go", "cargo"} or kind == "web" and result.get("result_format") == "exit":
+    if kind in {"npm", "go", "cargo"}:
         from .project_checks import invocation_matches
-        return result.get("result_format") == "exit" and invocation_matches("npm" if kind == "web" else kind, argv, planned)
+        return result.get("result_format") == "exit" and invocation_matches(kind, argv, planned)
     if kind == "pytest":
         if len(argv) < 11 or argv[1:3] != ["-I","-B"] or PureWindowsPath(argv[3]).name != "goal_pytest.py":
             return False

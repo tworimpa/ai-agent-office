@@ -85,7 +85,11 @@ def _policy_row(db, run_id):
 
 def get_revision(db_path, run_id):
     with TaskStore(db_path, readonly=True) as store:
-        return _policy_row(store.connection, run_id)["revision"]
+        return revision_in(store.connection, run_id)
+
+
+def revision_in(db, run_id):
+    return _policy_row(db, run_id)["revision"]
 
 
 def get_policy(db_path, run_id):
@@ -128,7 +132,7 @@ class Consultation:
 
     @property
     def rule(self):
-        return {"topic": self.topic, "path": self.path}
+        return next(rule for rule in json.loads(self.policy_json)["rules"] if rule["topic"] == self.topic)
 
 
 @dataclass(frozen=True)
@@ -208,9 +212,11 @@ def record_answer(db, request_id, consultation, answer, evidence):
         (answer, now(), request_id))
     if updated.rowcount != 1:
         raise OfficeError("REQUEST_CLOSED")
+    static = evidence.get("method") == "committed_fact"
     updated = db.execute("""UPDATE studio_away_checks SET topic=?,specialist_engine=?,verifier_engine=?,evidence=?
         WHERE request_id=? AND reason IS NULL AND evidence IS NULL""",
-        (consultation.topic, consultation.specialist, consultation.verifier, encode(evidence), request_id))
+        (consultation.topic, None if static else consultation.specialist, None if static else consultation.verifier,
+         encode(evidence), request_id))
     if updated.rowcount != 1:
         raise OfficeError("REQUEST_CLOSED")
 
