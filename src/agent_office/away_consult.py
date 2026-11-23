@@ -28,6 +28,12 @@ def _command(mode):
 async def run_consultation(repo, revision, rule, specialist_engine, verifier_engine, folders, *,
                            skill_guidance=None, on_stage=None):
     from agent_office.technical_choices import CHOICE_TOPIC
+    if rule["topic"] != CHOICE_TOPIC and rule.get("verification", "fact") == "fact":
+        from agent_office.away_expert import assess
+        # Only bounded reads of pinned Git objects run on this thread. The inbox
+        # still owns final delivery and rechecks the operator's decision or revocation.
+        return await asyncio.to_thread(assess, Path(repo), revision, rule, specialist_engine,
+                                       verifier_engine, folders=folders)
 
     # Only the closest selected ancestor is needed for each evidence file.
     paths = ([option["path"] for option in rule["choice"]["options"]]
