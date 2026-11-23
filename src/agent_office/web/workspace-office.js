@@ -127,7 +127,7 @@ export function mountWorkspaceOffice(win = window) {
       sharedVisit: room?.shared_visits_supported === true,
       supported: room?.briefing_supported === true, writable: canWrite()})});
   const github = mountGithub({get, make, api, desktop: /\bElectron\//i.test(win.navigator.userAgent),
-    uuid, briefing,
+    uuid, briefing, pollSoon: () => poller.schedule(3000),
     openGoal: id => { if (validId(id)) navigation(hostId, workspaceId, id); },
     context: () => ({id: workspaceId, host: hostId, supported: room?.github_supported === true,
       folders: room?.workspace.folders ?? [], runs: roomRuns(), writable: canWrite(), name: directory.find(host => host.id === hostId)?.name ?? hostId})});
@@ -1096,7 +1096,7 @@ export function mountWorkspaceOffice(win = window) {
         detailRequest,
         updateSlow && records.loadUsage(readSection),
         updateSlow && briefing.load(readSection).then(() => github.controls()),
-        updateSlow && github.load(readSection),
+        (updateSlow || github.needsStatus()) && github.load(readSection),
         loadChat(readSection),
         get('requests').open ? loadRequests() : null,
       ]);
@@ -1117,7 +1117,7 @@ export function mountWorkspaceOffice(win = window) {
         say('request-note', '연결이 끊겼습니다. 마지막으로 확인한 요청을 표시합니다.');
       }
     } finally {
-      if (current()) poller.schedule(roomOnline && room && !activeRuns().length ? 20000 : 3000);
+      if (current()) poller.schedule(roomOnline && room && !activeRuns().length && !github.needsStatus() ? 20000 : 3000);
     }
   }
 

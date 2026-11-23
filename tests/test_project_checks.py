@@ -7,6 +7,7 @@ import pytest
 from agent_office.goal_checks import _unprivileged, recipe, run_check
 from agent_office.goal_peer import _invocation_matches
 from agent_office.goal_verification import validate_policy
+from test_goal_verification import goal
 
 
 @pytest.mark.parametrize(("tool", "argv"), [("npm", ["npm", "test"]), ("cargo", ["cargo", "test"]),
@@ -48,6 +49,19 @@ def test_external_web_project_opts_into_its_script_without_changing_saved_office
     assert recipe(["npm", "run", "test:web"]) == "web"
 
 
+@pytest.mark.parametrize("argv", [["go", "test", "./..."], ["cargo", "test"]])
+def test_checked_native_dependencies_require_fresh_evidence_after_runner_restart(argv):
+    import sqlite3
+    from contextlib import closing
+    from agent_office.goal_recovery import _needs_native_revalidation
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.execute("CREATE TABLE studio_goal_checks(run_id TEXT, receipt TEXT)")
+        policy = [{"argv": argv}]
+        assert not _needs_native_revalidation(db, "run", policy)
+        db.execute("INSERT INTO studio_goal_checks VALUES(?,?)", ("run", json.dumps({"recipe_argv": argv})))
+        assert _needs_native_revalidation(db, "run", policy)
+
+
 def test_node_dependency_content_is_part_of_the_environment(tmp_path):
     import hashlib
     from agent_office.goal_recovery import _environment
@@ -63,3 +77,24 @@ def test_node_dependency_content_is_part_of_the_environment(tmp_path):
         _environment(tmp_path, [dict(argv=["npm", "test"], host="local")], digest.update)
         return digest.hexdigest()
     assert fingerprint("a") != fingerprint("b")
+
+
+@pytest.mark.skipif(not _unprivileged() or not shutil.which("npm"), reason="needs a regular npm host session")
+def test_goal_journal_records_failed_node_baseline_and_passing_fix(goal):
+    from agent_office.goal_verification import describe
+    (goal.root / "package.json").write_text('{"scripts":{"test":"node check.cjs"}}')
+    (goal.root / "check.cjs").write_text("process.exit(require('./restore.cjs') === 'dark' ? 0 : 1)")
+    source = goal.root / "restore.cjs"
+    source.write_text("module.exports='light'")
+    subprocess.run(["git", "add", "."], cwd=goal.root, check=True)
+    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "node project"],
+                   cwd=goal.root, check=True)
+    goal.revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=goal.root, text=True).strip()
+    goal.policy = validate_policy({**goal.policy, "checks": [dict(c, argv=["npm", "test"]) for c in goal.policy["checks"]]})
+    assert goal.baseline()[0]
+    source.write_text("module.exports='dark'")
+    assert goal.verify({"attempts": 1}, None)[:3] == (True, False, False)
+    report = describe(goal.db, goal.id)
+    assert report["best_attempt"] == 1
+    assert [check["exit_code"] for check in report["checks"]] == [1, 1, 0, 0]
+    assert all(check["result_format"] == "exit" for check in report["checks"])

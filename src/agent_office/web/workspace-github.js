@@ -24,7 +24,7 @@ const localTime = value => {
   return Number.isNaN(date.getTime()) ? '시간 미확인' : date.toLocaleString('ko-KR');
 };
 
-export function mountGithub({get, make, api, context, openGoal, uuid, desktop, briefing}) {
+export function mountGithub({get, make, api, context, openGoal, uuid, desktop, briefing, pollSoon}) {
   const field = key => get('github-' + key);
   const note = (key, value) => { field(key).textContent = value; };
   const roomKey = () => JSON.stringify([context().host, context().id]);
@@ -116,6 +116,7 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
       if (identity === roomKey()) {
         note('action-note', message);
         await load();
+        if (endpoint === '/sync' && needsStatus() && context().writable) pollSoon();
       }
     } catch (err) {
       if (identity === roomKey()) note('action-note', err.message);
@@ -424,5 +425,8 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
   field('sync').addEventListener('click', () => action('/sync', {}, '가져오기를 요청했습니다.'));
   field('prev').addEventListener('click', () => changePage(null, true));
   field('next').addEventListener('click', () => changePage(latest?.next_cursor, false));
-  return {load, settings, reset, controls};
+  function needsStatus() {
+    return context().supported && (!latest || latest.status?.queued === true);
+  }
+  return {load, settings, reset, controls, needsStatus};
 }

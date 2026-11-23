@@ -13,7 +13,7 @@ Workspace에서 조정자에게 파일 수정을 허용하고 장시간 개발 �
 
 ### 프로젝트 테스트 선택
 
-각 단계에서 Python pytest, Node.js npm test, Rust cargo test, Go go test를 선택할 수 있다. 실행 호스트와 제한 시간은 단계마다 저장한다. npm 프로젝트는 직접 지정으로 `npm run test:unit` 같은 이름도 등록할 수 있다. 각 인수를 줄 단위로 입력한다. 기존 Office 프리셋의 `npm run test:web`은 동봉된 웹 검사를 사용한다. 다른 프로젝트의 동명 스크립트는 `npm --ignore-scripts run test:web`로 명시한다. npm은 준비된 의존성으로 선택한 테스트 스크립트를 실행하고 자동 pre/post 스크립트를 생략한다. Cargo는 커밋된 Cargo.lock과 캐시된 의존성을 사용한다. Go는 로컬 도구와 모듈을 사용한다. 세 명령의 영수증은 명령 전체의 종료 코드와 출력을 기록한다. 개별 테스트를 비교해야 할 때는 JUnit 형식의 호스트 검사를 등록한다.
+각 단계에서 Python pytest, Node.js npm test, Rust cargo test, Go go test를 선택할 수 있다. 실행 호스트와 제한 시간은 단계마다 저장한다. npm 프로젝트는 직접 지정으로 `npm run test:unit` 같은 이름도 등록할 수 있다. 각 인수를 줄 단위로 입력한다. 기존 Office 프리셋의 `npm run test:web`은 동봉된 웹 검사를 사용한다. 다른 프로젝트의 동명 스크립트는 `npm --ignore-scripts run test:web`로 명시한다. npm은 준비된 의존성으로 선택한 테스트 스크립트를 실행하고 자동 pre/post 스크립트를 생략한다. Cargo는 커밋된 Cargo.lock과 캐시된 의존성을 사용한다. Go는 로컬 도구와 모듈을 사용한다. 세 명령의 영수증은 명령 전체의 종료 코드와 출력을 기록한다. 개별 테스트를 비교해야 할 때는 JUnit 형식의 호스트 검사를 등록한다. Go의 로컬 모듈 대체 경로나 Cargo의 외부 경로 의존성·도구 체인은 Git 커밋과 별도로 바뀔 수 있다. 실행기가 중단된 뒤에는 기존 Go·Rust 결과를 자동 재사용하지 않고 재검증이 필요한 상태를 복구 화면에 남긴다.
 
 ### 프로젝트 고유 명령
 

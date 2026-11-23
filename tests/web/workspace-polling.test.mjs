@@ -69,3 +69,40 @@ test('active team children have individual, keyboard-accessible workspace links'
   assert.equal(new URL(link.href).searchParams.get('run'), sibling.id);
   assert.match(window.document.querySelector('[data-visitor="verifier"]').textContent, /독립 검증자 · Claude Code/);
 });
+
+test('a completed GitHub sync can run again while the same goal waits for an answer', async t => {
+  const clock = pollingClock();
+  const row = {...run, pending_count: 1};
+  const snapshot = {...room([row]), bundle_supported: true, goal_supported: true, github_supported: true};
+  const goal = {id: runId, run_id: runId, workspace_id: row.workspace_id, state: 'RUNNING', request: row.task,
+    policy: {active_seconds: 28800, max_attempts: 6, checks: []}, scope: [], criteria: [], checks: [], candidates: [],
+    events: [], next_action: '작업을 계속하려면 운영자 응답이 필요합니다.'};
+  let queued = false, syncs = 0;
+  const github = () => ({config: {enabled: true, repository: 'fixture/settings'}, status: {queued},
+    connections: [], issues: []});
+  const request = {id: 'f'.repeat(32), run_id: runId, role: 'developer', kind: 'question',
+    status: 'pending', prompt: '저장한 설정을 읽을까요?'};
+  const inbox = {requests: [request]}, directions = {directions: []};
+  const {get} = mount(t, path => {
+    if (path === base) return snapshot;
+    if (path === runPath) return {run: row};
+    if (path === runPath + '/inbox') return inbox;
+    if (path === runPath + '/goal') return {goal};
+    if (path === base + '/github') return github();
+    if (path === base + '/github/sync') {
+      syncs++; queued = true; return {queued: true};
+    }
+    if (path.startsWith(base + '/bundle/')) return {room: snapshot, run: {run: row}, goal: {goal}, inbox,
+      directions, ...(path.endsWith('/full') ? {github: github()} : {})};
+  }, {setupWindow: clock.setupWindow});
+  await until(() => clock.timers.size && !get('github-sync').disabled);
+  assert.match(get('goal-next').textContent, /요청함에서 질문/);
+  get('github-sync').click();
+  await until(() => syncs === 1 && get('github-status').textContent.includes('가져오기 요청 처리 중'));
+  assert.equal(get('github-sync').disabled, true);
+  queued = false;
+  await clock.tick();
+  assert.equal(get('github-sync').disabled, false);
+  get('github-sync').click();
+  await until(() => syncs === 2);
+});
