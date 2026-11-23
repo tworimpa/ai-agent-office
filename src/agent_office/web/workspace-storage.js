@@ -4,6 +4,9 @@ const reasons = {
   recent: '7일 보존 기간', locked: '실행 잠금 사용 중', unknown: '상태 확인 불가', dirty: '로컬 파일 변경 또는 무시된 파일',
   unmerged: '원본 체크아웃에 반영되지 않은 커밋', identity: '등록 경로 또는 브랜치 불일치', git_locked: 'Git 작업 트리 잠금',
   missing: '작업 트리 없음', linked: '링크 또는 마운트 포함', changed: '조회 후 커밋 변경',
+  git_version: 'Git이 필요한 체크아웃 잠금을 확보하지 못했습니다. 실행 중인 Git 작업과 설치 버전을 확인하세요.',
+  interrupted_drain: '파일 보존 상태 복구 및 재검사 가능',
+  interrupted_move: '이동 복구 및 재검사 가능',
   partial: 'Git 정리가 끝나지 않았습니다. 상태를 다시 조회하세요.',
 };
 
@@ -55,13 +58,13 @@ export function mountStorage({doc, get, api, context}) {
         input.value = item.run_id;
         input.id = 'storage-' + item.run_id;
         input.dataset.head = item.head ?? '';
-        input.disabled = Boolean(item.reasons.length) || !item.head;
+        input.disabled = item.reasons.some(reason => !['interrupted_move', 'interrupted_drain'].includes(reason)) || !item.head;
         label.htmlFor = input.id;
         const measured = Number.isSafeInteger(item.bytes) && item.bytes >= 0;
         if (measured) total += item.bytes;
         else unknown++;
         label.textContent = [item.run_id, measured ? size(item.bytes) : '용량 미확인',
-          item.reasons.map(reason => reasons[reason] ?? reason).join(', ') || '정리 가능'].join(' · ');
+          item.reasons.map(reason => reasons[reason] ?? reason).join(', ') || '정리 가능', ...(item.location ? ['보존 경로 ' + item.location] : [])].join(' · ');
         row.append(input, label);
         entries.append(row);
       }

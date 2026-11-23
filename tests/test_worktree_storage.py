@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 import platform
 import subprocess
+import sqlite3
+import sys
 from uuid import uuid4
 
 from agent_office.models import OwnerInfo, TaskSpec
@@ -118,6 +120,20 @@ def test_coding_env_preserves_local_git_and_blocks_fixture_transports_and_gh(tmp
     with coding_environment(source) as env:
         assert "GH_TOKEN" not in env and list(Path(env["GH_CONFIG_DIR"]).iterdir()) == []
         assert subprocess.run(["git", "status", "--porcelain"], cwd=repo, env=env, capture_output=True).returncode == 0
+        if os.name == "nt":
+            # Some Windows launchers remove zero-length environment entries.
+            # Invoke a real .cmd shim and have the next process rebuild its env.
+            probe = tmp_path / "env_probe.py"
+            probe.write_text(
+                "import os, subprocess, sys\n"
+                "env = {k:v for k,v in os.environ.items() if v}\n"
+                "def git(*args): return subprocess.run(['git',*args],env=env,capture_output=True)\n"
+                "assert git('config','--get','credential.helper').stdout.strip() == b''\n"
+                "assert git('init','-q',sys.argv[2]).returncode == 0\n"
+                "assert git('push',sys.argv[1],'HEAD:refs/heads/candidate').returncode != 0\n")
+            shim = tmp_path / "check-env.cmd"
+            shim.write_text(f'@"{sys.executable}" "{probe}" "{bare}" "{tmp_path / "nested"}"\n')
+            subprocess.run([str(shim)], cwd=repo, env=env, capture_output=True, check=True)
         for target in ("origin", str(bare)):
             denied = subprocess.run(["git", "push", target, "HEAD:refs/heads/candidate"], cwd=repo, env=env,
                                     capture_output=True)
@@ -210,3 +226,123 @@ def test_new_checkout_registration_during_branch_deletion_preserves_the_ref(tmp_
         assert worktree_storage.handle(server, workspace, body)["outcome"] == "partial"
         assert run_git(checkout, "symbolic-ref", "--short", "HEAD").decode().strip() == tree.branch
         assert run_git(checkout, "rev-parse", "HEAD").decode().strip() == row["head"]
+
+
+def test_preview_releases_sqlite_reader_during_disk_scan(tmp_path, monkeypatch):
+    web, _ = project(tmp_path)
+    with studio(tmp_path / "journal.db") as server:
+        workspace = server.catalog.create("fixture", [str(web)])["id"]
+        first, _ = seed(server, web.parent, workspace)
+        seed(server, web.parent, workspace)
+        with sqlite3.connect(server.db_path) as writer:
+            assert writer.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+        measured = worktree_storage._usage
+        commits = []
+
+        def measure(root):
+            with sqlite3.connect(server.db_path, timeout=0.15) as writer:
+                writer.execute("UPDATE studio_runs SET diagnostic='writer fixture' WHERE id=?", (first,))
+            commits.append(root)
+            return measured(root)
+
+        monkeypatch.setattr(worktree_storage, "_usage", measure)
+        report = worktree_storage.handle(server, workspace, None)
+        assert len(report["entries"]) == len(commits) == 2
+
+
+def test_new_ignored_file_moved_to_quarantine_is_reported_and_new_original_is_untouched(tmp_path, monkeypatch):
+    web, _ = project(tmp_path)
+    repo = web.parent
+    (repo / ".git" / "info" / "exclude").write_text("late.log\n")
+    with studio(tmp_path / "journal.db") as server:
+        workspace = server.catalog.create("fixture", [str(web)])["id"]
+        run, tree = seed(server, repo, workspace)
+        row, = worktree_storage.handle(server, workspace, None)["entries"]
+        body = {"run_id": run, "head": row["head"], "journal_id": server.journal_id}
+        original = worktree_storage._git
+
+        def concurrent_file(cwd, *args):
+            if args[:2] != ("worktree", "move"):
+                return original(cwd, *args)
+            (tree.path / "late.log").write_text("retained content")
+            result = original(cwd, *args)
+            tree.path.mkdir()
+            (tree.path / "replacement").write_text("this is a new directory")
+            return result
+
+        with monkeypatch.context() as m:
+            m.setattr(worktree_storage, "_git", concurrent_file)
+            assert worktree_storage.handle(server, workspace, body)["outcome"] == "dirty"
+        item, = worktree_storage.handle(server, workspace, None)["entries"]
+        kept = Path(item["location"])
+        assert kept.parents[2] == tree.path.parent and kept != tree.path
+        assert (kept / "late.log").read_text() == "retained content"
+        assert (tree.path / "replacement").is_file()
+        (kept / "late.log").unlink()
+        assert worktree_storage.handle(server, workspace, body)["outcome"] == "removed"
+        assert (tree.path / "replacement").is_file()
+
+
+def test_crash_between_rename_and_git_registration_is_recoverable_after_restart(tmp_path, monkeypatch):
+    web, _ = project(tmp_path)
+    repo = web.parent
+    db = tmp_path / "journal.db"
+    with studio(db) as server:
+        workspace = server.catalog.create("fixture", [str(web)])["id"]
+        run, tree = seed(server, repo, workspace)
+        row, = worktree_storage.handle(server, workspace, None)["entries"]
+        body = {"run_id": run, "head": row["head"], "journal_id": server.journal_id}
+        original = worktree_storage._git
+
+        def interrupt(cwd, *args):
+            if args[:2] == ("worktree", "move"):
+                os.rename(args[-2], args[-1])
+                raise OSError("interrupted before Git registration update")
+            return original(cwd, *args)
+        with monkeypatch.context() as m:
+            m.setattr(worktree_storage, "_git", interrupt)
+            assert worktree_storage.handle(server, workspace, body)["outcome"] == "partial"
+    with studio(db) as server:
+        item, = worktree_storage.handle(server, workspace, None)["entries"]
+        assert item["reasons"] == ["interrupted_move"] and Path(item["location"]).is_dir()
+        assert worktree_storage.handle(server, workspace, body)["outcome"] == "removed"
+        assert repo.is_dir() and not tree.path.exists()
+
+
+def test_writer_retaining_original_checkout_survives_the_last_rmdir(tmp_path, monkeypatch):
+    web, _ = project(tmp_path)
+    repo = web.parent
+    (repo / ".git" / "info" / "exclude").write_text("late.log\n")
+    with studio(tmp_path / "journal.db") as server:
+        workspace = server.catalog.create("fixture", [str(web)])["id"]
+        run, tree = seed(server, repo, workspace)
+        row, = worktree_storage.handle(server, workspace, None)["entries"]
+        body = {"run_id": run, "head": row["head"], "journal_id": server.journal_id}
+        rename = worktree_storage._restore_interrupted_move
+        # On POSIX the open descriptor models an editor retaining its old cwd
+        # across rename. Windows directories in use can reject the move itself.
+        held = os.open(tree.path, os.O_DIRECTORY) if os.name != "nt" else None
+
+        def write_after_final_check(source, target):
+            rename(source, target)
+            if source.name == ".git":
+                if held is None:
+                    (source.parent / "late.log").write_text("unsaved editor buffer")
+                else:
+                    fd = os.open("late.log", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=held)
+                    with os.fdopen(fd, "w") as file:
+                        file.write("unsaved editor buffer")
+
+        try:
+            with monkeypatch.context() as m:
+                m.setattr(worktree_storage, "_restore_interrupted_move", write_after_final_check)
+                assert worktree_storage.handle(server, workspace, body)["outcome"] == "dirty"
+        finally:
+            if held is not None:
+                os.close(held)
+        item, = worktree_storage.handle(server, workspace, None)["entries"]
+        kept = Path(item["location"])
+        assert "dirty" in item["reasons"] and (kept / "late.log").read_text() == "unsaved editor buffer"
+        assert (kept / ".git").is_file() and run_git(repo, "for-each-ref", "refs/heads/" + tree.branch)
+        (kept / "late.log").unlink()
+        assert worktree_storage.handle(server, workspace, body)["outcome"] == "removed"

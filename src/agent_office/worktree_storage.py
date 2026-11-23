@@ -8,6 +8,7 @@ import re
 import stat
 import subprocess
 import threading
+from uuid import uuid4
 
 from .engines import resolve_executable
 from .models import ACTIVE, OfficeError, validate_id
@@ -15,12 +16,12 @@ from .ownership import RunBusyError, RunGuard
 from .release_validation import _execute, _tool_env
 from .store import TaskStore
 from .studio_catalog import _local_directory, _redirected
-from .workspace import plan_worktree
+from .workspace import Worktree, plan_worktree
 
 RETENTION = timedelta(days=7)
 REASONS = {"active", "recovery", "review", "checkpoint", "candidate", "pending", "child",
            "recent", "locked", "unknown", "dirty", "unmerged", "identity", "git_locked",
-           "missing", "linked", "changed", "partial"}
+           "missing", "linked", "changed", "partial", "git_version", "interrupted_move", "interrupted_drain"}
 GIT_OPERATIONS = ("rebase-merge", "rebase-apply", "sequencer", "MERGE_HEAD", "CHERRY_PICK_HEAD",
                   "REVERT_HEAD", "BISECT_START")
 OID = re.compile(r"(?:[a-f0-9]{40}|[a-f0-9]{64})")
@@ -34,6 +35,9 @@ def route(method, path):
 def schema(db):
     db.execute("""CREATE TABLE IF NOT EXISTS studio_worktree_cleanup(
         run_id TEXT PRIMARY KEY REFERENCES runs(run_id), head TEXT NOT NULL)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS studio_worktree_staging(
+        run_id TEXT PRIMARY KEY REFERENCES runs(run_id), folder TEXT NOT NULL,
+        directory_id TEXT NOT NULL, checkout_id TEXT NOT NULL, moved INTEGER NOT NULL DEFAULT 0)""")
 
 
 def _git_command(repo, args):
@@ -112,10 +116,19 @@ def _usage(root):
 
 def _inventory(repo):
     worktrees = {}
-    for record in _git(repo, "worktree", "list", "--porcelain", "-z").split(b"\0\0"):
+    try:
+        records = _git(repo, "worktree", "list", "--porcelain", "-z")
+        separator = b"\0"
+    except ValueError:
+        # Older Git lacks -z. Reject ambiguous multi-line paths or reasons.
+        records = _git(repo, "worktree", "list", "--porcelain")
+        separator = b"\n"
+    for record in records.strip(separator).split(separator * 2):
         fields = {}
-        for field in record.split(b"\0"):
+        for field in record.split(separator):
             key, _, value = field.partition(b" ")
+            if key not in {b"worktree", b"HEAD", b"branch", b"bare", b"detached", b"locked", b"prunable"} or key in fields:
+                raise ValueError("Ambiguous worktree registration")
             fields[key] = value
         if b"worktree" in fields:
             worktrees[Path(fields[b"worktree"].decode("utf-8"))] = fields
@@ -145,10 +158,67 @@ def _references(db, run, tables):
 
 
 _ROWS = """SELECT r.run_id,r.state,r.ended_at,t.project,t.workspace,t.branch,t.current_run_id,
-    g.adopted_attempt,x.head AS cleanup_head
+    g.adopted_attempt,x.head AS cleanup_head,q.folder,q.directory_id,q.checkout_id,q.moved
     FROM runs r JOIN tasks t ON t.task_id=r.task_id LEFT JOIN studio_runs s ON s.id=r.run_id
     LEFT JOIN studio_goals g ON g.id=r.run_id LEFT JOIN studio_worktree_cleanup x ON x.run_id=r.run_id
+    LEFT JOIN studio_worktree_staging q ON q.run_id=r.run_id
     WHERE r.host_name=? AND (s.workspace_id=? OR (s.id IS NULL AND t.project IN ({roots})))"""
+
+
+def _file_id(path):
+    if _local_directory(str(path)) != path:
+        raise ValueError("Redirected directory")
+    info = path.stat()
+    if not info.st_ino:
+        raise ValueError("No stable file identity")
+    return f"{info.st_dev}:{info.st_ino}"
+
+
+def _new_quarantine(tree):
+    parent = tree.path.parent / (".office-cleanup-" + uuid4().hex)
+    _local_directory(str(parent.parent))
+    if os.name == "nt":
+        import pywintypes
+        import win32api
+        import win32con
+        import win32file
+        import win32security
+        token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+        try:
+            sid, _ = win32security.GetTokenInformation(token, win32security.TokenUser)
+        finally:
+            token.Close()
+        owner = win32security.ConvertSidToStringSid(sid)
+        attributes = pywintypes.SECURITY_ATTRIBUTES()
+        attributes.SECURITY_DESCRIPTOR = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
+            f"D:P(A;OICI;FA;;;{owner})", win32security.SDDL_REVISION_1)
+        win32file.CreateDirectory(str(parent), attributes)
+    else:
+        parent.mkdir(mode=0o700)
+    (parent / "registered").mkdir()
+    return parent
+
+
+def _restore_interrupted_move(staged, original):
+    # The OS rename must never replace a newly created original directory.
+    if os.name == "nt":
+        os.rename(staged, original)
+    else:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        rename = getattr(libc, "renameat2", None)
+        if not rename or rename(-100, os.fsencode(staged), -100, os.fsencode(original), 1) != 0:
+            raise OSError("Original checkout path is unavailable")
+
+
+def _staging(tree, row):
+    name = row["folder"]
+    if not isinstance(name, str) or not re.fullmatch(r"\.office-cleanup-[a-zA-Z0-9_-]{6,64}", name):
+        raise ValueError("Invalid quarantine directory")
+    parent = tree.path.parent / name
+    if os.path.lexists(parent) and _file_id(parent) != row["directory_id"]:
+        raise ValueError("Quarantine was replaced")
+    return Worktree(parent / "registered" / "checkout", tree.branch)
 
 
 def _inspect(row, roots, db, tables, owners, inventory):
@@ -178,9 +248,36 @@ def _inspect(row, roots, db, tables, owners, inventory):
     if repo not in inventory:
         inventory[repo] = _inventory(repo)
     records = inventory[repo]
+    if row["folder"]:
+        staged = _staging(tree, row)
+        if os.path.lexists(staged.path):
+            result["location"] = str(staged.path)
+            if _file_id(staged.path) != row["checkout_id"]:
+                reasons.append("identity")
+                return result
+            if row["moved"] == 2 and not os.path.lexists(staged.path / ".git") and (staged.path.parents[1] / "pointer").is_file():
+                result["head"] = row["cleanup_head"]
+                reasons.append("interrupted_drain")
+                return result
+            if staged.path not in records and tree.path in records and not row["moved"]:
+                result["head"] = row["cleanup_head"]
+                reasons.append("identity" if os.path.lexists(tree.path) else "interrupted_move")
+                return result
+            tree = staged
+        elif row["moved"]:
+            # Never adopt a directory subsequently created at the original name.
+            tree = staged
+        elif not os.path.lexists(tree.path) or _file_id(tree.path) != row["checkout_id"]:
+            reasons.append("identity")
+            return result
     entry = records.get(tree.path)
     ref = "refs/heads/" + tree.branch
-    if entry is None and not os.path.lexists(tree.path):
+    missing = not os.path.lexists(tree.path)
+    if missing and row["moved"] == 2 and entry and entry.get(b"branch") == ref.encode():
+        # Only the quarantined checkout has disappeared. Its known registration
+        # is still pending retirement. A regular-file parent will guard Git.
+        result.update(head=row["cleanup_head"], bytes=0)
+    elif entry is None and missing:
         if row["cleanup_head"]:
             refs = _git(repo, "for-each-ref", "--format=%(objectname)", ref).decode().splitlines()
             if not refs:
@@ -194,7 +291,7 @@ def _inspect(row, roots, db, tables, owners, inventory):
     elif not entry or entry.get(b"branch") != ref.encode():
         reasons.append("identity")
     else:
-        _inspect_checkout(repo, tree, entry, result)
+        _inspect_checkout(repo, tree, entry, result, draining=row["moved"] == 2)
     if result["head"]:
         if not OID.fullmatch(result["head"]):
             raise ValueError("Unknown Git revision")
@@ -213,7 +310,7 @@ def _git_pointer(path, prefix=b""):
     return (path.parent / marker[len(prefix):].decode("utf-8").rstrip("\r\n")).resolve(strict=True)
 
 
-def _inspect_checkout(repo, tree, entry, result):
+def _inspect_checkout(repo, tree, entry, result, *, draining=False):
     reasons = result["reasons"]
     if b"locked" in entry or b"prunable" in entry:
         reasons.append("git_locked")
@@ -234,7 +331,10 @@ def _inspect_checkout(repo, tree, entry, result):
         return
     changes = _git(tree.path, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored",
                    "--ignore-submodules=none")
-    if changes or any(item and item[:2] != b"H " for item in _git(tree.path, "ls-files", "-v", "-z").split(b"\0")):
+    if draining:
+        changes = any(field and field[:3] not in (b"D  ", b" D ") for field in changes.split(b"\0"))
+    index = _git(tree.path, "ls-files", "-v", "--stage", "-z")
+    if changes or any(item and not item.startswith((b"H 100644 ", b"H 100755 ")) for item in index.split(b"\0")):
         reasons.append("dirty")
 
 
@@ -256,7 +356,11 @@ def _hold_checkout(repo, admin, ref, *, integration=None):
         # Verifying its current branch locks both the branch and its HEAD.
         assertion = b"verify " + integration[b"branch"] + b"\0" + integration[b"HEAD"]
     elif head.startswith(b"ref: refs/heads/") and head[5:] != ref:
-        assertion = b"symref-verify HEAD\0" + head[5:]
+        head_ref = head[5:].decode("utf-8")
+        oid = _git(repo, "--git-dir=" + str(admin), "rev-parse", "--verify", head_ref).strip()
+        if not OID.fullmatch(oid.decode("ascii")):
+            raise ValueError("Unknown checkout revision")
+        assertion = b"verify " + head[5:] + b"\0" + oid
     elif OID.fullmatch(head.decode("ascii")):
         assertion = b"verify HEAD\0" + head
     else:
@@ -271,6 +375,8 @@ def _hold_checkout(repo, admin, ref, *, integration=None):
             if git.stdout.readline(64).strip() != b"start: ok" or git.stdout.readline(64).strip() != b"prepare: ok":
                 raise ValueError("Checkout HEAD changed or Git cannot lock symbolic refs")
             timeout.cancel()
+            if not (admin / "HEAD.lock").is_file():
+                raise ValueError("Git did not lock the checkout HEAD")
             yield git
         finally:
             timeout.cancel()
@@ -315,6 +421,54 @@ def _delete_merged_branch(repo, branch, expected):
             raise
 
 
+def _drain_quarantine(repo, staged, row, db):
+    """Only Git-tracked clean files and known control files may be unlinked."""
+    checkout = staged.path
+    registry = checkout.parent
+    private = registry.parent
+    pointer = private / "pointer"
+    # The journal is durable before the first index or working-file mutation.
+    db.execute("UPDATE studio_worktree_staging SET moved=2 WHERE run_id=? AND moved=1", (row["run_id"],))
+    if os.path.lexists(checkout):
+        if _file_id(checkout) != row["checkout_id"] or _mounts_below(checkout):
+            return "identity"
+        _git(checkout, "rm", "-qr", "--ignore-unmatch", "--", ":/")
+        marker = checkout / ".git"
+        if any(entry != marker for entry in checkout.iterdir()):
+            return "dirty"
+        _restore_interrupted_move(marker, pointer)
+        try:
+            # A process retaining its old cwd can still add ignored files.
+            # rmdir refuses any such entry and never traverses a directory.
+            checkout.rmdir()
+        except OSError:
+            _restore_interrupted_move(pointer, marker)
+            return "dirty"
+    if os.path.lexists(private):
+        if _file_id(private) != row["directory_id"]:
+            return "identity"
+        if registry.is_dir() and not _redirected(registry.lstat()):
+            registry.rmdir()
+        # With a non-directory parent, even a simultaneous creation of a
+        # replacement original or writes from an old cwd cannot cause Git to
+        # recursively remove files. Never pass any other path to worktree remove.
+        if not os.path.lexists(registry):
+            with registry.open("xb") as gate:
+                gate.write(row["folder"].encode("ascii"))
+        info = registry.lstat()
+        if _redirected(info) or not stat.S_ISREG(info.st_mode) or info.st_size != len(row["folder"]):
+            return "identity"
+        if registry.read_bytes() != row["folder"].encode("ascii"):
+            return "identity"
+        if checkout in _inventory(repo):
+            _git(repo, "worktree", "remove", "--", str(checkout))
+        db.execute("UPDATE studio_worktree_staging SET moved=3 WHERE run_id=?", (row["run_id"],))
+        pointer.unlink(missing_ok=True)
+        registry.unlink()
+        private.rmdir()
+    return None
+
+
 def _owners(runner):
     with runner.lock:
         return (set(runner.children) | set(runner.pending) | set(runner.goal_prompts)
@@ -350,7 +504,7 @@ def handle(server, workspace, data):
         inventory = {}
         if data is None:
             owners = _owners(server.runner)
-            rows = db.execute(rows_sql + " ORDER BY r.started_at DESC,r.run_id", scope)
+            rows = db.execute(rows_sql + " ORDER BY r.started_at DESC,r.run_id", scope).fetchall()
             items = [item for row in rows if (item := _row_status(row, roots, store, tables, owners, inventory)) is not None]
             return {"workspace_id": workspace, "journal_id": server.journal_id, "entries": items}
         select = rows_sql + " AND r.run_id=?"
@@ -369,20 +523,66 @@ def handle(server, workspace, data):
             if item is None:
                 outcome = "removed" if row["cleanup_head"] == data["head"] else "changed"
                 return _receipt(server, workspace, run, outcome)
-            if item["reasons"] or item["head"] != data["head"]:
-                return _receipt(server, workspace, run, (item["reasons"] or ["changed"])[0])
             repo = Path(row["project"])
             tree = plan_worktree(repo, run)
-            # Persist the expected tip first so a retry can finish just this
-            # branch after interruption between the two independent Git actions.
-            db.execute("INSERT OR REPLACE INTO studio_worktree_cleanup VALUES (?,?)", (run, data["head"]))
+            if item["head"] == data["head"] and item["reasons"] == ["interrupted_drain"]:
+                try:
+                    staged = _staging(tree, row)
+                    _restore_interrupted_move(staged.path.parents[1] / "pointer", staged.path / ".git")
+                    item = _row_status(row, roots, store, tables, _owners(server.runner), {}, held=True)
+                except (ValueError, OSError):
+                    return _receipt(server, workspace, run, "partial")
+            if item["head"] == data["head"] and item["reasons"] == ["interrupted_move"]:
+                try:
+                    _restore_interrupted_move(_staging(tree, row).path, tree.path)
+                    item = _row_status(row, roots, store, tables, _owners(server.runner), {}, held=True)
+                except (ValueError, OSError):
+                    return _receipt(server, workspace, run, "partial")
+            if item["reasons"] or item["head"] != data["head"]:
+                return _receipt(server, workspace, run, (item["reasons"] or ["changed"])[0])
             try:
                 if _local_directory(str(repo)) != repo:
                     return _receipt(server, workspace, run, "identity")
-                if os.path.lexists(tree.path):
-                    if _local_directory(str(tree.path)) != tree.path or _mounts_below(tree.path):
-                        return _receipt(server, workspace, run, "linked")
-                    _git(repo, "worktree", "remove", "--", str(tree.path))
+                if row["folder"] is None and os.path.lexists(tree.path):
+                    # Exercise the host's checkout lock capability before moving
+                    # any data, including with older Git or another ref backend.
+                    try:
+                        base = inventory.get(repo, {}).get(repo) or _inventory(repo)[repo]
+                        admin = Path(_git(repo, "rev-parse", "--absolute-git-dir").decode().strip())
+                        with _hold_checkout(repo, admin, ("refs/heads/" + tree.branch).encode(), integration=base):
+                            pass
+                    except (ValueError, OSError, KeyError):
+                        return _receipt(server, workspace, run, "git_version")
+                    checkout_id = _file_id(tree.path)
+                    parent = _new_quarantine(tree)
+                    try:
+                        with store._write():
+                            db.execute("INSERT OR REPLACE INTO studio_worktree_cleanup VALUES (?,?)", (run, data["head"]))
+                            db.execute("INSERT INTO studio_worktree_staging VALUES (?,?,?,?,0)",
+                                       (run, parent.name, _file_id(parent), checkout_id))
+                    except BaseException:
+                        (parent / "registered").rmdir()
+                        parent.rmdir()
+                        raise
+                    row = db.execute(select, (*scope, run)).fetchone()
+                if row["folder"]:
+                    staged = _staging(tree, row)
+                    if not row["moved"]:
+                        if not os.path.lexists(staged.path):
+                            if _file_id(tree.path) != row["checkout_id"] or _mounts_below(tree.path):
+                                return _receipt(server, workspace, run, "identity")
+                            _git(repo, "worktree", "move", "--", str(tree.path), str(staged.path))
+                        if _file_id(staged.path) != row["checkout_id"] or staged.path not in _inventory(repo):
+                            return _receipt(server, workspace, run, "identity")
+                        db.execute("UPDATE studio_worktree_staging SET moved=1 WHERE run_id=?", (run,))
+                    row = db.execute(select, (*scope, run)).fetchone()
+                    checked = _row_status(row, roots, store, tables, _owners(server.runner), {}, held=True)
+                    if checked is None:
+                        return _receipt(server, workspace, run, "removed")
+                    if checked["reasons"] or checked["head"] != data["head"]:
+                        return _receipt(server, workspace, run, (checked["reasons"] or ["changed"])[0])
+                    if reason := _drain_quarantine(repo, staged, row, db):
+                        return _receipt(server, workspace, run, reason)
                 _delete_merged_branch(repo, tree.branch, data["head"])
             except (ValueError, OSError):
                 return _receipt(server, workspace, run, "partial")
