@@ -7,6 +7,7 @@ name = "ai-agent-office"
 version = "0.1.0"
 description = "Local-first multi-CLI coding agent office bootstrap"
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
   "PyYAML>=6",

@@ -106,7 +106,13 @@ test('overnight settings save the user-selected scope to the workspace, separate
   get('settings').click();
   await until(() => !get('goal-policy-form').hidden);
   const argv = get('goal-check-fields').querySelector('[name="argv"]');
+  const preset = get('goal-check-fields').querySelector('[name="preset"]');
+  preset.value = 'cargo\ntest';
+  preset.dispatchEvent(new window.Event('change'));
+  assert.equal(argv.value, 'cargo\ntest');
   argv.value = 'python\n-m\npytest\n-q\ntests/test_settings.py';
+  argv.dispatchEvent(new window.Event('input'));
+  assert.equal(preset.value, '');
   submit('goal-policy-form');
   await until(() => Boolean(releaseRefresh));
   assert.deepEqual(saved.checks[0].argv, ['python', '-m', 'pytest', '-q', 'tests/test_settings.py']);

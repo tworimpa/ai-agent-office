@@ -163,7 +163,7 @@ def _environment(root, checks, update):
                       for d in metadata.distributions(path=sites))
     update(encode(packages).encode())
     host_module = Path(__file__).parent
-    for name in ("goal_checks.py", "goal_candidates.py", "goal_verification.py", "goal_host_checks.py",
+    for name in ("goal_checks.py", "project_checks.py", "goal_candidates.py", "goal_verification.py", "goal_host_checks.py",
                  "goal_peer.py", "goal_pytest.py", "goal_process.py", "goal_artifact.py",
                  "goal_reproduction.py", "studio_process.py", "workflow.py", "goal_stage_wait.py",
                  "workspace_coordination.py", "goal_usage.py", "goal_workers.py"):
@@ -179,6 +179,10 @@ def _environment(root, checks, update):
         argv, kind = _command(root, check, Path("report.xml"))
         update(encode(argv).encode())
         files.add(Path(argv[0]))
+        if kind == "npm":
+            files.add(Path(argv[1]))
+            from .project_checks import dependency_inputs
+            files.update(dependency_inputs(root))
         if kind == "web":
             project = root
             if not (root / "node_modules/jsdom/package.json").is_file():
@@ -194,6 +198,8 @@ def _environment(root, checks, update):
                           harness.parent / "fixtures/codex.py", harness.parent / "fixtures/agy.py",
                           harness.parent / "fixtures/meeting.py"))
     for path in sorted(files):
+        if path.is_symlink():
+            update(encode(str(path)).encode())
         file(path)
 
 

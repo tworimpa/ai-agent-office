@@ -14,6 +14,7 @@ from urllib.parse import quote
 from xml.etree import ElementTree
 
 from .events import snapshot_request
+from . import project_checks
 from .engines import resolve_executable
 from .goal_artifact import installed_evidence
 from .goal_process import execute
@@ -44,6 +45,9 @@ def recipe(argv):
         return "web"
     if argv == ["node", "desktop/verify-install.mjs", "<installed-app>"]:
         return "installed"
+    project = project_checks.project_recipe(argv)
+    if project:
+        return project
     if len(argv) == 3 and argv[0] == "host-check":
         import re
         if (re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", argv[1])
@@ -80,6 +84,8 @@ def _no_linux_capabilities(status):
 def _command(workspace, check, report):
     argv = check["argv"]
     kind = recipe(argv)
+    if kind in {"npm", "go", "cargo"}:
+        return project_checks.command(workspace, argv, kind), kind
     if kind == "host":
         from .goal_host_checks import command_for
         return command_for(argv, workspace, report)
@@ -101,6 +107,14 @@ def _command(workspace, check, report):
     if not node or Path(node).resolve().is_relative_to(workspace):
         raise ValueError("호스트에 Node.js가 필요합니다.")
     if kind == "web":
+        manifest = workspace / "package.json"
+        if manifest.is_file():
+            if manifest.resolve(strict=True) != manifest or manifest.stat().st_size > 1024 * 1024:
+                raise ValueError("검증할 프로젝트의 package.json을 확인할 수 없습니다.")
+            package = json.loads(manifest.read_text(encoding="utf-8-sig"))
+            scripts = package.get("scripts") if isinstance(package, dict) else None
+            if not isinstance(scripts, dict) or scripts.get("test:web") != "node --test tests/web/*.test.mjs":
+                return project_checks.command(workspace, argv, "npm"), "npm"
         # Fixed test:web recipe skips package lifecycle hooks, npm's shell
         # and executable selection from a candidate's node_modules/.bin.
         files = sorted(path.relative_to(workspace).as_posix() for path in (workspace / "tests/web").glob("*.test.mjs"))
@@ -190,6 +204,10 @@ def run_check(workspace, check, *, timeout, on_start=None):
                 "APPDATA", "LOCALAPPDATA", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "DISPLAY", "WAYLAND_DISPLAY",
                 "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS") if key in os.environ}
             env["PYTHONDONTWRITEBYTECODE"] = "1"
+            if kind == "cargo":
+                env["CARGO_TARGET_DIR"] = str(report.parent / "target")
+            elif kind == "go":
+                env.update(GOPROXY="off", GOTOOLCHAIN="local", GOWORK="off")
             code, output = execute(command, workspace, env, timeout)
             receipt.update(exit_code=code, summary=snapshot_request(output))
             if kind in {"host_exit", "host_junit"}:
@@ -202,6 +220,9 @@ def run_check(workspace, check, *, timeout, on_start=None):
                 cases = {"installed-app::verify-install": "passed" if code == 0 else "failed"}
             elif kind == "host_exit":
                 cases = {"host-check::" + argv[1]: "passed" if code == check["pass_exit_code"] else "failed"}
+            elif kind in {"npm", "go", "cargo"}:
+                receipt["result_format"] = "exit"
+                cases = {"command::" + " ".join(argv): "passed" if code == 0 else "failed"}
             else:
                 cases = _pytest_results(report)
             receipt["counts"] = dict(Counter(cases.values()))

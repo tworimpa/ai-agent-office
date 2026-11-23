@@ -4,6 +4,7 @@ version = "0.7.0"
 description = "실행 중인 AI Agent Office Studio에 연결하는 Rust 비교판"
 authors = ["AI Agent Office <maintainers@users.noreply.github.com>"]
 edition = "2021"
+license = "Apache-2.0"
 publish = false
 
 [build-dependencies]
