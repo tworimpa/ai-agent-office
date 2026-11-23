@@ -80,7 +80,7 @@ class WindowsJob:
         info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         win32job.SetInformationJobObject(self.handle, win32job.JobObjectExtendedLimitInformation, info)
 
-    def spawn(self, argv, output=None, *, cwd=None, env=None, combined=False, errors=None):
+    def spawn(self, argv, output=None, *, cwd=None, env=None, combined=False, errors=None, hidden_console=False):
         # A Windows venv launcher can create the real interpreter before Python
         # code reads stdin. Suspend its primary thread until the job owns it.
         import msvcrt
@@ -103,12 +103,18 @@ class WindowsJob:
                 os.set_inheritable(devnull.fileno(), True)
                 startup = win32process.STARTUPINFO()
                 startup.dwFlags = subprocess.STARTF_USESTDHANDLES
+                flags = win32con.CREATE_SUSPENDED | BACKGROUND_FLAGS
+                if hidden_console:
+                    # Console fixtures started by pytest inherit this hidden console.
+                    flags = win32con.CREATE_SUSPENDED | subprocess.CREATE_NEW_CONSOLE
+                    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startup.wShowWindow = subprocess.SW_HIDE
                 startup.hStdInput = msvcrt.get_osfhandle(reader)
                 startup.hStdOutput = msvcrt.get_osfhandle(stdout.fileno())
                 startup.hStdError = startup.hStdOutput if combined else msvcrt.get_osfhandle(stderr.fileno())
                 handle, thread, _, _ = win32process.CreateProcess(
                     argv[0], subprocess.list2cmdline(argv), None, None, True,
-                    win32con.CREATE_SUSPENDED | BACKGROUND_FLAGS, env, str(cwd) if cwd else None, startup,
+                    flags, env, str(cwd) if cwd else None, startup,
                 )
                 try:
                     self.api.AssignProcessToJobObject(self.handle, handle)
