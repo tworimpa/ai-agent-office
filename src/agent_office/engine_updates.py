@@ -78,7 +78,15 @@ def check(engine):
     newer = False
     if installed and re.fullmatch(VERSION, installed) and published:
         newer = tuple(map(int, published.split("."))) > tuple(map(int, installed.split(".")))
-    return {"engine": engine, "installed": installed, "latest": published, "update_available": newer}
+    policy = None
+    if newer:
+        try:
+            command = update_command(engine, executable, published)
+            policy = "vendor_channel" if command[1:] == ["update"] else "pinned"
+        except (OSError, TypeError, ValueError):
+            pass
+    return {"engine": engine, "installed": installed, "latest": published, "update_available": newer,
+            "update_policy": policy}
 
 
 def require_operator():
@@ -146,7 +154,7 @@ def update_command(engine, executable, version):
             "--registry", REGISTRY, package + "@" + version]
 
 
-def apply(db_path, engine, installed, latest, journal):
+def apply(db_path, engine, installed, latest, journal, *, vendor_channel=False):
     require_operator()
     if not all(re.fullmatch(VERSION, v) for v in (installed, latest)):
         raise ValueError("정식 버전을 입력하세요.")
@@ -160,11 +168,16 @@ def apply(db_path, engine, installed, latest, journal):
         if not executable:
             raise ValueError("설치된 CLI를 찾을 수 없습니다.")
         command = update_command(engine, executable, latest)
+        if vendor_channel != (command[1:] == ["update"]):
+            raise ValueError("요청한 업데이트 방식과 설치 관리자의 버전 지정 방식이 다릅니다.")
         snapshot = check(engine)
         if not snapshot["update_available"] or (installed, latest) != (snapshot["installed"], snapshot["latest"]):
             raise ValueError("버전 정보가 달라졌습니다. 공개 버전을 다시 확인하세요.")
-        print(f"{executable}\n{engine} {installed} → {latest}")
-        if input("이 사용자 계정의 CLI를 갱신하려면 UPDATE를 입력하세요. ").strip() != "UPDATE":
+        print(f"{executable}\n{engine} · 설치 {installed} · 공개 {latest}")
+        confirmation = "UPDATE VENDOR CHANNEL" if vendor_channel else "UPDATE"
+        if vendor_channel:
+            print("공급자의 업데이트 채널이 선택하는 버전을 설치합니다. 실제 버전은 표시된 공개 버전과 다를 수 있습니다.")
+        if input(f"갱신을 승인하려면 {confirmation}를 입력하세요. ").strip() != confirmation:
             raise ValueError("CLI 업데이트를 취소했습니다.")
         with tempfile.TemporaryDirectory(prefix="office-cli-update-") as cwd:
             from .process_diagnostics import kill_family
@@ -185,6 +198,8 @@ def apply(db_path, engine, installed, latest, journal):
                     raise ValueError("CLI 업데이트 제한 시간이 지났습니다. 설치 버전을 다시 확인하세요.") from None
         actual = resolve_executable(ENGINE_COMMANDS[engine])
         version = probe_version(engine, actual, 3)[0] if actual else None
-        if code or version != latest:
+        advanced = (version and re.fullmatch(VERSION, version) and
+                    tuple(map(int, version.split("."))) > tuple(map(int, installed.split("."))))
+        if code or (not advanced if vendor_channel else version != latest):
             raise ValueError("요청한 버전 설치를 확인할 수 없습니다. CLI 진단을 다시 확인하세요.")
         return {"engine": engine, "installed": version}

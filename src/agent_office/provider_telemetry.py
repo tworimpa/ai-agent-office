@@ -154,14 +154,14 @@ def batch_receipt(engine, output):
     if isinstance(usage, dict):
         if engine == "claude":
             keys = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
-            if (all(bounded_int(usage.get(k)) for k in keys[:2])
-                    and all(bounded_int(usage[k]) for k in keys[2:] if k in usage)):
-                total = sum(usage.get(k, 0) for k in keys)
+            if bounded_int(usage.get("output_tokens")):
+                event["output_tokens"] = usage["output_tokens"]
+            if bounded_int(usage.get("cache_read_input_tokens")):
+                event["cached_input_tokens"] = usage["cache_read_input_tokens"]
+            if all(bounded_int(usage.get(k)) for k in keys):
+                total = sum(usage[k] for k in keys)
                 if bounded_int(total):
-                    event.update(total_tokens=total, input_tokens=usage["input_tokens"],
-                                 output_tokens=usage["output_tokens"])
-                    if "cache_read_input_tokens" in usage:
-                        event["cached_input_tokens"] = usage["cache_read_input_tokens"]
+                    event.update(total_tokens=total, input_tokens=total - usage["output_tokens"])
         else:
             for key,target in (("total_tokens","total_tokens"),("input_tokens","input_tokens"),
                                ("output_tokens","output_tokens"),("cache_read_tokens","cached_input_tokens"),

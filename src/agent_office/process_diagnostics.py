@@ -52,9 +52,42 @@ _CAUSES = (
 )
 
 
-def drain_pipe(stream, receive):
+def drain_pipe(stream, receive, *, finished=None):
     def read():
         with stream:
+            if finished is not None:
+                # A launcher can exit normally while a descendant still owns
+                # the pipe. Drain bytes already available without awaiting EOF.
+                if os.name == "nt":
+                    import msvcrt
+                    import pywintypes
+                    import win32pipe
+                    handle = msvcrt.get_osfhandle(stream.fileno())
+                    def available():
+                        try:
+                            return min(8192, win32pipe.PeekNamedPipe(handle, 0)[1])
+                        except pywintypes.error as exc:
+                            if exc.winerror in (109, 232, 233):
+                                return -1
+                            raise
+                else:
+                    import select
+                    def available():
+                        return 8192 if select.select([stream], [], [], 0)[0] else 0
+                while True:
+                    size = available()
+                    if size < 0:
+                        break
+                    if size:
+                        block = stream.read1(size)
+                        if not block:
+                            break
+                        receive(block)
+                    elif finished.is_set():
+                        break
+                    else:
+                        finished.wait(0.025)
+                return
             while block := stream.read1(8192):
                 receive(block)
     thread = threading.Thread(target=read, daemon=True)

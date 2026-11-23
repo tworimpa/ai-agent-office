@@ -123,6 +123,7 @@ class StudioServer(ThreadingHTTPServer):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Invalid port")
         self.progress_slots = threading.BoundedSemaphore(8)
+        self.progress_closed = threading.Event()
         self.runner = None
         self.github = None
         self.engines = None
@@ -173,6 +174,7 @@ class StudioServer(ThreadingHTTPServer):
         return connection, address
 
     def server_close(self):
+        self.progress_closed.set()
         super().server_close()
         if self.github is not None:
             self.github.close()

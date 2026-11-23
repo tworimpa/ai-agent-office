@@ -9,13 +9,13 @@ ENGINE_COMMANDS = {"codex": "codex", "antigravity": "agy", "claude": "claude", "
 SUPPORTED_ENGINES = tuple(ENGINE_COMMANDS)
 INITIAL_ENGINES = ("codex", "antigravity")
 CLINE_ACP_VERSION = "3.0.74"
-def cline_compatible(version):
-    return (isinstance(version, str) and re.fullmatch(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}", version)
-            and tuple(map(int, version.split("."))) >= (3, 0, 74))
-
-
 DEFAULT_DEVELOPER = "codex"
 DEFAULT_REVIEWER = "antigravity"
+
+
+def cline_compatible(version):
+    return (isinstance(version, str) and re.fullmatch(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}", version) is not None
+            and tuple(map(int, version.split("."))) >= (3, 0, 74))
 
 
 def codex_backend_args() -> list[str]:

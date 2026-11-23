@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import time
 from uuid import UUID
 
@@ -55,9 +56,17 @@ def _turn(engine, argv, message, workspace, env, deadline, guard, *, telemetry=N
                     continue
                 if isinstance(record, dict):
                     kind = record.get("event") if engine == "antigravity" else record.get("type")
-                    activity = {"init":"session", "step_update":"tool", "thread.started":"session",
-                                "item.started":"tool", "item.completed":"tool_finished",
+                    activity = {"init":"session", "thread.started":"session",
                                 "assistant":"response", "tool_progress":"tool"}.get(kind) if isinstance(kind,str) else None
+                    if kind == "step_update" and isinstance(record.get("step_update"), dict):
+                        activity = "tool" if isinstance(record["step_update"].get("tool_info"), dict) else "output"
+                    if kind in ("item.started", "item.completed") and isinstance(record.get("item"), dict):
+                        operation = record["item"].get("type")
+                        if operation == "agent_message":
+                            activity = "response"
+                        elif operation in ("command_execution", "file_change", "mcp_tool_call"):
+                            activity = "tool_finished" if kind == "item.completed" else (
+                                "command" if operation == "command_execution" else "file" if operation == "file_change" else "tool")
                     if activity:
                         progress(activity)
 
@@ -69,7 +78,9 @@ def _turn(engine, argv, message, workspace, env, deadline, guard, *, telemetry=N
                 raise TimeoutError("The original task timed out before the continuation could start.")
             proc = subprocess.Popen(argv, cwd=workspace, stdin=stdin, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, env=env, start_new_session=os.name != "nt")
-        readers = [drain_pipe(proc.stderr, tail.append), drain_pipe(proc.stdout, output_block)]
+        finished = threading.Event()
+        readers = [drain_pipe(proc.stderr, tail.append, finished=finished),
+                   drain_pipe(proc.stdout, output_block, finished=finished)]
         try:
             if progress:
                 progress("started")
@@ -80,6 +91,7 @@ def _turn(engine, argv, message, workspace, env, deadline, guard, *, telemetry=N
                 if proc.poll() is None:
                     proc.kill()
                 proc.wait(timeout=4)
+            finished.set()
             for reader in readers:
                 reader.join(timeout=1)
         failure = None

@@ -30,6 +30,7 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
   const roomKey = () => JSON.stringify([context().host, context().id]);
   const path = () => '/rooms/' + context().id + '/github';
   let latest = null, viewKey = '', read = 0, formRead = 0, repoRead = 0, busy = false;
+  let syncPending = false;
   let repositories = [];
   let cursor = null, previousPages = [], changingPage = false, selectedIssue = null, eventCursor = null, previousEvents = [];
   let detail = null, detailError = '', detailRead = 0;
@@ -42,6 +43,7 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
   function reset() {
     ++read; ++formRead; ++repoRead;
     latest = null;
+    syncPending = false;
     cursor = null; previousPages = []; changingPage = false; resetDetail();
     busy = false;
     viewKey = '';
@@ -114,6 +116,7 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
     try {
       await api(path() + endpoint, body);
       if (identity === roomKey()) {
+        if (endpoint === '/sync') syncPending = true;
         note('action-note', message);
         await load();
         if (endpoint === '/sync' && needsStatus() && context().writable) pollSoon();
@@ -296,6 +299,7 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
       const result = await readSection(path() + cursorPath(cursor));
       if (identity !== roomKey() || sequence !== read) return;
       latest = result;
+      syncPending = latest.status?.queued === true;
       if (selectedIssue && !result.issues.some(row => row.issue_id === selectedIssue)) resetDetail();
       render();
       if (selectedIssue) await loadDetail();
@@ -426,7 +430,7 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
   field('prev').addEventListener('click', () => changePage(null, true));
   field('next').addEventListener('click', () => changePage(latest?.next_cursor, false));
   function needsStatus() {
-    return context().supported && (!latest || latest.status?.queued === true);
+    return context().supported && syncPending;
   }
   return {load, settings, reset, controls, needsStatus};
 }

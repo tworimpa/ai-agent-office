@@ -29,22 +29,18 @@ test('progress follows the selected run and journal, hides stale rows and closes
   window.close();
 });
 
-test('updates require a successful explicit version check and a separate operator click', async () => {
+test('version lookup supplies a journal-bound operator command with no browser mutation', async () => {
   const {window} = new JSDOM();
   const calls = [], journal = 'a'.repeat(32);
   const group = engineMaintenance(window.document, 'cline', async (path,body) => {
     calls.push([path,body]);
-    return {engine:'cline',journal_id:journal, installed:'3.0.75', latest:'3.0.76', update_available:true};
+    return {engine:'cline',journal_id:journal, installed:'3.0.75', latest:'3.0.76', update_available:true, update_policy:'pinned'};
   });
-  const [check,apply] = group.querySelectorAll('button');
-  assert.equal(calls.length,0);
-  assert.equal(apply.hidden,true);
-  await check.onclick();
-  assert.match(apply.textContent,/3\.0\.76/);
-  assert.equal(calls.length,1);
-  await apply.onclick();
-  assert.deepEqual(calls[1], ['/engines/cline/update?office_journal='+journal,
-    {installed:'3.0.75',latest:'3.0.76'}]);
-  assert.equal(apply.hidden,true);
+  assert.deepEqual(calls,[]);
+  await group.querySelector('button').onclick();
+  assert.deepEqual(calls, [['/engines/cline/check',{}]]);
+  assert.equal(group.querySelectorAll('button').length,1);
+  assert.equal(group.querySelector('code').textContent,
+    'agent-office update-engine cline --from-version 3.0.75 --to-version 3.0.76 --journal '+journal);
   window.close();
 });

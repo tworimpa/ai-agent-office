@@ -301,14 +301,14 @@ class _Session:
         if kind in ("tool_call", "tool_call_update"):
             if self.prompt_only:
                 raise ProtocolError("Meeting consultation reported a tool call")
-            if self.progress:
-                self.progress("tool_finished" if update.get("status") == "completed" else "tool")
             tool_id = update.get("toolCallId")
             status = update.get("status")
             if not isinstance(tool_id, str) or not tool_id:
                 raise ProtocolError("invalid tool notification")
             if self.engine == "gemini":
                 self.gemini_tool(update, kind, tool_id, status)
+                if self.progress:
+                    self.progress("tool_finished" if status == "completed" else "tool")
                 return
             if status == "pending":
                 # Cline emits tool-started for its result wrapper even when the
@@ -341,6 +341,8 @@ class _Session:
                 raise ProtocolError("failed or unapproved Cline tool operation")
             if status != "pending" and tool_id in self.permission_receipts:
                 self.inbox.delivered(self.permission_receipts.pop(tool_id))
+            if self.progress:
+                self.progress("tool_finished" if status in ("completed","failed") else "tool")
             return
         raise ProtocolError("unsupported ACP session update")
 
@@ -413,7 +415,7 @@ class _Session:
             self.progress("session")
         turn_text = prompt + "\n\n" + instructions
         decision_id = kind = direction = None
-        questions, request_id = 0, 4
+        questions, request_id, completed_turns = 0, 4, 0
         while True:
             self.fragments.clear()
             try:
@@ -429,6 +431,7 @@ class _Session:
                 raise ProtocolError("ACP did not complete its turn")
             if direction is not None:
                 direction.delivered()
+            completed_turns += 1
             request_id += 1
             text = "".join(self.fragments)
             request = extract_request(text) if self.inbox is not None else None
@@ -457,7 +460,7 @@ class _Session:
             required = {"read", "edit"} if self.allow_edits else {"read"}
             if not required.issubset(self.file_operations):
                 raise ProtocolError(f"{self.engine} did not report the expected workspace file operations")
-        if self.telemetry:
+        if self.telemetry and completed_turns == 1:
             from .provider_telemetry import acp_usage
             if receipt := acp_usage(end.get("usage")):
                 self.telemetry(receipt)

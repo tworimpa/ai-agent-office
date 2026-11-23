@@ -29,8 +29,7 @@ def coding_environment(source):
                if not key.upper().startswith(("GIT_CONFIG_", "GH_")) and key.upper() not in
                {"GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK", "GIT_SSH", "GIT_SSH_COMMAND", "GITHUB_PAT"}}
         env.update(PATH=str(commands) + os.pathsep + env.get("PATH", os.defpath),
-                   GH_CONFIG_DIR=str(config), GH_PROMPT_DISABLED="1", GIT_ALLOW_PROTOCOL="",
+                   GH_CONFIG_DIR=str(config), GH_PROMPT_DISABLED="1", GIT_ALLOW_PROTOCOL=":",
                    GIT_SSH_COMMAND="false", GIT_ASKPASS="false", GIT_TERMINAL_PROMPT="0",
-                   GIT_CONFIG_COUNT="2", GIT_CONFIG_KEY_0="credential.helper", GIT_CONFIG_VALUE_0="",
-                   GIT_CONFIG_KEY_1="remote.origin.pushurl", GIT_CONFIG_VALUE_1="no-push://blocked")
+                   GIT_CONFIG_PARAMETERS="'credential.helper'='' 'remote.origin.pushurl'='no-push://blocked'")
         yield env

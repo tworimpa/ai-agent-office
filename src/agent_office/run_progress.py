@@ -1,5 +1,6 @@
 """Small, replayable journal of confirmed provider activity. No provider text is retained."""
 import json
+import sqlite3
 import threading
 import time
 
@@ -33,21 +34,36 @@ class Reporter:
         self.last = None
         self.written = 0
         self.lock = threading.Lock()
+        self.period = 0
+        self.count = 0
 
     def __call__(self, activity):
         if activity not in LABELS:
             return
+        try:
+            self.record(activity)
+        except (sqlite3.Error, OSError, OfficeError):
+            # Optional observations cannot interrupt a CLI's stdout reader or
+            # consume/replay an operator handoff when the journal is busy.
+            return
+
+    def record(self, activity):
         with self.lock:
             current = time.monotonic()
-            if self.last is not None and current - self.written < (3 if activity == self.last else 0.25):
+            if current - self.period >= 1:
+                self.period, self.count = current, 0
+            if self.count >= 4 or activity == self.last and current - self.written < 3:
                 return
-            with TaskStore(self.path, existing=True) as store, store._write():
+            with TaskStore(self.path, existing=True) as store:
                 db = store.connection
-                db.execute("INSERT INTO studio_provider_progress(run_id,engine,activity,at) VALUES(?,?,?,?)",
-                           (self.run_id, self.engine, activity, now()))
-                db.execute("""DELETE FROM studio_provider_progress WHERE run_id=? AND id <=
-                    (SELECT id FROM studio_provider_progress WHERE run_id=? ORDER BY id DESC LIMIT 1 OFFSET 128)""",
-                           (self.run_id, self.run_id))
+                db.execute("PRAGMA busy_timeout=25")
+                with store._write():
+                    db.execute("INSERT INTO studio_provider_progress(run_id,engine,activity,at) VALUES(?,?,?,?)",
+                               (self.run_id, self.engine, activity, now()))
+                    db.execute("""DELETE FROM studio_provider_progress WHERE run_id=? AND id <=
+                        (SELECT id FROM studio_provider_progress WHERE run_id=? ORDER BY id DESC LIMIT 1 OFFSET 128)""",
+                               (self.run_id, self.run_id))
+            self.count += 1
             self.last, self.written = activity, current
 
 
@@ -74,6 +90,8 @@ def stream(handler, run_id, cursor):
             handler.send_header("Cache-Control", "no-store")
             handler.send_header("Connection", "close")
             handler.end_headers()
+            if handler.command == "HEAD":
+                return
             handler.connection.settimeout(3)
             handler.wfile.write(b"retry: 2000\n\n")
             deadline = time.monotonic() + 15
@@ -88,7 +106,7 @@ def stream(handler, run_id, cursor):
                     handler.wfile.write(b"event: finished\ndata: {}\n\n")
                     break
                 handler.wfile.flush()
-                if server.runner.shutdown.wait(0.8):
+                if server.progress_closed.wait(0.8):
                     break
             handler.wfile.flush()
     finally:

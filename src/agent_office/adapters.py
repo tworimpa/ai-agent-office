@@ -85,7 +85,6 @@ class CLIAdapter:
             with host_lease(), coding_environment(os.environ) as env:
                 env.setdefault("PYTHONUTF8", "1")
                 env.setdefault("PYTHONIOENCODING", "utf-8")
-                task_input = json.dumps({"event": "user", "message": {"content": prompt}}, ensure_ascii=False) + "\n" if self.engine == "antigravity" else prompt
                 if self.engine in ("gemini", "cline"):
                     from .engine_evidence import cline_verified
                     from .engines import CURRENT_ROLE
@@ -97,12 +96,6 @@ class CLIAdapter:
                             self.db_path, executable, version, capability),
                     ))
                     return AgentResult(0, message[:12000], session, len(message) > 12000)
-                if prompt_only:
-                    # Windows launchers may leave a descendant holding a stdio pipe
-                    # after exit. A bounded file-backed turn does not await its EOF.
-                    from .batch_dialogue import _turn
-                    return _turn(self.engine, argv, prompt, workspace, env, time.monotonic() + self.timeout, nullcontext(),
-                                 telemetry=telemetry, progress=self.progress)
                 if inbox is not None:
                     if self.engine == "codex":
                         from .codex_inbox import run_codex_inbox
@@ -111,45 +104,15 @@ class CLIAdapter:
                     from .batch_dialogue import run_batch_dialogue
                     return run_batch_dialogue(self.engine, argv, prompt, workspace, env, self.timeout, inbox,
                                               progress=self.progress, telemetry=telemetry)
-                if self.progress:
-                    from .batch_dialogue import _turn
-                    return _turn(self.engine, argv, prompt, workspace, env, time.monotonic()+self.timeout, nullcontext(),
-                                 telemetry=telemetry, progress=self.progress, strict=strict_completion)
-                completed = subprocess.run(
-                    argv, cwd=workspace, input=task_input, env=env, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=self.timeout,
-                    check=False,
-                )
+                from .batch_dialogue import _turn
+                return _turn(self.engine, argv, prompt, workspace, env, time.monotonic() + self.timeout, nullcontext(),
+                             telemetry=telemetry, progress=self.progress, strict=prompt_only or strict_completion)
         except (ValueError, RecursionError) as exc:
             return AgentResult(1, f"{self.engine} protocol failure: {exc}")
         except (subprocess.TimeoutExpired, TimeoutError):
             return AgentResult(124, f"{self.engine} timed out after {self.timeout} seconds")
         except OSError as exc:
             return AgentResult(126, f"Unable to start {self.engine}: {exc}")
-
-        if self.engine == "codex" and telemetry:
-            record_exec_usage(completed.stdout, telemetry)
-        elif telemetry:
-            from .provider_telemetry import batch_receipt
-            for receipt in batch_receipt(self.engine, completed.stdout):
-                telemetry(receipt)
-        if strict_completion and self.engine in ("codex", "claude") and completed.returncode == 0:
-            from .fixture_completion import parse_fixture_completion
-            return parse_fixture_completion(self.engine, completed.stdout)
-        if self.engine == "antigravity":
-            parsed = parse_antigravity(completed.stdout)
-            if completed.returncode == 0:
-                return parsed
-            message, session_id = parsed.message, parsed.session_id
-        else:
-            message, session_id = parse_output(self.engine, completed.stdout)
-        if completed.returncode != 0:
-            from .process_diagnostics import ErrorTail
-            tail = ErrorTail()
-            tail.append(completed.stderr.encode("utf-8"))
-            cause = tail.description()
-            message = f"{self.engine} exited {completed.returncode}" + (f" ({cause})" if cause else "")
-        return AgentResult(completed.returncode, message[:12000], session_id, len(message) > 12000)
 
 
 def record_exec_usage(output, telemetry):
