@@ -30,7 +30,7 @@ def encode(value):
 
 
 class TaskStore:
-    def __init__(self, db_path: Path, *, readonly: bool = False, existing: bool = False):
+    def __init__(self, db_path: Path, *, readonly: bool = False, existing: bool = False, wal_on_create: bool = False):
         self.path = Path(db_path).expanduser().resolve()
         self.readonly = readonly
         validate_db_file(self.path)
@@ -48,13 +48,19 @@ class TaskStore:
             if readonly or existing:
                 self._check_schema()
             else:
+                created = False
                 with self._write():
                     version = self.connection.execute("PRAGMA user_version").fetchone()[0]
                     if version == 0 and not self.connection.execute("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchone():
                         for statement in SCHEMA:
                             self.connection.execute(statement)
                         self.connection.execute("PRAGMA user_version=1")
+                        created = True
                     self._check_schema()
+                # Managed service operators may only have access to the existing
+                # journal file. Never migrate its mode on a read or reopen.
+                if created and wal_on_create:
+                    self.connection.execute("PRAGMA journal_mode=WAL").fetchone()
         except BaseException:
             self.close()
             raise

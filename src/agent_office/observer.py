@@ -14,7 +14,9 @@ from urllib.parse import parse_qs, urlsplit
 from .models import OfficeError, MAX_SQLITE_INT, validate_id
 from .store import TaskStore
 
-ASSETS = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
+ASSETS = {
+    "/studio-shared.js": ("studio-shared.js", "text/javascript"),
+"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
           "/state.js": ("state.js", "text/javascript"), "/style.css": ("style.css", "text/css")}
 MESSAGES = {"INVALID_ARGUMENT": "Invalid request.", "NOT_FOUND": "Resource not found.",
             "FORBIDDEN": "Request not allowed.", "METHOD_NOT_ALLOWED": "Only GET and HEAD are available.",

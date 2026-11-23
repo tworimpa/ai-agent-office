@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 
-from .engines import CLINE_ACP_VERSION, ENGINE_COMMANDS, INITIAL_ENGINES, resolve_executable
+from .engines import CLINE_ACP_VERSION, cline_compatible, ENGINE_COMMANDS, INITIAL_ENGINES, resolve_executable
 
 LABELS = {"codex": "Codex", "antigravity": "Antigravity", "claude": "Claude Code",
           "gemini": "Gemini CLI", "cline": "Cline CLI"}
@@ -114,7 +114,9 @@ def probe_engine(engine, executable, timeout=5):
             entry["probe_status"] = "ok" if entry["headless_support"] else "unsupported"
         else:
             entry["probe_status"] = help_status
-        if engine == "cline" and entry["version"] != CLINE_ACP_VERSION:
+        if engine == "cline" and entry["probe_status"] == "ok" and entry["version"] != CLINE_ACP_VERSION:
+            entry["probe_status"] = "unverified_version"
+        if engine == "cline" and not cline_compatible(entry["version"]):
             entry["headless_support"] = False
             entry["probe_status"] = "unsupported_version"
         if engine == "codex":

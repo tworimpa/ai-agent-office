@@ -96,7 +96,10 @@ def validate_targets(catalog, profile, engines, host_entries, active_roles=ROLES
         for fallback in profile["fallbacks"][role]:
             host = by_engine.get(fallback["engine"], {})
             required = "review" if role == "reviewer" else "edit"
-            if (not host.get("headless_support") or host.get("probe_status") != "ok"
+            checked = host.get("capabilities", {}).get(required, {}).get("status")
+            verified_cline = (fallback["engine"] == "cline" and host.get("probe_status") == "unverified_version"
+                              and checked == "passed")
+            if (not host.get("headless_support") or (host.get("probe_status") != "ok" and not verified_cline)
                     or host.get("auth_status") == "not_authenticated"
                     or host.get("capabilities", {}).get(required, {}).get("status") == "failed"):
                 raise ValueError("이 호스트에서 역할을 실행할 수 있는 대체 엔진을 선택하세요.")

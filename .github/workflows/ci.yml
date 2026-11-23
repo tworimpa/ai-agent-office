@@ -32,6 +32,8 @@ jobs:
         run: npm ci
       - name: Frontend state and DOM tests
         run: npm run test:web
+      - name: Check shared frontend contracts
+        run: npm run check:web
       - name: Verify bundled offline flowchart renderer
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
         run: |

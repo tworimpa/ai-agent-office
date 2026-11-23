@@ -11,7 +11,8 @@ from typing import BinaryIO
 from .models import validate_id
 from .overnight_goals import criteria_for, goal_route
 from . import github_studio
-from . import workspace_briefing
+from . import workspace_briefing, worktree_storage
+from . import room_bundle
 from .office_wire import check_office_reply, office_offset
 from .improvement_wire import check_improvement_reply, improvement_route
 from .version_wire import check_version_reply, version_route
@@ -72,7 +73,8 @@ def is_peer_route(method: str, route: str) -> bool:
     if route in ("/engines", "/inbox", "/return-report"):
         return method == "GET"
     if route.startswith("/rooms/"):
-        return (workspace_briefing.route(method, route) is not None or github_studio.route(method, route) is not None
+        return (worktree_storage.route(method, route) is not None or room_bundle.route(method, route) is not None
+                or workspace_briefing.route(method, route) is not None or github_studio.route(method, route) is not None
                 or work_profile_views.route(method, route) is not None or room_route(method, route) is not None)
     if re.fullmatch(r"/goal-checks/[a-f0-9]{32}", route):
         return True
@@ -210,6 +212,10 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
         elif action == "recover" and not isinstance(data.get("recovery"), dict):
             raise RemoteUnavailable()
         return
+    storage = worktree_storage.route(method, route)
+    if storage:
+        worktree_storage.check_reply(status, data, storage, journal_id, payload)
+        return
     profile = work_profile_views.route(method, route)
     if profile:
         work_profile_views.check_reply(profile, status, data, method, payload)
@@ -220,6 +226,26 @@ def _check_reply(status, data, journal_headers, journal_id, method, route, paylo
         return
     if github_studio.route(method, route):
         github_studio.check_reply(status, data, method, route, payload)
+        return
+    bundle = room_bundle.route(method, route)
+    if bundle:
+        workspace, run, mode = bundle
+        expected = room_bundle.paths(*bundle)
+        room = data.get("room")
+        if not isinstance(room, dict) or room.get("journal_id") != journal_id:
+            raise RemoteUnavailable()
+        if run != "none":
+            section = data.get("run")
+            detail = section.get("run") if isinstance(section, dict) else None
+            if not isinstance(detail, dict) or detail.get("workspace_id") != workspace:
+                raise RemoteUnavailable()
+            if detail.get("kind") == "parallel":
+                for section in ("goal", "inbox", "directions", "usage"):
+                    expected.pop(section, None)
+        if status != 200 or set(expected) != set(data):
+            raise RemoteUnavailable()
+        for section, path in expected.items():
+            _check_reply(200, data[section], journal_headers, journal_id, "GET", path, None)
         return
     if route.startswith("/rooms/"):
         _check_room_reply(status, data, journal_headers, journal_id, method, route, payload)
@@ -421,6 +447,14 @@ def _check_room_reply(status, data, headers, journal, method, route, payload):
     _check_reply(200, {"runs": rows}, headers, journal, "GET", "/runs", None)
     seen = set()
     for row in rows:
+        if row.get("team_parent_id") is not None:
+            validate_id(row["team_parent_id"])
+        visitors = row.get("visiting_roles", [])
+        if (not isinstance(visitors, list) or len(visitors) > 2 or any(
+                not isinstance(item, dict) or set(item) != {"role", "engine"}
+                or item["role"] not in ("specialist", "verifier") or item["engine"] not in SUPPORTED_ENGINES
+                for item in visitors) or len({item["role"] for item in visitors}) != len(visitors)):
+            raise RemoteUnavailable()
         lines = row.get("lines")
         pending = row.get("pending_count")
         if (row.get("workspace_id") != workspace_id or row["id"] in seen or type(pending) is not int or pending < 0
@@ -603,7 +637,7 @@ def remote_request(host: RemoteHost, method: str, route: str, payload: dict | No
             integration = github_studio.route(method, route)
             # A named binding may have to fetch the selected branch before it can be verified.
             bound_check = integration and method == "POST" and integration[1] in {None, "test", "pull"}
-            deadline = threading.Timer(150 if bound_check else _TIMEOUT, child.kill)
+            deadline = threading.Timer(150 if bound_check or worktree_storage.route(method, route) else _TIMEOUT, child.kill)
             deadline.daemon = True
             deadline.start()
             try:

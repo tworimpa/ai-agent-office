@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from .fixture_process import execute_fixture
 from .engine_status import metadata_entry, probe_engine, probe_version
-from .engines import CLINE_ACP_VERSION, ENGINE_COMMANDS, SUPPORTED_ENGINES, resolve_executable
+from .engines import CLINE_ACP_VERSION, cline_compatible, ENGINE_COMMANDS, SUPPORTED_ENGINES, resolve_executable
 from .store import TaskStore, now
 from .workflow import parse_review_verdict
 
@@ -55,7 +55,7 @@ def _platform():
 
 
 def _fingerprint(engine, stamp, version):
-    if stamp is None or version is None or (engine == "cline" and version != CLINE_ACP_VERSION):
+    if stamp is None or version is None or (engine == "cline" and not cline_compatible(version)):
         return None
     identity = (_platform(), socket.gethostname(), stamp, version, engine, _PROTOCOLS[engine],
                 _ADAPTER_REVISIONS[engine], _FIXTURE_REVISION)
@@ -117,7 +117,23 @@ class StudioEngineCatalog:
                         if capability in capabilities:
                             capabilities[capability] = {"status": status, "checked_at": when}
                 entry["capabilities"] = capabilities
+
         return {"platform": _platform(), "checked_at": checked_at, "engines": [entry for entry, _ in entries]}
+
+
+def cline_verified(db_path, executable, version, capability):
+    if version == CLINE_ACP_VERSION:
+        return True
+    resolved, stamp = _runtime("cline")
+    fingerprint = _fingerprint("cline", stamp, version)
+    if not fingerprint or not db_path or resolved != executable:
+        return False
+    with TaskStore(db_path, existing=True, readonly=True) as store:
+        if not store.connection.execute("SELECT 1 FROM sqlite_master WHERE name='studio_engine_checks'").fetchone():
+            return False
+        return bool(store.connection.execute(
+            "SELECT 1 FROM studio_engine_checks WHERE runtime=? AND engine='cline' AND capability=? AND status='passed'",
+            (fingerprint, capability)).fetchone())
 
 
 def _fixture_tree(root):
@@ -148,7 +164,7 @@ def _fixture_tree(root):
     return contents
 
 
-def _run_fixture(engine, capability):
+def _run_fixture(engine, capability, expected_version=None):
     git = resolve_executable("git")
     if not git:
         return False, "fixture_setup_failed"
@@ -178,6 +194,7 @@ def _run_fixture(engine, capability):
         result = execute_fixture(
             engine, prompt + " Stay in this disposable repository. Do not commit, push, or change permissions.",
             workspace=workspace, allow_edits=capability == "edit",
+            **({"expected_version":expected_version} if expected_version else {}),
         )
         if result.returncode != 0 or result.truncated:
             return False, "provider_failed"
@@ -210,13 +227,13 @@ def verify_engine(db_path, engine, capability):
         version = probe_version(engine, executable, 5)[0] if executable else None
         fingerprint = _fingerprint(engine, stamp, version)
         passed = False
-        if engine == "cline" and version is not None and version != CLINE_ACP_VERSION:
+        if engine == "cline" and version is not None and not cline_compatible(version):
             reason = "unsupported_version"
         elif not fingerprint:
             reason = "missing" if not executable else "unknown_version"
         else:
             try:
-                passed, reason = _run_fixture(engine, capability)
+                passed, reason = _run_fixture(engine, capability, version if engine == "cline" else None)
             except (OSError, ValueError, subprocess.SubprocessError):
                 reason = "fixture_failed"
             current_executable, current_stamp = _runtime(engine)

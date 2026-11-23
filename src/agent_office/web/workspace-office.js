@@ -1,6 +1,12 @@
+import {roomRefresh} from './workspace-refresh.js';
+import {mountSeats} from './workspace-seats.js';
+import {watchProgress} from './workspace-progress.js';
+import {activeStates, stateName, taskTitle, summaryConclusion, resultFacts, outcomes} from './workspace-summary.js';
+import {validId, pageDom, requestJson, visiblePoller} from './studio-shared.js';
 import {firstProseParagraph, renderDiff, renderMarkdown, renderSource} from './office-content.js';
 import {planFlow} from './office-flow.js';
 import {mountGoals} from './workspace-goal.js';
+import {mountStorage} from './workspace-storage.js';
 import {mountGithub} from './workspace-github.js';
 import {mountBriefing} from './workspace-briefing.js';
 import {mountWorkProfiles} from './workspace-profile.js';
@@ -8,13 +14,6 @@ import {mountCharacterRecords} from './workspace-character.js';
 
 const roleLabels = {developer: '담당자', reviewer: '검토자'};
 const engines = {codex: 'Codex', antigravity: 'Antigravity', claude: 'Claude Code', gemini: 'Gemini CLI', cline: 'Cline CLI'};
-const states = {
-  QUEUED: '대기 중', RUNNING: '작업 중', TESTING: '테스트 중', REVIEWING: '검토 중',
-  STOP_REQUESTED: '중지 요청 중', CANCELED: '중지됨', PLAN_ONLY: '조회 완료',
-  READY_FOR_HUMAN_REVIEW: '검토 결과 확인', WAITING_USER: '응답 필요',
-  FAILED: '실패', RECOVERY_REQUIRED: '복구 필요',
-};
-const activeStates = new Set(['QUEUED', 'RUNNING', 'TESTING', 'REVIEWING', 'STOP_REQUESTED']);
 const stoppable = state => activeStates.has(state) && state !== 'STOP_REQUESTED';
 const followupStates = {developer: 'RUNNING', reviewer: 'REVIEWING'};
 const requestLabels = {question: '기술 질문', product_decision: '제품 동작 결정', permission: '권한 승인 요청'};
@@ -24,7 +23,6 @@ const decisionLabels = {answer: '답변', approve: '이번 요청 승인', rejec
 const meetingStates = {planning: '계획 논의 중', awaiting_review: '계획 확인 대기', approved: '계획 확정', stopped: '회의 중단', failed: '회의 실패'};
 const verificationStates = {not_verified: '검증 전', passed: '통과', failed: '실패'};
 const meetingRoles = {coordinator: '조정자', ...roleLabels, operator: '사용자', direction: '추가 지시'};
-const validId = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
 const validHistoryCursor = value => typeof value === 'string' && /^[ah]-[a-f0-9]{32}$/.test(value);
 function uniqueRuns(runs) {
   const ids = new Set();
@@ -34,15 +32,9 @@ function uniqueRuns(runs) {
     return true;
   });
 }
-const stateName = state => states[state] ?? '상태 미확인';
 const runLabel = run => (run.state === 'RUNNING' || run.state === 'QUEUED') &&
   ['planning', 'awaiting_review'].includes(run.meeting_status) ? meetingStates[run.meeting_status] : stateName(run.state);
 const engineName = engine => engines[engine] ?? '엔진 미확인';
-function taskTitle(task) {
-  const prose = firstProseParagraph(task ?? '');
-  const chars = Array.from(prose);
-  return chars.length > 90 ? chars.slice(0, 89).join('') + '…' : prose || '작업 요청';
-}
 const codeBytes = value => new TextEncoder().encode(value).length;
 const stamp = ts => {
   if (!ts || Number.isNaN(Date.parse(ts))) return '';
@@ -50,116 +42,6 @@ const stamp = ts => {
 };
 const scope = host => host === 'local' ? '/api' : '/api/hosts/' + host;
 const viewNames = {simple: '간단히', collaboration: '협업 과정', technical: '기술 상세'};
-const outcomes = {
-  PLAN_ONLY: '조회 결과를 정리했습니다.',
-  DEVELOPER_FAILED: '담당자 실행에 실패했습니다.',
-  TEST_FAILED: '테스트 단계에서 실패했습니다.',
-  REVIEW_FAILED: '검토자 실행에 실패했습니다.',
-  CHANGES_REQUESTED: '검토자가 수정을 요청했습니다.',
-  REVIEW_UNDECIDED: '검토 판정을 확정할 수 없어 사용자 판단이 필요합니다.',
-  MEETING_FAILED: '계획을 확정하지 못했습니다.',
-  INTERRUPTED: '실행이 중단되어 복구 상태를 확인해야 합니다.',
-  CANCELED: '실행이 중지되었습니다.',
-};
-
-function summaryConclusion(run) {
-  let result;
-  if (run.state === 'RECOVERY_REQUIRED') {
-    result = run.diagnostic || (run.review_output || run.test_output || '').split(/\r?\n/)
-      .find(line => /timed?\s*out|timeout|시간\s*(?:초과|제한)|중단/i.test(line));
-  } else if (run.state === 'FAILED') {
-    result = run.diagnostic || run.meeting?.error;
-    if (!result && run.outcome === 'TEST_FAILED') {
-      const failure = run.test_output?.split(/\r?\n/).find(line => /^FAILED |^ERROR |^E\s{3}\S/.test(line));
-      if (failure) result = '실패 기록 · ' + failure.replace(/^(?:FAILED |ERROR |E\s{3})/, '');
-    } else if (!result && ['REVIEW_FAILED', 'CHANGES_REQUESTED'].includes(run.outcome)) {
-      result = run.review_output;
-    } else if (!result && run.outcome === 'DEVELOPER_FAILED') {
-      result = run.developer_output;
-    }
-  } else if (run.state === 'PLAN_ONLY' || run.state === 'READY_FOR_HUMAN_REVIEW') {
-    result = run.developer_output;
-  } else if (run.state === 'WAITING_USER') {
-    result = run.review_output;
-  }
-  const prose = firstProseParagraph((result || '').replace(/^\s*VERDICT: (?:CHANGES_REQUESTED|APPROVED)\s*$/gm, ''));
-  const chars = Array.from(prose);
-  return chars.length > 180 ? chars.slice(0, 179).join('') + '…' : prose;
-}
-
-function resultFacts(run) {
-  if (run.kind === 'parallel') {
-    const children = run.subtasks ?? [];
-    const states = new Map();
-    for (const child of children) {
-      const label = stateName(child.state);
-      states.set(label, (states.get(label) ?? 0) + 1);
-    }
-    const groups = [...states].map(([label, count]) => label + ' ' + count + '건').join(', ');
-    return ['변경 파일 미확인', '테스트는 하위 작업별 확인', '검토는 하위 작업별 확인',
-      groups ? '하위 작업 ' + groups : '하위 작업 상태 미확인'];
-  }
-  const lookup = run.state === 'PLAN_ONLY' || run.allow_edits === false;
-  const early = lookup || ['MEETING_FAILED', 'DEVELOPER_FAILED'].includes(run.outcome);
-  const review = {APPROVED: '승인 · 최종 사용자 확인 필요', CHANGES_REQUESTED: '수정 요청',
-    REVIEW_UNDECIDED: '판정 미확인 · 사용자 판단 필요', REVIEW_FAILED: '실패'}[run.outcome];
-  const test = run.outcome === 'TEST_FAILED' ? '실패' : review || run.state === 'REVIEWING' ? '통과' :
-    run.state === 'TESTING' ? '실행 중' : early && !run.test_output ? '미실행' : '미확인';
-  let files = '미확인';
-  if (typeof run.changes === 'string') {
-    const lines = run.changes.split(/\r?\n/).filter(Boolean);
-    if (lines.length && lines.every(line => /^(?:[ MADRCUT?!]{2}) .+/.test(line) && !line.includes('...[truncated]'))) {
-      files = lines.length + '개';
-    } else if (!lines.length && !activeStates.has(run.state) && run.kind !== 'parallel' && !run.diff) {
-      files = '기록된 변경 없음';
-    }
-  }
-  const facts = ['변경 파일 ' + files, '테스트 ' + (pytestCounts(run.test_output, test) || test),
-    '검토 ' + (review ?? (run.state === 'REVIEWING' ? '진행 중' : (early || run.outcome === 'TEST_FAILED') && !run.review_output ? '미실행' : '미확인'))];
-  const checks = run.meeting?.verification;
-  if (checks?.length) {
-    const groups = new Map();
-    for (const [i, row] of checks.entries()) {
-      const criterion = run.meeting.plan?.criteria?.[i];
-      const label = row.status === 'not_verified' && criterion && !criterion.test_files?.length ?
-        '수동 확인 필요' : ({passed: '통과', failed: '실패', not_verified: '미검증'}[row.status] ?? '미확인');
-      groups.set(label, (groups.get(label) ?? 0) + 1);
-    }
-    facts.push('완료 기준 ' + [...groups].map(([label, count]) => label + ' ' + count + '건').join(', '));
-  }
-  return facts;
-}
-
-function pytestCounts(output, result) {
-  if (!output || !['통과', '실패'].includes(result)) return '';
-  const lines = output.trim().split(/\r?\n/);
-  if (lines[0] === 'Studio test invocation:') {
-    try {
-      const {exit_code: code, argv} = JSON.parse(lines[1]);
-      if (!Array.isArray(argv) || argv[1] !== '-m' || !['pytest', 'agent_office.desktop_pytest'].includes(argv[2]) || !Number.isInteger(code) ||
-          (code === 0) !== (result === '통과') || lines[2] !== 'Captured test output:') return '';
-    } catch { return ''; }
-  }
-  const last = lines.at(-1).replace(/^=+\s*|\s*=+$/g, '');
-  const summary = last.match(/^(.+) in \d+(?:\.\d+)?s(?: \([\d:]+\))?$/);
-  if (!summary) return '';
-  const labels = {passed: '통과', failed: '실패', errors: '오류', error: '오류', skipped: '건너뜀',
-    xfailed: '예상된 실패', xpassed: '예상 밖 통과', deselected: '선택 제외'};
-  const counts = [], seen = new Set();
-  for (const field of summary[1].split(', ')) {
-    const part = field.match(/^(\d+) ([a-z]+)$/);
-    if (!part || seen.has(part[2]) || !Number.isSafeInteger(Number(part[1]))) return '';
-    seen.add(part[2]);
-    if (['warning', 'warnings'].includes(part[2])) continue;
-    if (!Object.hasOwn(labels, part[2])) return '';
-    counts.push(part[1] + '개 ' + labels[part[2]]);
-  }
-  if (seen.has('failed') || seen.has('error') || seen.has('errors')) {
-    if (result !== '실패') return '';
-  } else if (result === '실패') return '';
-  return counts.join(', ');
-}
-
 function address(host, workspace, run, base = '/') {
   const query = new URLSearchParams();
   if (host !== 'local') query.set('host', host);
@@ -170,17 +52,10 @@ function address(host, workspace, run, base = '/') {
 
 export function mountWorkspaceOffice(win = window) {
   const doc = win.document;
-  const get = id => doc.getElementById(id);
-  const say = (id, value) => {
-    const node = get(id);
-    if (node.textContent !== value) node.textContent = value;
-  };
-  const make = (tag, value, cls) => {
-    const node = doc.createElement(tag);
-    if (value) node.textContent = value;
-    if (cls) node.className = cls;
-    return node;
-  };
+  const {get, say, make} = pageDom(doc);
+  const progress = watchProgress(doc, win);
+  const seats = mountSeats(doc, roleLabels);
+
   const option = (value, name) => {
     const node = make('option', name);
     node.value = value;
@@ -207,7 +82,9 @@ export function mountWorkspaceOffice(win = window) {
   let directory = [], workspaces = [], room = null, detail = null;
   let roomLoadError = '';
   let olderRuns = [], historyCursor = null, historyPaged = false, historyBusy = false, historyEpoch = 0;
-  let online = false, roomOnline = false, closed = false, epoch = 0, refreshToken = 0, timer;
+  let online = false, roomOnline = false, closed = false, epoch = 0, refreshToken = 0;
+  let retryBundleAt = 0, slowReadAt = 0, previousRunState = '';
+  const poller = visiblePoller(win, () => refresh(true), () => { ++refreshToken; });
   let chatRole = null, chatAttempt = null, receiptRunId = null, chatRows = [], directionRows = [], chatDetailsOnline = false, inboxDetailsOnline = false;
   let chatState = null, settingsBusy = false, registrationBusy = false, deciding = new Set();
   let meetingDecision = null, meetingReadOK = false;
@@ -234,34 +111,14 @@ export function mountWorkspaceOffice(win = window) {
   const canWrite = () => !closed && roomOnline && !!room;
   const supportsMeetings = () => hostId === 'local' || room?.meeting_supported === true;
 
-  async function request(path, body, timeoutMs = 15000) {
-    const controller = new win.AbortController();
-    const timeout = win.setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await win.fetch(path, {
-        mode: 'same-origin', redirect: 'error', cache: 'no-store', signal: controller.signal,
-        ...(body === undefined ? {} : {
-          method: 'POST', headers: {'Content-Type': 'application/json', 'X-Agent-Office': 'studio'},
-          body: JSON.stringify(body),
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        const error = new Error(response.status < 500 && data.error?.message || '요청을 처리하지 못했습니다.');
-        error.status = response.status;
-        error.code = data.error?.code;
-        throw error;
-      }
-      return data;
-    } finally {
-      win.clearTimeout(timeout);
-    }
-  }
-
+  const request = (path, body, timeoutMs) => requestJson(win, path, body, {timeoutMs});
   const api = (path, body, timeoutMs) => request(scope(hostId) + path, body, timeoutMs);
   const uuid = () => win.crypto.randomUUID().replaceAll('-', '');
   const profileContext = () => ({workspaceId, runId, identity: [hostId, room?.journal_id, workspaceId].join(':'),
     supported: room?.work_profiles_supported === true, assignment: selected()?.assignment, settings: room?.settings, writable: canWrite()});
+  const storage = mountStorage({get, api, doc, context: () => ({
+    workspaceId, journal: room?.journal_id, supported: room?.storage_supported === true, epoch, writable: canWrite(),
+  })});
   const profiles = mountWorkProfiles({get, make, api, context: profileContext});
   const records = mountCharacterRecords({get, make, api, context: profileContext, openEvidence: openCharacterEvidence});
   const briefing = mountBriefing({win, get, make, api, taskTitle, stateName, uuid, refresh, openAction: openBriefAction,
@@ -310,6 +167,7 @@ export function mountWorkspaceOffice(win = window) {
       workspaces = [];
     }
     if (changingRoom) {
+      retryBundleAt = 0;
       github.reset();
       briefing.reset();
       room = null;
@@ -628,6 +486,10 @@ export function mountWorkspaceOffice(win = window) {
   });
 
   function renderRoom() {
+    const currentRun = selected();
+    progress.select({id: currentRun?.id, active: roomOnline && activeStates.has(currentRun?.state),
+      url: currentRun && hostId === 'local' && validId(room?.journal_id) ? '/api/runs/' + currentRun.id + '/stream?office_journal=' + room.journal_id : null,
+      latest: currentRun?.last_progress});
     profiles.controls();
     records.controls();
     get('office-main').dataset.briefing = String(room?.briefing_supported === true);
@@ -675,6 +537,17 @@ export function mountWorkspaceOffice(win = window) {
       node.dataset.request = String((current?.pending_count ?? room.runs.find(run => run.id === current?.id)?.pending_count ?? 0) > 0);
       node.setAttribute('aria-label', [profile.name, roleText, assignment, line, '대화 열기'].filter(Boolean).join(', '));
     }
+    const children = currentRun?.subtasks ?? room.runs.filter(row => validId(row.team_parent_id) &&
+      (activeStates.has(row.state) || row.team_parent_id === currentRun?.team_parent_id || row.team_parent_id === currentRun?.parent_id));
+    const cards = children.map(row => ({id: row.id, role: 'child', title: taskTitle(row.task), state: stateName(row.state),
+      label: '하위 작업 · ' + engineName(row.developer_engine)}));
+    for (const row of room.runs) {
+      for (const visitor of row.visiting_roles ?? []) {
+        cards.push({id: row.id, role: visitor.role, title: taskTitle(row.task), state: '근거 확인 중',
+          label: (visitor.role === 'specialist' ? '전문가' : '독립 검증자') + ' · ' + engineName(visitor.engine)});
+      }
+    }
+    seats.showRuns(cards, id => address(hostId, workspaceId, id));
     const coordinatorLine = selected()?.lines?.coordinator ?? summary()?.lines?.coordinator;
     seat('coordinator').querySelector('.seat-line').textContent = firstTask ? '원하는 결과를 적어 주세요.' :
       coordinatorLine || '새 작업을 맡길 수 있습니다.';
@@ -1117,11 +990,11 @@ export function mountWorkspaceOffice(win = window) {
     requestControls();
   }
 
-  async function fetchRun(token, expected) {
+  async function fetchRun(token, expected, readSection = api) {
     if (!expected) return;
     const read = ++detailRead;
     try {
-      const {run} = await api(runPath(expected));
+      const {run} = await readSection(runPath(expected));
       if (!sameContext(token) || expected !== runId || read !== detailRead) return;
       if (run?.id !== expected) throw new Error('실행 정보가 달라졌습니다.');
       if (run.workspace_id !== workspaceId) {
@@ -1133,7 +1006,7 @@ export function mountWorkspaceOffice(win = window) {
         return;
       }
       detail = run;
-      if (room?.goal_supported === true) await goals.load(expected);
+      if (!doc.hidden && room?.goal_supported === true) await goals.load(expected, readSection);
       if (!sameContext(token) || expected !== runId || read !== detailRead) return;
       meetingReadOK = true;
       say('detail-status', '');
@@ -1154,8 +1027,11 @@ export function mountWorkspaceOffice(win = window) {
     }
   }
 
-  async function refresh() {
-    win.clearTimeout(timer);
+  async function refresh(periodic = false) {
+    poller.cancel();
+    if (closed || doc.hidden) return;
+    let readSection = api;
+    let updateSlow = periodic !== true || Date.now() - slowReadAt >= 60000;
     const token = epoch;
     const sequence = ++refreshToken;
     const current = () => sameContext(token) && sequence === refreshToken;
@@ -1186,8 +1062,13 @@ export function mountWorkspaceOffice(win = window) {
       online = true;
       if (!workspaceId) workspaceId = workspaces[0]?.id ?? null;
       if (workspaceId) {
-        const snapshot = await api(roomPath());
+        const reads = await roomRefresh(api, roomPath(), trustedRun(runId) ? runId : null,
+          room?.bundle_supported === true && Date.now() >= retryBundleAt,
+          updateSlow, get('work-usage').open, current);
         if (!current()) return;
+        if (reads.retry) retryBundleAt = Date.now() + 60000;
+        const snapshot = reads.room;
+        readSection = reads.read;
         if (snapshot.workspace?.id !== workspaceId || !snapshot.settings || !Array.isArray(snapshot.runs)) throw new Error('작업실 정보 오류');
         const runs = snapshot.runs.filter(run => validId(run.id) && run.workspace_id === workspaceId);
         if (historyPaged || historyBusy) {
@@ -1204,15 +1085,19 @@ export function mountWorkspaceOffice(win = window) {
       roomLoadError = '';
       win.history.replaceState(null, '', address(hostId, workspaceId, runId) + win.location.hash);
       render();
-      const detailRequest = fetchRun(token, runId);
+      const state = [hostId, workspaceId, runId, ...(room?.runs ?? []).map(row => row.id + row.state + (row.pending_count ?? 0))].join(':');
+      updateSlow ||= previousRunState !== state;
+      previousRunState = state;
+      if (updateSlow) slowReadAt = Date.now();
+      const detailRequest = fetchRun(token, runId, readSection);
       if (runId && !trustedRun(runId)) await detailRequest;
       if (!current()) return;
       await Promise.all([
         detailRequest,
-        records.loadUsage(),
-        briefing.load().then(() => github.controls()),
-        github.load(),
-        loadChat(),
+        updateSlow && records.loadUsage(readSection),
+        updateSlow && briefing.load(readSection).then(() => github.controls()),
+        updateSlow && github.load(readSection),
+        loadChat(readSection),
         get('requests').open ? loadRequests() : null,
       ]);
     } catch {
@@ -1232,7 +1117,7 @@ export function mountWorkspaceOffice(win = window) {
         say('request-note', '연결이 끊겼습니다. 마지막으로 확인한 요청을 표시합니다.');
       }
     } finally {
-      if (current()) timer = win.setTimeout(refresh, 3000);
+      if (current()) poller.schedule(roomOnline && room && !activeRuns().length ? 20000 : 3000);
     }
   }
 
@@ -1297,7 +1182,7 @@ export function mountWorkspaceOffice(win = window) {
         refresh();
       }
     }
-    const token = ++dialogEpoch;
+    ++dialogEpoch;
     chatRole = role;
     const current = selected();
     chatAttempt = role === 'coordinator' ? null : current?.attempts;
@@ -1342,7 +1227,7 @@ export function mountWorkspaceOffice(win = window) {
     renderChatLog();
     chatControls();
     openDialog(get('conversation'), get('message').disabled ? get('chat-log') : get('message'));
-    loadChat(token);
+    loadChat();
   }
 
   function message(owner, name, value, meta, key = name + '-' + (meta ?? '')) {
@@ -1609,12 +1494,12 @@ export function mountWorkspaceOffice(win = window) {
     requestControls();
   }
 
-  async function loadChat() {
+  async function loadChat(readSection = api) {
     const id = runId, context = epoch;
     const read = ++chatRead;
     if (!trustedRun(id) || selected()?.kind === 'parallel') return;
     const prefix = runPath(id);
-    const [inbox, history] = await Promise.allSettled([api(prefix + '/inbox'), api(prefix + '/directions')]);
+    const [inbox, history] = await Promise.allSettled([readSection(prefix + '/inbox'), readSection(prefix + '/directions')]);
     if (!sameContext(context) || id !== runId || read !== chatRead) return;
     if (threadRun !== id) {
       chatRows = [];
@@ -2087,6 +1972,7 @@ export function mountWorkspaceOffice(win = window) {
     goals.settings();
     profiles.settings();
     github.settings();
+    storage.settings();
     loadSkills();
   });
 
@@ -2232,7 +2118,8 @@ export function mountWorkspaceOffice(win = window) {
   refresh();
   return () => {
     closed = true;
-    win.clearTimeout(timer);
+    poller.dispose();
+    progress.dispose();
     win.removeEventListener('popstate', restoreAddress);
     win.removeEventListener('online', refresh);
   };

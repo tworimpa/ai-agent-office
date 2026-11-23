@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import nullcontext
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -9,6 +10,8 @@ from uuid import UUID
 
 from .adapters import AgentResult, parse_antigravity, parse_output, record_exec_usage
 from .dialogue import DelegationWithdrawn, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_request
+from .process_diagnostics import ErrorTail, drain_pipe, kill_family
+from .provider_telemetry import batch_receipt
 from .fixture_completion import parse_fixture_completion
 
 
@@ -24,36 +27,97 @@ def _resume_argv(engine, original, session):
     raise ValueError("This engine has no supported continuation command.")
 
 
-def _turn(engine, argv, message, workspace, env, deadline, guard, *, telemetry=None):
+def _turn(engine, argv, message, workspace, env, deadline, guard, *, telemetry=None, progress=None, strict=True):
     if engine == "antigravity":
         message = json.dumps({"event": "user", "message": {"content": message}}, ensure_ascii=False) + "\n"
-    # The complete input is ready before launch. Only the launch itself needs to
-    # be serialized with stop/expiry, never a pipe write or a vendor round trip.
-    with tempfile.TemporaryFile() as stdin, tempfile.TemporaryFile() as stdout:
+    if engine == "claude" and progress and "--output-format" in argv:
+        argv = list(argv)
+        argv[argv.index("--output-format") + 1] = "stream-json"
+        argv.append("--verbose")
+    tail = ErrorTail()
+    raw = bytearray()
+    line_start = 0
+
+    def output_block(block):
+        nonlocal line_start
+        remaining = 4_000_001 - len(raw)
+        if remaining > 0:
+            raw.extend(block[:remaining])
+        if progress:
+            while (end := raw.find(b"\n", line_start)) >= 0:
+                line = raw[line_start:end] if end - line_start <= 65536 else b""
+                line_start = end + 1
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except (ValueError, RecursionError):
+                    continue
+                if isinstance(record, dict):
+                    kind = record.get("event") if engine == "antigravity" else record.get("type")
+                    activity = {"init":"session", "step_update":"tool", "thread.started":"session",
+                                "item.started":"tool", "item.completed":"tool_finished",
+                                "assistant":"response", "tool_progress":"tool"}.get(kind) if isinstance(kind,str) else None
+                    if activity:
+                        progress(activity)
+
+    with tempfile.TemporaryFile() as stdin:
         stdin.write(message.encode("utf-8"))
         stdin.seek(0)
         with guard:
             if time.monotonic() >= deadline:
                 raise TimeoutError("The original task timed out before the continuation could start.")
-            proc = subprocess.Popen(argv, cwd=workspace, stdin=stdin, stdout=stdout,
-                                    stderr=subprocess.DEVNULL, env=env)
+            proc = subprocess.Popen(argv, cwd=workspace, stdin=stdin, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, env=env, start_new_session=os.name != "nt")
+        readers = [drain_pipe(proc.stderr, tail.append), drain_pipe(proc.stdout, output_block)]
         try:
+            if progress:
+                progress("started")
             code = proc.wait(timeout=max(0, deadline - time.monotonic()))
         finally:
             if proc.poll() is None:
-                proc.kill()
-                proc.wait()
+                kill_family(proc.pid)
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=4)
+            for reader in readers:
+                reader.join(timeout=1)
+        failure = None
         if code:
-            return AgentResult(code, f"{engine} exited {code}")
-        stdout.seek(0)
-        raw = stdout.read(4_000_001)
+            cause = tail.description()
+            failure = AgentResult(code, f"{engine} exited {code}" + (f" ({cause})" if cause else ""))
+        if any(reader.is_alive() for reader in readers):
+            if os.name != "nt":
+                kill_family(proc.pid)
+            raise ValueError("Provider descendants retained the output pipe.")
     if len(raw) > 4_000_000:
+        if failure:
+            return failure
         raise ValueError("Inbox turn exceeded the output limit.")
-    output = raw.decode("utf-8")
+    output = raw.decode("utf-8", errors="replace")
+    if engine == "claude" and progress:
+        from .provider_telemetry import claude_stream
+        try:
+            output, limits = claude_stream(output)
+        except (ValueError, RecursionError):
+            if failure:
+                return failure
+            raise
+        if telemetry:
+            for limit in limits:
+                telemetry(limit)
+    if telemetry and engine in ("claude", "antigravity"):
+        for receipt in batch_receipt(engine, output):
+            telemetry(receipt)
+    if failure:
+        return failure
     if engine == "codex" and telemetry:
         record_exec_usage(output, telemetry)
     if engine == "antigravity":
         return parse_antigravity(output)
+    if not strict:
+        message, session = parse_output(engine, output)
+        return AgentResult(0, message[:12000], session, len(message) > 12000)
     result = parse_fixture_completion(engine, output)
     if result.returncode:
         return result
@@ -61,7 +125,7 @@ def _turn(engine, argv, message, workspace, env, deadline, guard, *, telemetry=N
     return AgentResult(0, result.message, session_id, result.truncated)
 
 
-def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox):
+def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox, *, progress=None, telemetry=None):
     deadline = time.monotonic() + timeout
 
     def wait_decision(awaitable):
@@ -79,6 +143,21 @@ def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox):
     session = decision = direction = kind = None
     command = argv
     questions = 0
+    receipts = []
+    turns = 0
+
+    def observe(event):
+        if event["kind"] == "usage":
+            receipts.append(event)
+        elif telemetry:
+            telemetry(event)
+
+    def finish(result):
+        # Resumed invocations may report cumulative session usage. Only a
+        # single, unambiguous terminal receipt establishes this call's cost.
+        if telemetry and turns == len(receipts) == 1:
+            telemetry(receipts[0])
+        return result
     while True:
         guard = nullcontext()
         if decision is not None:
@@ -86,13 +165,14 @@ def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox):
         elif direction is not None:
             guard = direction.sending()
         try:
-            result = _turn(engine, command, message, workspace, env, deadline, guard)
+            result = _turn(engine, command, message, workspace, env, deadline, guard, progress=progress, telemetry=observe)
         except DelegationWithdrawn:
             decision = wait_decision(inbox.await_operator(decision["id"]))
             result = _turn(engine, command, continuation_prompt(decision["answer"], kind=kind), workspace, env, deadline,
-                           inbox.sending(decision["id"]))
+                           inbox.sending(decision["id"]), progress=progress, telemetry=observe)
+        turns += 1
         if result.returncode:
-            return result
+            return finish(result)
         if (decision is not None or direction is not None) and result.session_id != session:
             raise ValueError("The provider did not confirm the original conversation ID.")
         if decision is not None:
@@ -114,7 +194,7 @@ def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox):
             direction = None
             continue
         if directions is None:
-            return result
+            return finish(result)
         session = result.session_id
         command = None
         if not result.truncated and isinstance(session, str):
@@ -124,7 +204,7 @@ def run_batch_dialogue(engine, argv, prompt, workspace, env, timeout, inbox):
                 pass
         direction = directions.next(available=command is not None)
         if direction is None:
-            return result
+            return finish(result)
         deadline += direction.meeting_seconds
         decision = None
         message = direction.prompt + "\n\n" + QUESTION_INSTRUCTIONS

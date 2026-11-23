@@ -92,6 +92,13 @@ class Directions:
             rows = db.execute("SELECT * FROM studio_directions WHERE run_id=? ORDER BY rowid", (run_id,)).fetchall()
             return [_public(row) for row in rows]
 
+    @staticmethod
+    def settled_history(db, run_id):
+        rows = db.execute("SELECT * FROM studio_directions WHERE run_id=? ORDER BY rowid", (run_id,)).fetchall()
+        if any(row["delivery"] in ("queued", "sending") for row in rows):
+            return None
+        return [_public(row) for row in rows]
+
     def submit(self, run_id, payload):
         direction_id, role, attempt, message = _payload(payload)
         with TaskStore(self.path, existing=True) as store, store._write():

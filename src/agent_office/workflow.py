@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from contextlib import nullcontext
@@ -15,6 +16,7 @@ from .adapters import AgentResult
 from .goal_stage_wait import ReworkRequired, decision_context
 from .studio_catalog import verify_worktree_test_files
 from .studio_process import WINDOWS_SERVICE_CODEX_CONTEXT, windows_service_session
+from .worker_environment import coding_environment
 from .workspace import git_summary, read_git_prefix
 
 
@@ -58,6 +60,14 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
     windows_service = studio_preview is not None and windows_service_session()
 
     def run_role(state, role, prompt, *, session="primary", bound=None):
+        from .engines import CURRENT_ROLE
+        token = CURRENT_ROLE.set(role)
+        try:
+            return execute_role(state, role, prompt, session=session, bound=bound)
+        finally:
+            CURRENT_ROLE.reset(token)
+
+    def execute_role(state, role, prompt, *, session="primary", bound=None):
         actor = bound or adapters[state[role]]
         engine = bound.engine if bound else state[role]
         options = {"workspace": Path(state["workspace"]), "allow_edits": role == "developer" and state["allow_edits"]}
@@ -254,9 +264,9 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
                 if test_files := state.get("test_files"):
                     verify_worktree_test_files(Path(state["workspace"]), test_files)
                 command = state["test_argv"]
-                with meeting.test_command(command) if meeting else nullcontext(command) as argv:
+                with (meeting.test_command(command) if meeting else nullcontext(command)) as argv, coding_environment(os.environ) as env:
                     completed = subprocess.run(
-                        argv, cwd=state["workspace"],
+                        argv, cwd=state["workspace"], env=env,
                         capture_output=True, text=True, encoding="utf-8",
                         errors="replace", timeout=300, check=False,
                     )

@@ -142,7 +142,8 @@ def _changes(workspace, changes):
 
 
 class CodexSession:
-    def __init__(self, process, workspace, edits, inbox, timer, *, model=None, effort=None, telemetry=None):
+    def __init__(self, process, workspace, edits, inbox, timer, *, model=None, effort=None, telemetry=None, progress=None):
+        self.progress = progress
         self.timer = timer
         self.process = process
         self.workspace = workspace
@@ -194,6 +195,15 @@ class CodexSession:
             raise _CodexProtocolError("wrong Codex turn")
 
     def observe(self, msg):
+        if self.progress and "id" not in msg and self.turn and self.thread:
+            params = msg["params"]
+            if params.get("threadId") == self.thread and params.get("turnId") == self.turn:
+                activity = {
+                    "item/commandExecution/outputDelta": "command", "item/fileChange/outputDelta": "file",
+                    "item/agentMessage/delta": "response", "turn/plan/updated": "plan",
+                }.get(msg["method"])
+                if activity:
+                    self.progress(activity)
         if self.telemetry is None or "id" in msg:
             return
         method, params = msg["method"], msg["params"]
@@ -496,6 +506,9 @@ class CodexSession:
                 if item_id in active or item_id in finished or answer:
                     raise _CodexProtocolError("unexpected Codex item start")
                 active[item_id] = kind
+                if self.progress:
+                    self.progress({"commandExecution":"command", "fileChange":"file",
+                                   "agentMessage":"response"}.get(kind, "tool"))
                 if kind == "fileChange":
                     if item.get("status") != "inProgress":
                         raise _CodexProtocolError("invalid pending Codex file change")

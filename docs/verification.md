@@ -62,6 +62,12 @@ Confirm: task worktree is created outside original checkout, new test is present
 | Windows user machine | user environment | required | user setup | user setup | pending | pending | pending | pending |
 | Linux user machine | user environment | required | user setup | user setup | pending | pending | pending | pending |
 
+## Workspace refresh measurement
+
+On Windows, the same disposable single-run workspace was read 15 times against the pre-change commit `3e2ae40` and the bundled projection. The fixture used an empty inbox, no directions and no goal. SQLite connection tracing counted 6 opens and 2 immediate write transactions per original refresh, then 3 opens and zero immediate write transactions per bundled refresh. Median in-process retrieval time was 15.4 ms and 7.7 ms respectively. With a separate read transaction held open and a 100 ms busy timeout, the original rollback-mode commit returned `SQLITE_BUSY` after 182.49 ms. The new standalone WAL journal committed in 7.01 ms.
+
+The DOM regression `node --test tests/web/workspace-polling.test.mjs` counts 5 GETs against a legacy active-room fixture and 1 against the equivalent bundle-capable fixture after initial discovery. While hidden, neither a timer nor the online event starts another refresh. A visible idle room schedules its next check in 20 seconds. SSH peer tests validate the bundle with the same journal identity and per-section response checks as individual routes. These timings measure local database access. SSH key-exchange time and production latency were outside the fixture.
+
 ## Troubleshooting
 
 - `claude` or `codex` not found: run `agent-office doctor`, check PATH and install via vendor's instructions.

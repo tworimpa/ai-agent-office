@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import signal
-import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 
 from .dialogue import DelegationWithdrawn, FINAL_MARKER, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_request
-from .engines import CLINE_ACP_VERSION
+from .engines import CLINE_ACP_VERSION, cline_compatible
+from .process_diagnostics import ErrorTail, close_stdio_process, drain_async
 from .events import snapshot_request
 
 
@@ -107,17 +106,21 @@ async def write_record(process, record, *, inbox, decision_id, deadline, directi
 
 
 class _Session:
-    def __init__(self, engine, process, workspace, allow_edits, strict_completion, inbox, timer, *, prompt_only=False):
+    def __init__(self, engine, process, workspace, allow_edits, strict_completion, inbox, timer, *, prompt_only=False, accepts_version=None, telemetry=None, progress=None):
         self.engine = engine
         self.process = process
         self.workspace = workspace
         self.strict_completion = strict_completion
         self.prompt_only = prompt_only
+        self.accepts_version = accepts_version or (lambda version: version == CLINE_ACP_VERSION)
+        self.telemetry = telemetry
+        self.progress = progress
         self.inbox = inbox
         self.directions = getattr(inbox, "directions", None)
         self.timer = timer
         self.gemini_calls = {}
         self.file_operations = set()
+        self.approved_operations = {}
         self.allow_edits = allow_edits
         self.session_id = ""
         self.mode = ("act" if engine == "cline" else "autoEdit") if allow_edits else "plan"
@@ -240,6 +243,7 @@ class _Session:
         self.pending.add(tool_id)
         if kind == "allow_once":
             self.granted.add(tool_id)
+            self.approved_operations[tool_id] = call["kind"]
         else:
             self.rejected.add(tool_id)
         self.fragments.clear()
@@ -250,6 +254,11 @@ class _Session:
         kind = update.get("sessionUpdate")
         if kind == "current_mode_update" and update.get("currentModeId") == self.mode:
             return
+        if kind == "usage_update" and self.telemetry and request_id >= 4:
+            from .provider_telemetry import bounded_int
+            used, size = update.get("used"), update.get("size")
+            if bounded_int(used) and bounded_int(size) and 0 < size and used <= size:
+                self.telemetry({"kind":"usage", "context_used":used, "context_window":size})
         if kind in ("session_info_update", "available_commands_update", "usage_update"):
             return
         content = update.get("content")
@@ -286,10 +295,14 @@ class _Session:
             if self.output_chars > 1_000_000:
                 raise ProtocolError("ACP response exceeded output limit")
             self.fragments.append(content["text"])
+            if self.progress:
+                self.progress("response")
             return
         if kind in ("tool_call", "tool_call_update"):
             if self.prompt_only:
                 raise ProtocolError("Meeting consultation reported a tool call")
+            if self.progress:
+                self.progress("tool_finished" if update.get("status") == "completed" else "tool")
             tool_id = update.get("toolCallId")
             status = update.get("status")
             if not isinstance(tool_id, str) or not tool_id:
@@ -322,6 +335,7 @@ class _Session:
                                           and not r.get("error") for r in results):
                     raise ProtocolError("Cline file operation did not report success")
                 self.pending.remove(tool_id)
+                self.file_operations.add(self.approved_operations[tool_id])
                 self.fragments.clear()
             else:
                 raise ProtocolError("failed or unapproved Cline tool operation")
@@ -361,8 +375,9 @@ class _Session:
             raise ProtocolError("unsupported ACP version")
         info = init.get("agentInfo")
         if self.engine == "cline" and (not isinstance(info, dict) or info.get("name") != "cline"
-                                       or info.get("version") != CLINE_ACP_VERSION):
-            raise ProtocolError(f"This adapter requires Cline CLI {CLINE_ACP_VERSION}")
+                                       or not cline_compatible(info.get("version"))
+                                       or not self.accepts_version(info["version"])):
+            raise ProtocolError("Cline version requires a host-specific verify-engine capability check")
         new = await self.request(2, "session/new", cwd=str(self.workspace), mcpServers=[])
         self.session_id = new.get("sessionId")
         options = new.get("configOptions")
@@ -373,12 +388,12 @@ class _Session:
                         if isinstance(options, list) else [])
             if len(controls) != 1 or controls[0].get("currentValue") is not False:
                 raise ProtocolError("Cline did not confirm an approval-controlled session")
-        else:
+        if self.engine == "gemini" or info.get("version") != CLINE_ACP_VERSION:
             modes = new.get("modes")
             if not isinstance(modes, dict) or not isinstance(modes.get("availableModes"), list):
-                raise ProtocolError("Gemini did not advertise session modes")
+                raise ProtocolError(f"{self.engine} did not advertise session modes")
             if not any(isinstance(m, dict) and m.get("id") == self.mode for m in modes["availableModes"]):
-                raise ProtocolError("Gemini does not support the requested session mode")
+                raise ProtocolError(f"{self.engine} does not support the requested session mode")
         await self.request(3, "session/set_mode", sessionId=self.session_id, modeId=self.mode)
         if self.prompt_only:
             instructions = "Use only the supplied project excerpts. Do not use tools."
@@ -394,6 +409,8 @@ class _Session:
         instructions += " After completing the task, append a final line containing exactly " + FINAL_MARKER + "."
         if self.inbox is not None:
             instructions += " " + QUESTION_INSTRUCTIONS
+        if self.progress:
+            self.progress("session")
         turn_text = prompt + "\n\n" + instructions
         decision_id = kind = direction = None
         questions, request_id = 0, 4
@@ -436,56 +453,49 @@ class _Session:
                 self.timer.reschedule(self.timer.when() + direction.meeting_seconds)
             decision_id = None
             turn_text = direction.prompt + "\n\n" + instructions
-        if self.engine == "gemini" and self.strict_completion and not self.prompt_only:
+        if self.strict_completion and not self.prompt_only:
             required = {"read", "edit"} if self.allow_edits else {"read"}
             if not required.issubset(self.file_operations):
-                raise ProtocolError("Gemini did not report the expected workspace file operations")
+                raise ProtocolError(f"{self.engine} did not report the expected workspace file operations")
+        if self.telemetry:
+            from .provider_telemetry import acp_usage
+            if receipt := acp_usage(end.get("usage")):
+                self.telemetry(receipt)
         return answer, self.session_id
 
 
 async def run_acp(engine, argv, prompt, workspace, allow_edits, env, timeout, strict_completion, inbox=None, *,
-                  prompt_only=False):
+                  prompt_only=False, accepts_version=None, telemetry=None, progress=None):
     if engine == "cline":
         env = {**env, "CLINE_SESSION_BACKEND_MODE": "local"}
     process = await asyncio.create_subprocess_exec(
         *argv, cwd=workspace, env=env, start_new_session=os.name != "nt",
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL, limit=4 * 1024 * 1024,
+        stderr=asyncio.subprocess.PIPE, limit=4 * 1024 * 1024,
     )
+    tail = ErrorTail()
+    reader = asyncio.create_task(drain_async(process.stderr, tail.append))
     try:
         async with asyncio.timeout(timeout) as timer:
             session = _Session(engine, process, workspace.resolve(), allow_edits, strict_completion, inbox, timer,
-                               prompt_only=prompt_only)
+                               prompt_only=prompt_only, accepts_version=accepts_version, telemetry=telemetry, progress=progress)
             result = await session.run(prompt)
             process.stdin.close()
             # Reject any second terminal result or trailing protocol output.
             if (await process.stdout.read(1)) or await process.wait() != 0:
                 raise ProtocolError("ACP server exited unsuccessfully or sent trailing data")
             return result
+    except (ValueError, OSError) as exc:
+        await close_stdio_process(process)
+        try:
+            await asyncio.wait_for(asyncio.shield(reader), timeout=1)
+        except TimeoutError:
+            pass
+        cause = tail.description()
+        if cause and not isinstance(exc, TimeoutError):
+            raise ProtocolError(f"{exc} ({cause})") from exc
+        raise
     finally:
         await close_stdio_process(process)
-
-
-async def close_stdio_process(process):
-    process.stdin.close()
-    if process.returncode is None:
-        # Windows npm .cmd launchers can leave a child holding the stdout
-        # pipe. End the launcher and descendants still holding the session.
-        if os.name == "nt":
-            killer = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
-            try:
-                await asyncio.to_thread(subprocess.run, [str(killer), "/PID", str(process.pid), "/T", "/F"],
-                                        capture_output=True, timeout=3, check=False)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-        else:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-        await asyncio.wait_for(process.wait(), timeout=3)
+        reader.cancel()
+        await asyncio.gather(reader, return_exceptions=True)

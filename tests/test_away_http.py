@@ -153,9 +153,15 @@ def test_returning_operator_stops_active_consultation(tmp_path, monkeypatch, hel
         if held_role == "verifier":
             activities["specialist"] = "done"
         assert desk_activity() == activities
+        workspace = local.runner.detail(rid)["workspace_id"]
+        def visitors():
+            snapshot = local.rooms.snapshot(workspace)
+            return next(run for run in snapshot["runs"] if run["id"] == rid).get("visiting_roles", [])
+        assert visitors() == [{"role": held_role, "engine": engine}]
         for _ in range(2):
             assert request(local, f"/api/runs/{rid}/delegation/stop", {}) == (200, {"run_id": rid, "active": False})
         assert desk_activity() == {**activities, "developer": "waiting", held_role: "stopped"}
+        assert visitors() == []
         assert request(local, f"/api/runs/{rid}/inbox/{row['id']}/decision", {"action": "answer", "answer": ">=3.11"})[0] == 200
         permission = wait_request(local, "/api", rid, "permission")
         with socket.socket() as probe:

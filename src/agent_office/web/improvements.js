@@ -1,4 +1,4 @@
-const isId = value => typeof value === 'string' && /^[0-9a-f]{32}$/.test(value);
+import {validId as isId, pageDom, requestJson} from './studio-shared.js';
 const isRevision = value => typeof value === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
 const engines = {codex: 'Codex', antigravity: 'Antigravity', claude: 'Claude Code', gemini: 'Gemini CLI', cline: 'Cline CLI'};
 const labels = {
@@ -35,13 +35,12 @@ function matches(body, job) {
 
 export function mountImprovements(win) {
   const doc = win.document;
-  const get = id => doc.getElementById(id);
+  const {get, say} = pageDom(doc);
   const node = (tag, value) => {
     const element = doc.createElement(tag);
     if (value != null) element.textContent = value;
     return element;
   };
-  const say = (id, value) => { if (get(id).textContent !== value) get(id).textContent = value; };
   const hostId = addressHost(win);
   const prefix = hostId === 'local' ? '/api' : '/api/hosts/' + hostId;
   const storageKey = 'agent-office.improvements.pending.' + hostId;
@@ -79,25 +78,7 @@ export function mountImprovements(win) {
 
   async function request(path, body) {
     if (!current()) throw new Error('실행 호스트가 변경되었습니다.');
-    const controller = new win.AbortController();
-    controllers.add(controller);
-    const timeout = win.setTimeout(() => controller.abort(), 15000);
-    try {
-      const options = {signal: controller.signal, mode: 'same-origin', redirect: 'error', cache: 'no-store'};
-      if (body) Object.assign(options, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Agent-Office': 'studio'}, body: JSON.stringify(body)});
-      const response = await win.fetch(path, options);
-      const data = await response.json();
-      if (!response.ok) {
-        const error = new Error(data.error?.message || '요청을 처리할 수 없습니다.');
-        error.status = response.status;
-        error.code = data.error?.code;
-        throw error;
-      }
-      return data;
-    } finally {
-      win.clearTimeout(timeout);
-      controllers.delete(controller);
-    }
+    return requestJson(win, path, body, {controllers, maskServerError: false});
   }
   const api = (suffix, body) => request(prefix + '/improvements' + suffix, body);
 

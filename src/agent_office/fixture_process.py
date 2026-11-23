@@ -19,9 +19,9 @@ def _command(mode):
     return [sys.executable, "-I", str(Path(__file__).resolve()), mode]
 
 
-def execute_fixture(engine, prompt, *, workspace, allow_edits, timeout=120):
+def execute_fixture(engine, prompt, *, workspace, allow_edits, timeout=120, expected_version=None):
     """The supervisor exits after the adapter, its CLI and all descendants are gone."""
-    payload = json.dumps([engine, prompt, str(workspace), allow_edits, timeout]).encode("ascii") + b"\n"
+    payload = json.dumps([engine, prompt, str(workspace), allow_edits, expected_version, timeout]).encode("ascii") + b"\n"
     failure = AgentResult(1, "The fixture worker did not finish.")
     with tempfile.TemporaryFile() as result:
         with subprocess.Popen(_command("supervise"), stdin=subprocess.PIPE, stdout=result,
@@ -58,7 +58,9 @@ if __name__ == "__main__":
         sys.exit(_supervise())
     if sys.argv[1:] != ["worker"]:
         sys.exit(2)
-    engine, prompt, workspace, allow_edits, timeout = json.load(sys.stdin.buffer)
-    result = CLIAdapter(engine, timeout=timeout).execute(
+    engine, prompt, workspace, allow_edits, expected_version, timeout = json.load(sys.stdin.buffer)
+    adapter = CLIAdapter(engine, timeout=timeout)
+    adapter.fixture_version = expected_version
+    result = adapter.execute(
         prompt, workspace=Path(workspace), allow_edits=allow_edits, strict_completion=True)
     sys.stdout.buffer.write(json.dumps(asdict(result), ensure_ascii=False).encode("utf-8"))

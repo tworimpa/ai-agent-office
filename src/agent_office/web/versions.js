@@ -1,3 +1,4 @@
+import {requestJson, validId, pageDom} from './studio-shared.js';
 const events = {initial: '초기 버전', promotion: '승격', rollback: '롤백'};
 const statuses = {added: '추가', deleted: '삭제', modified: '수정'};
 const healthLabels = {unconfigured: '대상 미설정', offline: '서비스 응답 없음', unverified: '서비스 확인 불가', healthy: '정상 응답'};
@@ -6,7 +7,6 @@ const attemptLabels = {
   deploy_failed_restored: '배포 실패 · 이전 버전 복구 완료', deploy_failed_stopped: '배포 실패 · 서비스 중지',
   restore_failed: '이전 버전 복구 실패',
 };
-const validId = id => typeof id === 'string' && /^[a-f0-9]{32}$/.test(id);
 const validHost = id => id === 'local' || validId(id);
 const validSeq = n => Number.isSafeInteger(n) && n >= 0;
 const validSha = sha => typeof sha === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha);
@@ -78,13 +78,12 @@ function checkComparison(result, from, to) {
 
 export function mountVersions(win) {
   const doc = win.document;
-  const get = id => doc.getElementById(id);
+  const {get, say} = pageDom(doc);
   const element = (tag, text) => {
     const result = doc.createElement(tag);
     if (text != null) result.textContent = text;
     return result;
   };
-  const say = (id, text) => { if (get(id).textContent !== text) get(id).textContent = text; };
   const controllers = new Set();
   let hostId, hostApi, prefix, page, offset, from, to, manual, online, hostName;
   let deploymentKey, deploymentRequest, deploymentSequence = 0;
@@ -189,23 +188,7 @@ export function mountVersions(win) {
     });
   }
   const live = () => !disposed && addressHost(win) === hostId;
-  async function json(path) {
-    const controller = new win.AbortController();
-    const timeout = win.setTimeout(() => controller.abort(), 15000);
-    controllers.add(controller);
-    try {
-      const response = await win.fetch(path, {signal: controller.signal, mode: 'same-origin', redirect: 'error', cache: 'no-store'});
-      if (!response.ok) {
-        const error = new Error('호스트의 게시 자료를 불러올 수 없습니다.');
-        error.status = response.status;
-        throw error;
-      }
-      return await response.json();
-    } finally {
-      win.clearTimeout(timeout);
-      controllers.delete(controller);
-    }
-  }
+  const json = path => requestJson(win, path, undefined, {controllers});
   function showHosts(hosts) {
     if (!Array.isArray(hosts) || !hosts.every(h => h && validHost(h.id) && typeof h.name === 'string')) {
       throw new Error('호스트 목록을 확인할 수 없습니다.');

@@ -6,10 +6,16 @@ import sys
 import threading
 import time
 
+from .worker_environment import coding_environment
 from .studio_process import LinuxChildren, WindowsJob
 
 
 def execute(command, cwd, env, timeout):
+    with coding_environment(env) as restricted:
+        return _execute(command, cwd, restricted, timeout)
+
+
+def _execute(command, cwd, env, timeout):
     supervisor = [sys.executable, "-I", "-m", "agent_office.goal_process"]
     payload = json.dumps([command, str(cwd), env, timeout]).encode("utf-8") + b"\n"
     if len(payload) > 256 * 1024:

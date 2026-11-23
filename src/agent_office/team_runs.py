@@ -1,5 +1,6 @@
 """Durable Studio parent requests and their ordered, independently owned runs."""
 import json
+import os
 import platform
 
 from .engines import SUPPORTED_ENGINES
@@ -8,7 +9,11 @@ from .models import ACTIVE, OfficeError
 from .store import encode, now
 
 
-MAX_ACTIVE = 2
+def active_slots():
+    value = os.environ.get("AGENT_OFFICE_TEAM_SLOTS", "2")
+    if value not in {"1", "2", "3", "4", "5", "6"}:
+        raise ValueError("AGENT_OFFICE_TEAM_SLOTS must be an integer from 1 to 6")
+    return int(value)
 
 
 def ensure_schema(db):

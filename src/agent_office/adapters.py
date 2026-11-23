@@ -11,9 +11,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from .acp import run_acp
-from .github_connection import worker_env
+from .worker_environment import coding_environment
 from .engines import SUPPORTED_ENGINES, codex_backend_args, resolve_executable
 from .provider_profiles import validate_selection
+from .engine_updates import host_lease
 from .provider_telemetry import exec_usage
 
 
@@ -31,6 +32,9 @@ class CLIAdapter:
         if engine not in SUPPORTED_ENGINES:
             raise ValueError(f"Unsupported engine: {engine}")
         self.engine = engine
+        self.db_path = None
+        self.progress = None
+        self.fixture_version = None
         self.timeout = timeout
 
     def command(self, prompt: str, *, allow_edits: bool, model=None, effort=None) -> list[str]:
@@ -77,35 +81,45 @@ class CLIAdapter:
         # Python-based tools launched on Windows otherwise inherit a legacy
         # console encoding even though the parent writes UTF-8 to stdin.
         # For Node-based CLIs this has no behavioral effect.
-        env = worker_env(os.environ)
-        env.setdefault("PYTHONUTF8", "1")
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        task_input = json.dumps({"event": "user", "message": {"content": prompt}}, ensure_ascii=False) + "\n" if self.engine == "antigravity" else prompt
         try:
-            if self.engine in ("gemini", "cline"):
-                message, session = asyncio.run(run_acp(
-                    self.engine, argv, prompt, workspace, allow_edits, env, self.timeout, strict_completion, inbox,
-                    prompt_only=prompt_only,
-                ))
-                return AgentResult(0, message[:12000], session, len(message) > 12000)
-            if prompt_only:
-                # Windows launchers may leave a descendant holding a stdio pipe
-                # after exit. A bounded file-backed turn does not await its EOF.
-                from .batch_dialogue import _turn
-                return _turn(self.engine, argv, prompt, workspace, env, time.monotonic() + self.timeout, nullcontext(),
-                             telemetry=telemetry)
-            if inbox is not None:
-                if self.engine == "codex":
-                    from .codex_inbox import run_codex_inbox
-                    return run_codex_inbox(executable, prompt, workspace, allow_edits, env, self.timeout, inbox,
-                                           model=model, effort=effort, telemetry=telemetry)
-                from .batch_dialogue import run_batch_dialogue
-                return run_batch_dialogue(self.engine, argv, prompt, workspace, env, self.timeout, inbox)
-            completed = subprocess.run(
-                argv, cwd=workspace, input=task_input, env=env, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=self.timeout,
-                check=False,
-            )
+            with host_lease(), coding_environment(os.environ) as env:
+                env.setdefault("PYTHONUTF8", "1")
+                env.setdefault("PYTHONIOENCODING", "utf-8")
+                task_input = json.dumps({"event": "user", "message": {"content": prompt}}, ensure_ascii=False) + "\n" if self.engine == "antigravity" else prompt
+                if self.engine in ("gemini", "cline"):
+                    from .engine_evidence import cline_verified
+                    from .engines import CURRENT_ROLE
+                    capability = "edit" if allow_edits else "review" if CURRENT_ROLE.get() == "reviewer" else "read"
+                    message, session = asyncio.run(run_acp(
+                        self.engine, argv, prompt, workspace, allow_edits, env, self.timeout, strict_completion, inbox,
+                        prompt_only=prompt_only, telemetry=telemetry, progress=self.progress,
+                        accepts_version=lambda version: version == self.fixture_version if self.fixture_version else cline_verified(
+                            self.db_path, executable, version, capability),
+                    ))
+                    return AgentResult(0, message[:12000], session, len(message) > 12000)
+                if prompt_only:
+                    # Windows launchers may leave a descendant holding a stdio pipe
+                    # after exit. A bounded file-backed turn does not await its EOF.
+                    from .batch_dialogue import _turn
+                    return _turn(self.engine, argv, prompt, workspace, env, time.monotonic() + self.timeout, nullcontext(),
+                                 telemetry=telemetry, progress=self.progress)
+                if inbox is not None:
+                    if self.engine == "codex":
+                        from .codex_inbox import run_codex_inbox
+                        return run_codex_inbox(executable, prompt, workspace, allow_edits, env, self.timeout, inbox,
+                                               model=model, effort=effort, telemetry=telemetry, progress=self.progress)
+                    from .batch_dialogue import run_batch_dialogue
+                    return run_batch_dialogue(self.engine, argv, prompt, workspace, env, self.timeout, inbox,
+                                              progress=self.progress, telemetry=telemetry)
+                if self.progress:
+                    from .batch_dialogue import _turn
+                    return _turn(self.engine, argv, prompt, workspace, env, time.monotonic()+self.timeout, nullcontext(),
+                                 telemetry=telemetry, progress=self.progress, strict=strict_completion)
+                completed = subprocess.run(
+                    argv, cwd=workspace, input=task_input, env=env, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=self.timeout,
+                    check=False,
+                )
         except (ValueError, RecursionError) as exc:
             return AgentResult(1, f"{self.engine} protocol failure: {exc}")
         except (subprocess.TimeoutExpired, TimeoutError):
@@ -115,6 +129,10 @@ class CLIAdapter:
 
         if self.engine == "codex" and telemetry:
             record_exec_usage(completed.stdout, telemetry)
+        elif telemetry:
+            from .provider_telemetry import batch_receipt
+            for receipt in batch_receipt(self.engine, completed.stdout):
+                telemetry(receipt)
         if strict_completion and self.engine in ("codex", "claude") and completed.returncode == 0:
             from .fixture_completion import parse_fixture_completion
             return parse_fixture_completion(self.engine, completed.stdout)
@@ -126,8 +144,11 @@ class CLIAdapter:
         else:
             message, session_id = parse_output(self.engine, completed.stdout)
         if completed.returncode != 0:
-            error = completed.stderr.strip() or message
-            message = f"{self.engine} exited {completed.returncode}: {error[:3000]}"
+            from .process_diagnostics import ErrorTail
+            tail = ErrorTail()
+            tail.append(completed.stderr.encode("utf-8"))
+            cause = tail.description()
+            message = f"{self.engine} exited {completed.returncode}" + (f" ({cause})" if cause else "")
         return AgentResult(completed.returncode, message[:12000], session_id, len(message) > 12000)
 
 

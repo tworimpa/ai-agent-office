@@ -1,3 +1,5 @@
+import {engineMaintenance} from "./engine-maintenance.js";
+import {requestJson, validId} from './studio-shared.js';
 const states = {
   QUEUED: ['대기 중', 'active'],
   RUNNING: ['개발 중', 'active'],
@@ -27,7 +29,6 @@ const outcomes = {
 };
 const testedOutcomes = new Set(['TEST_FAILED', 'REVIEW_FAILED', 'CHANGES_REQUESTED', 'REVIEW_UNDECIDED', 'APPROVED']);
 const evidence = ['developer_output', 'test_output', 'review_output', 'changes', 'diff'];
-const validId = value => typeof value === 'string' && /^[0-9a-f]{32}$/.test(value);
 const engineNames = new Map([
   ['codex', 'Codex'], ['antigravity', 'Antigravity'], ['claude', 'Claude Code'],
   ['gemini', 'Gemini CLI'], ['cline', 'Cline CLI'],
@@ -77,7 +78,7 @@ function engineMetadata(row) {
   const installation = row.installed === true ? '설치 확인' : row.installed === false ? '실행 파일 없음' : '설치 미확인';
   const auth = {authenticated: '로그인 확인', not_authenticated: '로그인 안 됨'}[row.auth_status] ?? '로그인 미확인';
   const probe = {pending: '진단 중', timeout: '진단 시간 초과', error: '진단 오류', unsupported: '필수 CLI 옵션 미지원',
-    unknown_version: 'CLI 버전 확인 실패', unsupported_version: '작업실에서 지원하지 않는 버전'};
+    unknown_version: 'CLI 버전 확인 실패', unverified_version: '호스트에서 역할별 verify-engine 검증 필요', unsupported_version: '작업실에서 지원하지 않는 버전'};
   const options = row.headless_support === true ? '비대화형 옵션 확인' : '비대화형 옵션 미확인';
   const protocol = row.protocol ? '프로토콜 ' + row.protocol : '';
   return [installation, row.version || '버전 미확인', auth, protocol, probe[row.probe_status] ?? options].filter(Boolean).join(' · ');
@@ -143,27 +144,7 @@ export function mountStudio(win) {
     } catch { /* In-memory retries still use the same ID. */ }
   }
 
-  async function fetchJSON(path, body) {
-    const controller = new win.AbortController();
-    const timeout = win.setTimeout(() => controller.abort(), 15000);
-    try {
-      const options = {signal: controller.signal, mode: 'same-origin', redirect: 'error', cache: 'no-store'};
-      if (body !== undefined) Object.assign(options, {
-        method: 'POST', headers: {'Content-Type': 'application/json', 'X-Agent-Office': 'studio'},
-        body: JSON.stringify(body),
-      });
-      const response = await win.fetch(path, options);
-      const data = await response.json();
-      if (!response.ok) {
-        const hint = response.status < 500 && data.error?.message;
-        const error = new Error(hint || '서버에서 요청을 처리하지 못했습니다.');
-        error.status = response.status;
-        error.code = data.error?.code;
-        throw error;
-      }
-      return data;
-    } finally { win.clearTimeout(timeout); }
-  }
+  const fetchJSON = (path, body) => requestJson(win, path, body);
 
   function api(path, body) {
     if (!host || closed || hostId !== addressHost()) throw new Error('실행 호스트를 확인하세요.');
@@ -499,6 +480,7 @@ export function mountStudio(win) {
       });
       checks.textContent = '예제 검증 · ' + results.join(' / ');
       li.append(title, metadata, checks);
+      if (hostId === "local" && row.installed) li.append(engineMaintenance(doc, id, api));
       return li;
     }));
   }

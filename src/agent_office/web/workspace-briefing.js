@@ -450,11 +450,11 @@ export function mountBriefing({win, get, make, api, context, refresh, openAction
       return item;
     }, previousVisit ? '이후에 확인된 변경이 없습니다.' : '', 4);
   }
-  async function load() {
+  async function load(readSection = api) {
     if (!context().supported) return;
     const seq = ++read, room = context().workspaceId;
     try {
-      const result = await api(path() + '/briefing');
+      const result = await readSection(path() + '/briefing');
       if (seq !== read || context().workspaceId !== room) return;
       if (result.workspace_id !== room || !['decisions','work','candidates','overlaps'].every(key => Array.isArray(result[key]))) throw Error();
       latest = result; fresh = true; loadingFailed = false; note(''); render();

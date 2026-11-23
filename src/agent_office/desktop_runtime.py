@@ -31,7 +31,7 @@ def serve(directory: Path, remotes: tuple[RemoteHost, ...], expected_journal=Non
     db_path = directory / "tasks.sqlite3"
     with RunGuard.desktop(db_path):
         try:
-            with StudioServer(db_path, 0, remotes=remotes, expected_journal=expected_journal) as server:
+            with StudioServer(db_path, 0, remotes=remotes, expected_journal=expected_journal, standalone=True) as server:
                 server.RequestHandlerClass = DesktopHandler
                 server.desktop_receipt = {
                     "boot_id": boot_id,

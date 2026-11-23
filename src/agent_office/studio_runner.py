@@ -30,7 +30,7 @@ from .studio_inbox import Inbox, InboxChannel, expire_requests
 from .studio_process import run_preview
 from .away_evidence import DelegationDeferred, git as evidence_git
 from .away_expert import RULES, in_scope, validate_policy
-from .away_ledger import get_choices, get_policy, get_revision, register_choices, register_policy
+from .away_ledger import get_choices, get_policy, get_revision, revision_in, register_choices, register_policy
 from .technical_choices import CHOICE_INSTRUCTIONS
 from .workspace import map_folders, plan_worktree
 
@@ -121,7 +121,10 @@ class LocalRunner:
     def __init__(self, db_path: Path):
         self.path = Path(db_path).expanduser().resolve()
         self.lock = threading.RLock()
+        self.team_slots = team_runs.active_slots()
+        self.monitor_wakeup = threading.Event()
         self.children = {}
+        self.child_errors = {}
         self.pending = {}  # Raw prompts live only in this owner's memory. Never replay on startup.
         self.team_workers = set()
         self.queued_goals = set()
@@ -140,6 +143,8 @@ class LocalRunner:
                 store.connection.execute("""CREATE TABLE IF NOT EXISTS studio_room_assignments(
                     run_id TEXT PRIMARY KEY REFERENCES studio_runs(id), assignment_json TEXT NOT NULL,
                     revision TEXT NOT NULL)""")
+                from .run_progress import schema as progress_schema
+                progress_schema(store.connection)
                 self.inbox = Inbox(self.path)
                 self.directions = Directions(self.path)
                 team_runs.ensure_schema(store.connection)
@@ -202,6 +207,13 @@ class LocalRunner:
             if child.poll() is not None:
                 child.stdin.close()
                 if self._recover(store, run_id):
+                    capture = self.child_errors.pop(run_id, None)
+                    if capture and (child.poll() or store.get_run(run_id).state == "RECOVERY_REQUIRED"):
+                        tail, reader = capture
+                        reader.join(timeout=0.25)
+                        if cause := tail.description():
+                            store.connection.execute("UPDATE studio_runs SET diagnostic=diagnostic || ? WHERE id=?",
+                                                     (" · " + cause, run_id))
                     del self.children[run_id]
                     self.team_workers.discard(run_id)
                     if goal_stage_wait.drained(store.connection, run_id):
@@ -264,7 +276,8 @@ class LocalRunner:
             request_parts.append({"indices": indices})
         digest = request_digest or _request_digest(request_parts, developer_engine, reviewer_engine,
                                                    use_inbox, policy, selected, plan)
-        with self.lock, TaskStore(self.path, existing=True) as store:
+        from .engine_updates import host_lease
+        with self.lock, host_lease(), TaskStore(self.path, existing=True) as store:
             if self.closed:
                 raise OfficeError("RUN_BUSY")
             self._refresh(store)
@@ -361,10 +374,15 @@ class LocalRunner:
             child = subprocess.Popen(
                 [sys.executable, "-m", "agent_office.studio_process", str(self.path), run_id],
                 cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE, env=worker_env(os.environ),
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=os.name != "nt",
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=os.name != "nt",
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             self.children[run_id] = child
+            from .process_diagnostics import ErrorTail, drain_pipe
+            tail = ErrorTail()
+            if getattr(child, "stderr", None) is not None:
+                self.child_errors[run_id] = (tail, drain_pipe(child.stderr, tail.append))
+            threading.Thread(target=self._await_supervisor, args=(child,), daemon=True).start()
             child.stdin.write(json.dumps(prompt, ensure_ascii=False).encode("utf-8") + b"\n")
             child.stdin.flush()
         except OSError:
@@ -375,11 +393,15 @@ class LocalRunner:
                 if self._recover(store, run_id):
                     self.stale.remove(run_id)
 
+    def _await_supervisor(self, child):
+        child.wait(timeout=None)
+        self.monitor_wakeup.set()
+
     def _schedule(self, store):
         if self.queued_goals:
             goal_stage_wait.dispatch(self, store)
         for child_id in list(self.pending):
-            if len(self.team_workers) >= team_runs.MAX_ACTIVE:
+            if len(self.team_workers) >= self.team_slots:
                 break
             state = store.get_run(child_id).state
             prompt, guard = self.pending.pop(child_id)
@@ -394,18 +416,23 @@ class LocalRunner:
                     self.stale.add(child_id)
 
     def _start_monitor(self):
+        self.monitor_wakeup.set()
         if self.scheduler is None or not self.scheduler.is_alive():
             self.scheduler = threading.Thread(target=self._monitor, daemon=True)
             self.scheduler.start()
 
     def _monitor(self):
-        interval = 0.15
-        while not self.shutdown.wait(interval):
+        interval = None
+        while True:
+            self.monitor_wakeup.wait(interval)
             with self.lock:
+                self.monitor_wakeup.clear()
                 if self.closed or not (self.pending or self.children or self.stale or self.queued_goals):
                     self.scheduler = None
                     return
-                can_dispatch = self.pending and len(self.team_workers) < team_runs.MAX_ACTIVE
+                can_dispatch = self.pending and len(self.team_workers) < self.team_slots
+                # Dependencies and orphan guards can change in another process.
+                interval = 0.5 if self.stale or self.queued_goals else None
                 if not (self.stale or can_dispatch or self.queued_goals or
                         any(child.poll() is not None for child in self.children.values())):
                     continue
@@ -413,10 +440,15 @@ class LocalRunner:
                     with TaskStore(self.path, existing=True) as store:
                         self._refresh(store)
                         self._schedule(store)
-                    interval = 0.15
+                    interval = 0.5 if (self.stale or self.queued_goals or
+                                       any(child.poll() is not None for child in self.children.values())) else None
+                    if not (self.children or self.pending or self.stale or self.queued_goals):
+                        self.scheduler = None
+                        return
                 except Exception as exc:
                     if (isinstance(exc, sqlite3.OperationalError)
                             and getattr(exc, "sqlite_errorcode", 0) & 255 in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)):
+                        interval = 0.5
                         continue
                     # Drop undispatched prompts and recover their journal rows
                     # on a later owner tick. Recovery never relaunches a child.
@@ -424,8 +456,7 @@ class LocalRunner:
                     for _, guard in self.pending.values():
                         guard.__exit__(None, None, None)
                     self.pending.clear()
-                    if interval == 0.15:
-                        logging.getLogger(__name__).exception("Studio owner monitor interrupted")
+                    logging.getLogger(__name__).exception("Studio owner monitor interrupted")
                     interval = 2.0
 
     def _detail(self, store, run_id):
@@ -438,6 +469,8 @@ class LocalRunner:
             if row is None:
                 raise OfficeError("NOT_FOUND")
             result = self._summary(row)
+            from .run_progress import latest
+            result["last_progress"] = latest(db, run_id)
             result["folders"] = json.loads(row["folders"])
             relation = db.execute("""SELECT p.id AS parent_id,p.task AS original_task,c.indices,p.base_revision
                 FROM studio_team_children c JOIN studio_teams p ON p.id=c.parent_id WHERE c.id=?""",
@@ -445,7 +478,7 @@ class LocalRunner:
             if relation:
                 result.update(dict(relation), indices=json.loads(relation["indices"]), kind="subtask")
             elif result["delegation"]:
-                result["base_revision"] = get_revision(self.path, run_id)
+                result["base_revision"] = revision_in(db, run_id)
             assigned = db.execute("SELECT assignment_json,revision FROM studio_room_assignments WHERE run_id=?",
                                   (run_id,)).fetchone()
             if assigned:
@@ -465,8 +498,8 @@ class LocalRunner:
 
     def detail(self, run_id):
         validate_id(run_id)
-        with self.lock, TaskStore(self.path, existing=True) as store:
-            self._refresh(store)
+        with TaskStore(self.path, readonly=True) as store:
+            store.connection.execute("BEGIN")
             return self._detail(store, run_id)
 
     def decide_meeting(self, run_id, payload):
@@ -477,8 +510,8 @@ class LocalRunner:
                 return meeting_store.decide(store.connection, run_id, payload)
 
     def runs(self):
-        with self.lock, TaskStore(self.path, existing=True) as store:
-            self._refresh(store)
+        with TaskStore(self.path, readonly=True) as store:
+            store.connection.execute("BEGIN")
             db = store.connection
             rows = db.execute(SUMMARY + SOURCE + " WHERE NOT EXISTS "
                               "(SELECT 1 FROM studio_team_children c WHERE c.id=s.id) "
@@ -540,6 +573,7 @@ class LocalRunner:
                 return
             self.closed = True
             self.shutdown.set()
+            self.monitor_wakeup.set()
             # Register all pipe closes before touching SQLite. Even if a stop
             # marker cannot be saved, EOF still makes every supervisor drain.
             with ExitStack() as cleanup:
@@ -561,7 +595,8 @@ class LocalRunner:
 
 def worker(db_path, run_id):
     # An orphaned Linux worker can outlive an abruptly killed supervisor.
-    with RunGuard.worker(db_path, run_id):
+    from .engine_updates import host_lease
+    with RunGuard.worker(db_path, run_id), host_lease():
         return _worker(db_path, run_id)
 
 
@@ -606,6 +641,15 @@ def _worker(db_path, run_id):
                                      (snapshot_request(value), run_id))
 
         def defer_final(state, outcome):
+            if state in {"FAILED", "RECOVERY_REQUIRED"}:
+                outputs = store.connection.execute(
+                    "SELECT developer_output, review_output FROM studio_runs WHERE id=?", (run_id,)).fetchone()
+                from .process_diagnostics import diagnostic_result
+                for value in reversed(tuple(outputs)):
+                    if explanation := diagnostic_result(value):
+                        store.connection.execute("UPDATE studio_runs SET diagnostic=? WHERE id=? AND diagnostic=''",
+                                                 (explanation, run_id))
+                        break
             store.connection.execute("UPDATE studio_runs SET proposed_state=?,proposed_outcome=? WHERE id=?",
                                      (state, outcome, run_id))
 

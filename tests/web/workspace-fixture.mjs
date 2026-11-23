@@ -33,9 +33,10 @@ async function until(predicate) {
   assert.ok(predicate(), '작업실 응답 대기 시간 초과');
 }
 
-function mount(t, route, {query = '', storage = {}, preferences = {}} = {}) {
+function mount(t, route, {query = '', storage = {}, preferences = {}, setupWindow} = {}) {
   const dom = new JSDOM(html, {url: 'http://127.0.0.1:8766/' + query, pretendToBeVisual: true});
   const {window} = dom;
+  setupWindow?.(window);
   const get = id => window.document.getElementById(id);
   const person = role => window.document.querySelector('.seat[data-person="' + role + '"]');
   for (const [key, value] of Object.entries(storage)) window.sessionStorage.setItem(key, value);

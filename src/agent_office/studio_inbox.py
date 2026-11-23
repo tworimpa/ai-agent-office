@@ -439,6 +439,12 @@ class InboxChannel:
                     raise OfficeError("REQUEST_CLOSED")
                 plan, answer, evidence = proposal
                 current, reason = away_ledger.match_question(db, row)
+                if current == plan and evidence.get("method") == "committed_fact":
+                    from .away_evidence import DelegationDeferred, require_base
+                    try:
+                        require_base(plan.repo, plan.revision)
+                    except DelegationDeferred as exc:
+                        current, reason = None, DEFERRED_REASONS.get(exc.reason, away_ledger.CHANGED)
                 if current != plan:
                     withdrawn = True
                     if row["status"] == "pending":

@@ -29,6 +29,8 @@ Worker returncode 124 and test timeout stop retries and require recovery review.
 
 ## Data, errors and retention
 
+A new standalone desktop or Studio journal uses SQLite WAL with the default durable synchronization setting. Host the journal on a local filesystem whose owner can write the adjacent `-wal` and `-shm` files. To create a rollback-mode standalone journal for a split-account deployment, set `AGENT_OFFICE_SQLITE_JOURNAL=delete` before its first start. Managed runtime startup, workers, the deployment controller, and existing or read-only journals preserve the stored mode. Use SQLite's backup API or `.backup` for a live snapshot. For a filesystem archive, first stop every connection so SQLite can finish its WAL checkpoint.
+
 SQLite integer budgets/cursors must fit the signed 64-bit range. An omitted run ID selects the task's current run; an explicitly empty ID is invalid. Truncated reviewer responses are treated as undecided because a trailing contradictory verdict may have been omitted.
 
 SQLite schema version is 1; newer or unrecognized schemas are rejected without migration. State/attempt/event sequence changes are committed together in short transactions. A failed start commit prevents external execution; a failed result commit stops the next stage and prevents a success report. A duplicate operation must match the full event and transition envelope to return the existing event.
@@ -38,3 +40,13 @@ Events contain allowlisted phase metadata, not raw prompt, source, stdout/stderr
 There is no automatic deletion. While all runs are idle, the owner may archive a complete DB together with its lock directory and begin with a new path. Keep archives private; do not attach raw DBs/logs to public PRs. Do not replace a database under running coordinators. Full retention quotas and bounded subprocess streaming are prerequisites for future unattended operation.
 
 Queries/recovery succeed with exit 0. Completed failed run reports use exit 1. Argument, Git, DB, schema or lock errors use exit 2 with fixed JSON error messages on stderr and empty stdout; they do not echo raw SQL parameters or subprocess stderr. Run JSON preserves the bootstrap status field and adds task_id/run_id/state/outcome. See [acceptance contract](superpowers/specs/2026-11-06-ao-001-acceptance.md) for exact envelopes and scenarios.
+
+## 작업 트리 정리
+
+작업실 설정에서 **작업 트리 저장 공간 → 사용량과 보존 사유 조회**를 선택한다. 파일 크기는 작업 트리 아래 일반 파일의 논리 크기 합계다. 현재 호스트의 등록 폴더에 속한 이 작업실 실행과 같은 저장소의 CLI 실행을 표시한다. 실행 기록이나 Git 공용 객체 저장소는 파일 크기에서 제외한다.
+
+실행 종료 후 7일이 지나고, 체크아웃이 깨끗하며 임시 브랜치의 끝 커밋이 등록 저장소의 현재 HEAD에 포함된 경우에 정리할 수 있다. 실행기·하위 작업·잠금, 대기 중인 응답, 복구·체크포인트, 검토 중인 후보, 무시된 파일과 경로 연결도 확인한다. 사용자가 한 건을 선택하면 실행 호스트는 저널·실행 ID와 조회 당시 커밋을 검사하고 실행 잠금과 작업자 잠금을 확보한다. Git의 강제 옵션 없이 해당 작업 트리와 브랜치만 정리한다. 브랜치 삭제 단계에서는 Git 트랜잭션으로 등록된 체크아웃 HEAD를 잠그고 조회한 SHA와 일치하는 참조만 지운다. 동시에 새 체크아웃이 등록되면 원래 커밋을 보존한다. Git이 필요한 참조 잠금을 지원하지 않거나 다른 작업과 겹치면 브랜치를 남긴다. 중단 후에는 다시 조회하여 같은 커밋으로 재시도할 수 있다.
+
+## 코딩 작업자 자식 프로세스
+
+공급자 CLI와 저장소 테스트는 호출별 전용 환경에서 표준 Git 전송 프로토콜을 차단하고, Git 자격 증명 도우미와 SSH 인증 소켓을 비활성화한다. 로컬 Git 상태 조회는 가능하다. 작업자 PATH에서 일반적인 gh 호출을 차단하고 독립된 빈 GH_CONFIG_DIR를 사용한다. Studio의 GitHub 연결과 운영자 Git 환경은 별도로 동작한다. 이 설정은 일반적인 실수로 인한 외부 쓰기를 줄인다. 임의 코드가 환경을 바꾸거나 다른 실행 파일·네트워크 API를 사용하는 경우의 격리에는 OS 수준 통제가 필요하다.

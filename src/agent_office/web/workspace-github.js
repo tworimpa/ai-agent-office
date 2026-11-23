@@ -288,11 +288,11 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
     }
     controls();
   }
-  async function load() {
+  async function load(readSection = api) {
     if (!context().supported) return;
     const sequence = ++read, identity = roomKey();
     try {
-      const result = await api(path() + cursorPath(cursor));
+      const result = await readSection(path() + cursorPath(cursor));
       if (identity !== roomKey() || sequence !== read) return;
       latest = result;
       if (selectedIssue && !result.issues.some(row => row.issue_id === selectedIssue)) resetDetail();

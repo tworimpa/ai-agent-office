@@ -17,10 +17,10 @@ from .provider_telemetry import quota_response, safe_slug
 
 CAPABILITIES = {
     "codex": dict(model="supported", effort="supported", usage="supported", limits="supported"),
-    "claude": dict(model="supported", effort="supported", usage="unknown", limits="unknown"),
-    "antigravity": dict(model="supported", effort="supported", usage="unknown", limits="unknown"),
-    "gemini": dict(model="supported", effort="unsupported", usage="unknown", limits="unknown"),
-    "cline": dict(model="unsupported", effort="unsupported", usage="unknown", limits="unknown"),
+    "claude": dict(model="supported", effort="supported", usage="supported", limits="supported"),
+    "antigravity": dict(model="supported", effort="supported", usage="supported", limits="unknown"),
+    "gemini": dict(model="supported", effort="unsupported", usage="supported", limits="unknown"),
+    "cline": dict(model="unsupported", effort="unsupported", usage="supported", limits="unknown"),
 }
 
 
