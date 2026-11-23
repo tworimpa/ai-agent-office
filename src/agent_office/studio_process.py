@@ -9,6 +9,8 @@ import sys
 import threading
 import time
 
+from .process_window import BACKGROUND_FLAGS
+
 
 WINDOWS_SERVICE_CODEX_CONTEXT = (
     "This Codex worker is running in Windows Session 0. Use the native exec_command tool "
@@ -41,7 +43,7 @@ class LinuxChildren:
 
     def spawn(self, argv, output=None, *, cwd=None, env=None, combined=False, errors=None):
         return subprocess.Popen(argv, stdin=subprocess.PIPE, stderr=subprocess.STDOUT if combined else errors if errors is not None else subprocess.DEVNULL,
-                                stdout=output if output is not None else subprocess.DEVNULL, cwd=cwd, env=env)
+                                stdout=output if output is not None else subprocess.DEVNULL, cwd=cwd, env=env, creationflags=BACKGROUND_FLAGS)
 
     def drain(self, process):
         if process.poll() is None:
@@ -106,7 +108,7 @@ class WindowsJob:
                 startup.hStdError = startup.hStdOutput if combined else msvcrt.get_osfhandle(stderr.fileno())
                 handle, thread, _, _ = win32process.CreateProcess(
                     argv[0], subprocess.list2cmdline(argv), None, None, True,
-                    win32con.CREATE_SUSPENDED | subprocess.CREATE_NO_WINDOW, env, str(cwd) if cwd else None, startup,
+                    win32con.CREATE_SUSPENDED | BACKGROUND_FLAGS, env, str(cwd) if cwd else None, startup,
                 )
                 try:
                     self.api.AssignProcessToJobObject(self.handle, handle)

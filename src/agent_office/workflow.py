@@ -12,6 +12,7 @@ from typing import Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from .process_window import BACKGROUND_FLAGS
 from .adapters import AgentResult
 from .goal_stage_wait import ReworkRequired, decision_context
 from .studio_catalog import verify_worktree_test_files
@@ -268,7 +269,7 @@ def build_graph(adapters: dict[str, Adapter], *, checkpointer=None, recorder=Non
                     completed = subprocess.run(
                         argv, cwd=state["workspace"], env=env,
                         capture_output=True, text=True, encoding="utf-8",
-                        errors="replace", timeout=300, check=False,
+                        errors="replace", timeout=300, check=False, creationflags=BACKGROUND_FLAGS,
                     )
                 output = (completed.stdout + "\n" + completed.stderr)[-6000:]
                 passed = completed.returncode == 0

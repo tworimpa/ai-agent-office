@@ -26,4 +26,6 @@ Earlier handoff/plan statements requiring a separate approval for each push/PR/m
 
 Run tests and report exact evidence. In particular distinguish mock subprocess CI from actual authenticated vendor CLI testing. On failure, do not claim completion. Preserve original task context, question/approval distinctions, and human review gates.
 
+On the local Windows PC, run unattended pytest via `.venv\Scripts\python.exe scripts\quiet_pytest.py` with the desired pytest arguments. Keep background helper consoles hidden and retain their output and exit status.
+
 First verify branch/CI/current code before continuing AO-001. The handoff is a historical snapshot, not an assertion that the remote state has not changed.

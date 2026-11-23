@@ -72,7 +72,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pytest -q -rA tests/test_deployment_nssm.py tests/test_split_session_host_ci.py
       - name: Unit and subprocess smoke tests
-        run: python -m pytest -q
+        run: python scripts/quiet_pytest.py -q
       - name: Isolated release validator with real Docker
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
         env:

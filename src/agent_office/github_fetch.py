@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from urllib.request import getproxies, proxy_bypass
 
 from .engines import resolve_executable
+from .process_window import BACKGROUND_FLAGS
 from .github_api import _branch, _sha
 from .github_connection import GitHubError, _origin, repository_name
 
@@ -28,7 +29,7 @@ def _local(git, cwd, *args, env, data=None, stdin=None, stdout=subprocess.PIPE, 
     source = None if data is not None else stdin if stdin is not None else subprocess.DEVNULL
     try:
         result = subprocess.run([git, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args],
-                                cwd=cwd, env=env, stdin=source,
+                                cwd=cwd, env=env, stdin=source, creationflags=BACKGROUND_FLAGS,
                                 input=data, stdout=stdout, stderr=subprocess.DEVNULL, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         raise GitHubError("git_objects_unavailable") from None

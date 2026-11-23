@@ -11,6 +11,7 @@ if __name__ == "__main__":
     # -I excludes the operator's current directory and untrusted Python paths.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from agent_office.process_window import BACKGROUND_FLAGS
 from agent_office.adapters import AgentResult, CLIAdapter
 from agent_office.studio_process import run_until_owner_closes
 
@@ -36,7 +37,7 @@ def _execute_fixture(engine, prompt, workspace, allow_edits, timeout, db_path, e
     with tempfile.TemporaryFile() as result:
         with subprocess.Popen(_command("supervise"), stdin=subprocess.PIPE, stdout=result,
                               stderr=subprocess.DEVNULL, start_new_session=os.name != "nt",
-                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0) as supervisor:
+                              creationflags=BACKGROUND_FLAGS) as supervisor:
             try:
                 supervisor.stdin.write(payload)
                 supervisor.stdin.flush()

@@ -43,12 +43,12 @@ await writeFile(
   'from settings import restore\n\ndef test_first_start_uses_default(tmp_path):\n    assert restore(tmp_path / "missing") == "light"\n'
 )
 function git(...args) {
-  return execFileSync('git', args, {cwd: repo, encoding: 'utf8'})
+  return execFileSync('git', args, {cwd: repo, encoding: 'utf8', windowsHide: true})
 }
 git('init', '-q', '-b', 'main')
 if (briefingMode) {
   await writeFile(join(repo, 'briefing-fixture.txt'), 'Disposable workspace briefing fixture\n')
-  execFileSync(python, [fileURLToPath(new URL('fixtures/briefing_worker.py', import.meta.url)), repo])
+  execFileSync(python, [fileURLToPath(new URL('fixtures/briefing_worker.py', import.meta.url)), repo], {windowsHide: true})
 } else if (githubMode) await writeFile(join(repo, 'github-journey.txt'), 'GitHub Issue integration fixture\n')
 git('add', '.')
 git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'settings fixture')

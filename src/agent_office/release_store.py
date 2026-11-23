@@ -19,6 +19,7 @@ from .engines import resolve_executable
 from .improvement_proposal import _digest, validate_proposal
 from .models import validate_id
 from .ownership import RunBusyError, RunGuard
+from .process_window import BACKGROUND_FLAGS
 
 
 _session_git = ContextVar("operator_release_git", default=None)
@@ -63,7 +64,7 @@ def run_git(repo: Path, *args: str, data: bytes | None = None,
         command[1:1] = ["-c", "safe.directory=" + repo.as_posix()]
     try:
         result = subprocess.run(command, cwd=repo, env=settings, input=data or b"",
-                                capture_output=True, timeout=120)
+                                capture_output=True, timeout=120, creationflags=BACKGROUND_FLAGS)
     except subprocess.TimeoutExpired as exc:
         raise ValueError("Git operation timed out") from exc
     if result.returncode:

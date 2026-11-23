@@ -131,7 +131,7 @@ def test_updates_require_idle_host_and_exact_versions(tmp_path, monkeypatch):
         monkeypatch.setattr("builtins.input", lambda _: "no")
         with pytest.raises(ValueError, match="취소"):
             engine_updates.apply(db, "cline", "1.0.0", "2.0.0", server.journal_id)
-        monkeypatch.setattr("builtins.input", lambda _: "UPDATE")
+        monkeypatch.setattr("builtins.input", lambda _: "y")
         monkeypatch.setattr(engine_updates, "probe_version", lambda *a: ("2.0.0","ok"))
         assert engine_updates.apply(db, "cline", "1.0.0", "2.0.0", server.journal_id) == {
             "engine":"cline","installed":"2.0.0"}
@@ -179,11 +179,11 @@ def test_native_updater_cannot_be_used_as_a_pinned_installer(tmp_path, monkeypat
         args = (server.db_path, "antigravity", "1.0.0", "1.1.0", server.journal_id)
         with pytest.raises(ValueError, match="방식"):
             engine_updates.apply(*args)
-        monkeypatch.setattr("builtins.input", lambda _: "UPDATE")
+        monkeypatch.setattr("builtins.input", lambda _: "")
         with pytest.raises(ValueError, match="취소"):
             engine_updates.apply(*args, vendor_channel=True)
         manager.assert_not_called()
-        monkeypatch.setattr("builtins.input", lambda _: "UPDATE VENDOR CHANNEL")
+        monkeypatch.setattr("builtins.input", lambda _: "예")
         assert engine_updates.apply(*args, vendor_channel=True)["installed"] == "1.2.0"
 
 

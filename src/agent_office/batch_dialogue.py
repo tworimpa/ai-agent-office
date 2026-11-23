@@ -9,6 +9,7 @@ import threading
 import time
 from uuid import UUID
 
+from .process_window import BACKGROUND_FLAGS
 from .adapters import AgentResult, parse_antigravity, parse_output, record_exec_usage
 from .dialogue import DelegationWithdrawn, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_request
 from .process_diagnostics import ErrorTail, drain_pipe, kill_family
@@ -77,7 +78,8 @@ def _turn(engine, argv, message, workspace, env, deadline, guard, *, telemetry=N
             if time.monotonic() >= deadline:
                 raise TimeoutError("The original task timed out before the continuation could start.")
             proc = subprocess.Popen(argv, cwd=workspace, stdin=stdin, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, env=env, start_new_session=os.name != "nt")
+                                    stderr=subprocess.PIPE, env=env, start_new_session=os.name != "nt",
+                                    creationflags=BACKGROUND_FLAGS)
         finished = threading.Event()
         readers = [drain_pipe(proc.stderr, tail.append, finished=finished),
                    drain_pipe(proc.stdout, output_block, finished=finished)]

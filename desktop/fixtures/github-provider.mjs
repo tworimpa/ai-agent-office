@@ -8,10 +8,10 @@ import {fileURLToPath} from 'node:url'
 
 export async function githubFixture(root, python, project, title, number = 7) {
   const bare = join(root, 'github-fixture.git'), index = join(root, 'github-fixture.index')
-  execFileSync('git', ['clone', '--bare', '--no-hardlinks', '-q', project, bare])
+  execFileSync('git', ['clone', '--bare', '--no-hardlinks', '-q', project, bare], {windowsHide: true})
   const git = (args, input) => execFileSync('git', ['--git-dir=' + bare, '-c', 'user.name=Fixture',
-    '-c', 'user.email=fixture@example.invalid', ...args], {input, encoding: 'utf8', env: {...process.env, GIT_INDEX_FILE: index}}).trim()
-  execFileSync(python, [fileURLToPath(new URL('./github_tls.py', import.meta.url)), root])
+    '-c', 'user.email=fixture@example.invalid', ...args], {input, encoding: 'utf8', env: {...process.env, GIT_INDEX_FILE: index}, windowsHide: true}).trim()
+  execFileSync(python, [fileURLToPath(new URL('./github_tls.py', import.meta.url)), root], {windowsHide: true})
   const [key, cert, appKey] = await Promise.all(['tls.pem', 'ca.pem', 'app.pem'].map(name => readFile(join(root, name))))
   const tokens = new Map()
   const grants = {metadata: 'read', contents: 'write', issues: 'write', pull_requests: 'write',

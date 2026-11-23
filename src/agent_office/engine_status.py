@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 
+from .process_window import BACKGROUND_FLAGS
 from .engines import CLINE_ACP_VERSION, cline_compatible, ENGINE_COMMANDS, INITIAL_ENGINES, resolve_executable
 
 LABELS = {"codex": "Codex", "antigravity": "Antigravity", "claude": "Claude Code",
@@ -28,7 +29,7 @@ def _probe(argv, timeout):
         with tempfile.TemporaryDirectory(prefix="office-metadata-") as cwd:
             with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
                 result = subprocess.run(argv, cwd=cwd, env=worker_env(os.environ), stdin=subprocess.DEVNULL, stdout=stdout,
-                                        stderr=stderr, timeout=timeout, check=False)
+                                        stderr=stderr, timeout=timeout, check=False, creationflags=BACKGROUND_FLAGS)
                 for name, stream in (("stdout", stdout), ("stderr", stderr)):
                     stream.seek(0)
                     if getattr(result, name) is None:

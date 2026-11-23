@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+from .process_window import BACKGROUND_FLAGS
 from .acp import ProtocolError, _file_target, _unique_fields, close_stdio_process, write_record
 from .adapters import AgentResult
 from .dialogue import (FINAL_MARKER, MAX_QUESTIONS, PRODUCT_DECISION_MARKER, QUESTION_INSTRUCTIONS, QUESTION_MARKER,
@@ -609,7 +610,7 @@ async def _run(executable, prompt, workspace, edits, env, timeout, inbox, select
         async with asyncio.timeout_at(deadline) as timer:
             process = await asyncio.create_subprocess_exec(
                 executable, *codex_backend_args(), "app-server", "--listen", "stdio://", cwd=workspace, env=env,
-                start_new_session=os.name != "nt", stdin=asyncio.subprocess.PIPE,
+                start_new_session=os.name != "nt", stdin=asyncio.subprocess.PIPE, creationflags=BACKGROUND_FLAGS,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=1024 * 1024)
             try:
                 session = CodexSession(process, workspace.resolve(), edits, inbox, timer, **selection)

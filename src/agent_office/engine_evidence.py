@@ -15,6 +15,7 @@ import threading
 import time
 from uuid import uuid4
 
+from .process_window import BACKGROUND_FLAGS
 from .fixture_process import execute_verification as execute_fixture
 from .engine_status import metadata_entry, probe_engine, probe_version
 from .engines import CLINE_ACP_VERSION, cline_compatible, ENGINE_COMMANDS, SUPPORTED_ENGINES, resolve_executable
@@ -176,7 +177,8 @@ def _run_fixture(engine, capability, expected_version=None):
         git_env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
         git_env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
         subprocess.run([git, "init", "--quiet", "--template="], cwd=workspace, env=git_env, timeout=10,
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       creationflags=BACKGROUND_FLAGS, check=True)
         (workspace / "reference.txt").write_text(marker + "\n", encoding="ascii")
         candidate = workspace / "candidate.txt"
         if capability == "read":

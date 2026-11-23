@@ -8,6 +8,7 @@ import os
 from contextlib import nullcontext
 from pathlib import Path
 
+from .process_window import BACKGROUND_FLAGS
 from .dialogue import DelegationWithdrawn, FINAL_MARKER, MAX_QUESTIONS, QUESTION_INSTRUCTIONS, continuation_prompt, extract_request
 from .engines import CLINE_ACP_VERSION, cline_compatible
 from .process_diagnostics import ErrorTail, close_stdio_process, drain_async
@@ -472,7 +473,7 @@ async def run_acp(engine, argv, prompt, workspace, allow_edits, env, timeout, st
     if engine == "cline":
         env = {**env, "CLINE_SESSION_BACKEND_MODE": "local"}
     process = await asyncio.create_subprocess_exec(
-        *argv, cwd=workspace, env=env, start_new_session=os.name != "nt",
+        *argv, cwd=workspace, env=env, start_new_session=os.name != "nt", creationflags=BACKGROUND_FLAGS,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE, limit=4 * 1024 * 1024,
     )

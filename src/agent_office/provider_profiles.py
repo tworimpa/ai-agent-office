@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 
+from .process_window import BACKGROUND_FLAGS
 from .acp import _unique_fields, close_stdio_process
 from .engines import codex_backend_args, resolve_executable
 from .events import redact_request
@@ -82,8 +83,9 @@ async def _metadata(operation):
         async with asyncio.timeout(10):
             process = await asyncio.create_subprocess_exec(
                 executable, *codex_backend_args(), "app-server", "--listen", "stdio://", cwd=cwd,
-                start_new_session=os.name != "nt", env=worker_env(os.environ), stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=1024 * 1024)
+                start_new_session=os.name != "nt", creationflags=BACKGROUND_FLAGS, env=worker_env(os.environ),
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL, limit=1024 * 1024)
             try:
                 sequence = 0
                 remaining = 4 * 1024 * 1024

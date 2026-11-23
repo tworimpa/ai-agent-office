@@ -11,6 +11,7 @@ def test_catalog_uses_only_metadata_commands_and_hides_raw_output(monkeypatch):
     calls=[]
     monkeypatch.setattr('agent_office.engine_status.shutil.which', lambda name:'/fake/'+name)
     def run(argv,**kwargs):
+        assert kwargs["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
         calls.append(argv[1:])
         if argv[1:]==['--version']:
             text='private-token-hidden\nversion 1.4.2'

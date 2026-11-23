@@ -7,6 +7,7 @@ import signal
 import subprocess
 import threading
 
+from .process_window import BACKGROUND_FLAGS
 from .events import redact_request
 
 
@@ -105,7 +106,7 @@ def kill_family(pid):
         killer = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
         try:
             subprocess.run([str(killer), "/PID", str(pid), "/T", "/F"], stdin=subprocess.DEVNULL,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4, check=False)
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4, check=False, creationflags=BACKGROUND_FLAGS)
         except (OSError, subprocess.TimeoutExpired):
             pass
     else:

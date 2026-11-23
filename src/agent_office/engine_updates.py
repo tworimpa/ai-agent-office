@@ -9,6 +9,7 @@ import sys
 import tempfile
 from urllib.request import urlopen
 
+from .process_window import BACKGROUND_FLAGS
 from .engine_status import probe_version
 from .engines import ENGINE_COMMANDS, resolve_executable
 from .models import ACTIVE, OfficeError
@@ -174,10 +175,11 @@ def apply(db_path, engine, installed, latest, journal, *, vendor_channel=False):
         if not snapshot["update_available"] or (installed, latest) != (snapshot["installed"], snapshot["latest"]):
             raise ValueError("버전 정보가 달라졌습니다. 공개 버전을 다시 확인하세요.")
         print(f"{executable}\n{engine} · 설치 {installed} · 공개 {latest}")
-        confirmation = "UPDATE VENDOR CHANNEL" if vendor_channel else "UPDATE"
         if vendor_channel:
-            print("공급자의 업데이트 채널이 선택하는 버전을 설치합니다. 실제 버전은 표시된 공개 버전과 다를 수 있습니다.")
-        if input(f"갱신을 승인하려면 {confirmation}를 입력하세요. ").strip() != confirmation:
+            prompt = "설치 시점에 공급자 채널이 선택한 최신 버전으로 갱신할까요? [y/N] "
+        else:
+            prompt = f"{engine} {latest} 버전을 설치할까요? [y/N] "
+        if input(prompt).strip().casefold() not in {"y", "yes", "예"}:
             raise ValueError("CLI 업데이트를 취소했습니다.")
         with tempfile.TemporaryDirectory(prefix="office-cli-update-") as cwd:
             from .process_diagnostics import kill_family
@@ -188,7 +190,8 @@ def apply(db_path, engine, installed, latest, journal, *, vendor_channel=False):
             if os.name == "nt":
                 dirs = [str(Path(command[0]).parent), str(Path(os.environ["SystemRoot"]) / "System32")]
             env["PATH"] = os.pathsep.join(dirs)
-            with subprocess.Popen(command, cwd=cwd, env=env, start_new_session=os.name != "nt", stdin=subprocess.DEVNULL,
+            with subprocess.Popen(command, cwd=cwd, env=env, start_new_session=os.name != "nt",
+                                  creationflags=BACKGROUND_FLAGS, stdin=subprocess.DEVNULL,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as process:
                 try:
                     code = process.wait(timeout=120)

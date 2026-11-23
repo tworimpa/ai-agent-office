@@ -52,7 +52,8 @@ def install_mock(root):
 def seed(server, root):
     repo = root / "project"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True, creationflags=flags)
     (repo / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n")
     (repo / "settings.py").write_text('import json\n\ndef restore(path):\n    return "light"\n')
     (repo / "tests").mkdir()
@@ -60,9 +61,9 @@ def seed(server, root):
         'from settings import restore\n\ndef test_saved(tmp_path):\n'
         '    path = tmp_path / "settings.json"\n    path.write_text(\'{"theme":"dark"}\')\n'
         '    assert restore(path) == "dark"\n')
-    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, creationflags=flags)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                    "commit", "-qm", "benchmark"], cwd=repo, check=True)
+                    "commit", "-qm", "benchmark"], cwd=repo, check=True, creationflags=flags)
     workspace = server.catalog.create("성능 비교", [str(repo)])["id"]
     candidate, active = uuid4().hex, uuid4().hex
 

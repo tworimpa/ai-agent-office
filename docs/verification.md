@@ -27,6 +27,12 @@ git switch feature/ao-000-bootstrap
 
 ## Windows
 
+이미 준비한 개발 환경에서 단위 테스트만 실행할 때는 아래 명령을 사용한다. pytest와 테스트가 시작하는 일반 콘솔 도구는 숨은 콘솔을 공유하고, 테스트 로그와 종료 코드는 실행한 터미널로 전달된다. 같은 명령 뒤에 테스트 파일 경로를 지정할 수 있다.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\quiet_pytest.py -q
+```
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\verify-windows.ps1
 # Optional only after installing and authenticating both CLIs:

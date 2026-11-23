@@ -174,7 +174,22 @@ try {
       await question.getByText(/config\.json/).waitFor()
       assert.ok(await question.getByRole('button', {name:'요청함에서 확인'}).isEnabled())
       assert.ok(await question.evaluate(el => el.getBoundingClientRect().width <= window.innerWidth))
-      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+      const layout = await page.evaluate(() => {
+        const viewport = window.innerWidth
+        const documentWidth = document.documentElement.scrollWidth
+        if (documentWidth <= viewport) return {viewport, documentWidth}
+        const elements = []
+        for (const node of document.body.querySelectorAll('*')) {
+          const {left, right, width} = node.getBoundingClientRect()
+          if (!width || (right <= viewport && left >= 0)) continue
+          const style = getComputedStyle(node)
+          elements.push({tag: node.tagName, id: node.id, classes: node.className?.toString(),
+            left, right, width, minWidth: style.minWidth, overflowX: style.overflowX})
+          if (elements.length === 20) break
+        }
+        return {viewport, documentWidth, elements}
+      })
+      assert.ok(layout.documentWidth <= layout.viewport, JSON.stringify({view, ...layout}))
     }
     await dialog.getByRole('button', {name:'요청함에서 확인'}).click()
     const inbox = page.locator('#requests')

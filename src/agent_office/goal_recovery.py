@@ -165,7 +165,8 @@ def _environment(root, checks, update):
     host_module = Path(__file__).parent
     for name in ("goal_checks.py", "office_checks.py", "project_checks.py", "goal_candidates.py", "goal_verification.py", "goal_host_checks.py",
                  "goal_peer.py", "goal_pytest.py", "goal_process.py", "goal_artifact.py",
-                 "goal_reproduction.py", "studio_process.py", "workflow.py", "goal_stage_wait.py",
+                 "goal_reproduction.py", "studio_process.py", "process_window.py", "worker_environment.py",
+                 "workflow.py", "goal_stage_wait.py",
                  "workspace_coordination.py", "goal_usage.py", "goal_workers.py"):
         file(host_module / name)
     files = set()

@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 
+from .process_window import BACKGROUND_FLAGS
 from .worker_environment import coding_environment
 from .studio_process import LinuxChildren, WindowsJob
 
@@ -20,7 +21,8 @@ def _execute(command, cwd, env, timeout):
     payload = json.dumps([command, str(cwd), env, timeout]).encode("utf-8") + b"\n"
     if len(payload) > 256 * 1024:
         raise ValueError("검증 명령이 크기 제한을 초과했습니다.")
-    with subprocess.Popen(supervisor, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
+    with subprocess.Popen(supervisor, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                          creationflags=BACKGROUND_FLAGS) as proc:
         try:
             proc.stdin.write(payload)
             proc.stdin.flush()

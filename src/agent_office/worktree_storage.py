@@ -13,6 +13,7 @@ from uuid import uuid4
 from .engines import resolve_executable
 from .models import ACTIVE, OfficeError, validate_id
 from .ownership import RunBusyError, RunGuard
+from .process_window import BACKGROUND_FLAGS
 from .release_validation import _execute, _tool_env
 from .store import TaskStore
 from .studio_catalog import _local_directory, _redirected
@@ -369,7 +370,8 @@ def _hold_checkout(repo, admin, ref, *, integration=None):
     else:
         raise ValueError("Branch in use or unsupported HEAD")
     argv, env = _git_command(repo, ["--git-dir=" + str(admin), "update-ref", "--stdin", "--no-deref", "-z"])
-    with subprocess.Popen(argv, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as git:
+    with subprocess.Popen(argv, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, creationflags=BACKGROUND_FLAGS) as git:
         timeout = threading.Timer(10, git.kill)
         timeout.start()
         try:

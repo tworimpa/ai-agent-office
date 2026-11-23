@@ -1303,8 +1303,8 @@ export function mountWorkspaceOffice(win = window) {
   get('chat-pending').addEventListener('click', () => {
     const target = get('chat-log').querySelector('.request-item') ??
       get('meeting-decision').querySelector('input:not(:disabled), button:not(:disabled)') ?? get('decision-heading');
-    target?.scrollIntoView?.({block: 'center'});
-    target?.focus();
+    target?.scrollIntoView?.({block: 'center', inline: 'nearest', container: 'nearest'});
+    target?.focus({preventScroll: true});
   });
 
   function fullAnswer(id, run, role, text) {
