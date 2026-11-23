@@ -1,8 +1,8 @@
 import os
 from pathlib import Path
-import socket
 import subprocess
-from unittest.mock import Mock, patch
+import sys
+from unittest.mock import Mock
 
 import pytest
 
@@ -17,7 +17,7 @@ def _windows_error(code):
     return pywintypes.error(code, "OpenProcess", "process metadata unavailable")
 
 
-def test_access_denied_uses_real_cim_for_current_loopback_listener(monkeypatch):
+def test_access_denied_uses_real_cim_for_current_loopback_listener():
     import win32api
     from agent_office.windows_auto_task import _environment
 
@@ -25,11 +25,19 @@ def test_access_denied_uses_real_cim_for_current_loopback_listener(monkeypatch):
     clean = _environment(system, Path(os.environ["USERPROFILE"]), Path(os.environ["APPDATA"]),
                          Path(os.environ["LOCALAPPDATA"]), tools=())
     assert Path(clean["PATH"]) == system
-    monkeypatch.setattr(binding, "_birth_time", Mock(side_effect=_windows_error(5)))
-    with patch.dict(os.environ, clean, clear=True), socket.socket() as sock:
+    # Exercise the clean operator environment in its own process. On Windows
+    # clearing and restoring os.environ can remove inherited empty native values.
+    script = """
+import os, socket, pywintypes
+from unittest.mock import patch
+from agent_office import windows_binding as binding
+with patch.object(binding, "_birth_time", side_effect=pywintypes.error(5, "OpenProcess", "denied")):
+    with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         sock.listen()
         assert binding.owns_windows_process(os.getpid(), os.getpid(), sock.getsockname()[1])
+"""
+    subprocess.run([sys.executable, "-I", "-c", script], env=clean, check=True, timeout=20)
 
 
 @pytest.fixture
