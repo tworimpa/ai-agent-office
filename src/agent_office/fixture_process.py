@@ -19,9 +19,19 @@ def _command(mode):
     return [sys.executable, "-I", str(Path(__file__).resolve()), mode]
 
 
-def execute_fixture(engine, prompt, *, workspace, allow_edits, timeout=120, expected_version=None):
+def execute_fixture(engine, prompt, *, workspace, allow_edits, timeout=120, db_path=None):
+    return _execute_fixture(engine, prompt, workspace, allow_edits, timeout, db_path, None)
+
+
+def execute_verification(engine, prompt, *, workspace, allow_edits, timeout=120, expected_version=None):
+    """Only verify-engine may exercise a candidate contract before its receipt exists."""
+    return _execute_fixture(engine, prompt, workspace, allow_edits, timeout, None, expected_version)
+
+
+def _execute_fixture(engine, prompt, workspace, allow_edits, timeout, db_path, expected_version):
     """The supervisor exits after the adapter, its CLI and all descendants are gone."""
-    payload = json.dumps([engine, prompt, str(workspace), allow_edits, expected_version, timeout]).encode("ascii") + b"\n"
+    journal = str(Path(db_path).resolve()) if db_path is not None else None
+    payload = json.dumps([engine, prompt, str(workspace), allow_edits, journal, expected_version, timeout]).encode("ascii") + b"\n"
     failure = AgentResult(1, "The fixture worker did not finish.")
     with tempfile.TemporaryFile() as result:
         with subprocess.Popen(_command("supervise"), stdin=subprocess.PIPE, stdout=result,
@@ -58,8 +68,9 @@ if __name__ == "__main__":
         sys.exit(_supervise())
     if sys.argv[1:] != ["worker"]:
         sys.exit(2)
-    engine, prompt, workspace, allow_edits, expected_version, timeout = json.load(sys.stdin.buffer)
+    engine, prompt, workspace, allow_edits, journal, expected_version, timeout = json.load(sys.stdin.buffer)
     adapter = CLIAdapter(engine, timeout=timeout)
+    adapter.db_path = Path(journal) if journal else None
     adapter.fixture_version = expected_version
     result = adapter.execute(
         prompt, workspace=Path(workspace), allow_edits=allow_edits, strict_completion=True)

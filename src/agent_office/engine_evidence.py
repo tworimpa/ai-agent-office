@@ -15,7 +15,7 @@ import threading
 import time
 from uuid import uuid4
 
-from .fixture_process import execute_fixture
+from .fixture_process import execute_verification as execute_fixture
 from .engine_status import metadata_entry, probe_engine, probe_version
 from .engines import CLINE_ACP_VERSION, cline_compatible, ENGINE_COMMANDS, SUPPORTED_ENGINES, resolve_executable
 from .store import TaskStore, now

@@ -213,7 +213,8 @@ def create_proposal(db: Path, repo: Path, base: str, run_ids: list[str], engine:
         run_git(scratch, "checkout", "--quiet", "--detach", base)
         if run_git(scratch, "rev-parse", "HEAD").strip() != base.encode("ascii"):
             raise ValueError("Specify the pinned commit itself.")
-        result = execute_fixture(engine, prompt, workspace=scratch, allow_edits=False, timeout=120)
+        result = execute_fixture(engine, prompt, workspace=scratch, allow_edits=False, timeout=120,
+                                 **({"db_path": db} if engine == "cline" else {}))
         if (result.returncode or result.truncated or not isinstance(result.message, str)
                 or len(result.message) > 12_000):
             raise ValueError("Proposal worker did not return a complete successful result.")

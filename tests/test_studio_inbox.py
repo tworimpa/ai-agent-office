@@ -439,7 +439,7 @@ def test_away_answer_and_evidence_survive_delivery_completion_and_reopen(journal
                                                  "developer": [developer_skill["id"]]})
     registry.create("문서 근거", "UPDATED_QUOTE")
 
-    async def consult(repo, rev, rule, specialist, verifier, folders, *, skill_guidance, on_stage):
+    async def consult(repo, rev, rule, specialist, verifier, folders, *, skill_guidance, on_stage, db_path):
         assert set(skill_guidance) == {"specialist", "verifier"}
         assert "EXACT_QUOTE" in skill_guidance["specialist"] and "COMPARE_EVIDENCE" not in skill_guidance["specialist"]
         assert "COMPARE_EVIDENCE" in skill_guidance["verifier"] and "EXACT_QUOTE" not in skill_guidance["verifier"]
@@ -490,7 +490,7 @@ def test_completed_proposal_is_pending_until_original_session_writes_it(journal,
     _, revision, prompt = away
 
     async def exercise():
-        async def provider(*args, skill_guidance, on_stage):
+        async def provider(*args, skill_guidance, on_stage, db_path):
             return {"answer": "pytest", "evidence": {"path": "docs/README.md", "line": 1,
                                                     "quote": "pytest", "revision": revision}}
 
@@ -530,7 +530,7 @@ def test_unsent_or_unconfirmed_proposal_never_replays(journal, away, monkeypatch
     path, run_id, inbox, channel = journal
     _, revision, prompt = away
 
-    async def consult(*args, skill_guidance, on_stage):
+    async def consult(*args, skill_guidance, on_stage, db_path):
         return {"answer": "pytest", "evidence": {"path": "docs/README.md", "line": 1,
                                                 "quote": "pytest", "revision": revision}}
 
@@ -572,7 +572,7 @@ def test_away_inflight_decision_rechecks_current_snapshot(journal, away, monkeyp
     async def exercise():
         entered, release, exited = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
-        async def consult(*args, skill_guidance, on_stage):
+        async def consult(*args, skill_guidance, on_stage, db_path):
             entered.set()
             try:
                 await release.wait()
@@ -633,7 +633,7 @@ def test_unmatched_permission_and_provider_failure_stay_in_operator_inbox(journa
 
     async def exercise():
         calls = []
-        async def consult(*args, skill_guidance, on_stage):
+        async def consult(*args, skill_guidance, on_stage, db_path):
             calls.append(args)
             raise DelegationDeferred("evidence_unavailable")
 
@@ -675,7 +675,7 @@ def test_report_window_retains_full_history_and_omits_stale_or_foreign_rows(jour
     monkeypatch.setattr(away_ledger, "REPORT_LIMIT", 1)
     evidence = {"path": "docs/README.md", "line": 1, "quote": "pytest", "revision": revision}
 
-    async def consult(*args, skill_guidance, on_stage):
+    async def consult(*args, skill_guidance, on_stage, db_path):
         return {"answer": "pytest", "evidence": evidence}
 
     monkeypatch.setattr("agent_office.away_consult.run_consultation", consult)

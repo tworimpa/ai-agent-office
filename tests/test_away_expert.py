@@ -40,6 +40,31 @@ RULE = {"topic": "test_command", "path": "README.md"}
 INDEPENDENT = dict(RULE, verification="independent")
 
 
+def test_upgraded_cline_consults_only_with_its_verified_read_journal(repo, tmp_path, monkeypatch):
+    from agent_office.away_consult import run_consultation
+    from agent_office.engine_evidence import verify_engine
+    from agent_office.fixture_process import execute_fixture
+    root, revision = repo
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    program = Path(__file__).parent / "helpers" / "upgraded_cline.py"
+    wrapper = bin_dir / ("cline.cmd" if os.name == "nt" else "cline")
+    wrapper.write_text(f'@"{sys.executable}" "{program}" %*\n' if os.name == "nt" else
+                       f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(program))} "$@"\n')
+    wrapper.chmod(0o700)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+    db = tmp_path / "engine journal"
+    assert verify_engine(db, "cline", "read")["status"] == "passed"
+    (tmp_path / "reference.txt").write_text("read fixture\n")
+    assert execute_fixture("cline", "read", workspace=tmp_path, allow_edits=False).returncode != 0
+    assert execute_fixture("cline", "edit", workspace=tmp_path, allow_edits=True, db_path=db).returncode != 0
+    stages = []
+    result = asyncio.run(run_consultation(root, revision, INDEPENDENT, "cline", "cline", ["."], db_path=db,
+                                          on_stage=lambda *row: stages.append(row)))
+    assert result["answer"] == "python -m pytest -q"
+    assert stages == [(role, stage) for role in ("specialist", "verifier") for stage in ("RUNNING", "COMPLETED")]
+
+
 def test_coordinator_policy_uses_only_eligible_facts_at_pinned_revision(repo, monkeypatch):
     from agent_office.coordinator_policy import policy_for_assignment
 

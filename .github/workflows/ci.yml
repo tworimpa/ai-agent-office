@@ -34,11 +34,6 @@ jobs:
         run: npm run test:web
       - name: Check shared frontend contracts
         run: npm run check:web
-      - name: Verify real Node, Go and Cargo project checks
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
-        run: |
-          python -c "import shutil; from agent_office.goal_checks import _unprivileged; assert _unprivileged() and all(shutil.which(x) for x in ('node','npm','go','cargo')), 'Expected an ordinary Linux runner with the project toolchains'"
-          python -m pytest -q -rA tests/test_project_checks.py
       - name: Verify bundled offline flowchart renderer
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
         run: |

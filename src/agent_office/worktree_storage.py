@@ -196,6 +196,7 @@ def _new_quarantine(tree):
     else:
         parent.mkdir(mode=0o700)
     (parent / "registered").mkdir()
+    (parent / "gate").write_bytes(parent.name.encode("ascii"))
     return parent
 
 
@@ -265,6 +266,8 @@ def _inspect(row, roots, db, tables, owners, inventory):
                 return result
             tree = staged
         elif row["moved"]:
+            if os.path.lexists(staged.path.parents[1]):
+                result["location"] = str(staged.path.parents[1])
             # Never adopt a directory subsequently created at the original name.
             tree = staged
         elif not os.path.lexists(tree.path) or _file_id(tree.path) != row["checkout_id"]:
@@ -314,7 +317,7 @@ def _inspect_checkout(repo, tree, entry, result, *, draining=False):
     reasons = result["reasons"]
     if b"locked" in entry or b"prunable" in entry:
         reasons.append("git_locked")
-    _local_directory(str(tree.path))
+    result["_checkout_id"] = _file_id(tree.path)
     common = Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip())
     dotgit = tree.path / ".git"
     admin = _git_pointer(dotgit, b"gitdir: ")
@@ -447,23 +450,44 @@ def _drain_quarantine(repo, staged, row, db):
     if os.path.lexists(private):
         if _file_id(private) != row["directory_id"]:
             return "identity"
+        if row["moved"] == 3 and not os.path.lexists(registry):
+            private.rmdir()
+            return None
         if registry.is_dir() and not _redirected(registry.lstat()):
             registry.rmdir()
         # With a non-directory parent, even a simultaneous creation of a
         # replacement original or writes from an old cwd cannot cause Git to
         # recursively remove files. Never pass any other path to worktree remove.
         if not os.path.lexists(registry):
-            with registry.open("xb") as gate:
-                gate.write(row["folder"].encode("ascii"))
+            _restore_interrupted_move(private / "gate", registry)
         info = registry.lstat()
         if _redirected(info) or not stat.S_ISREG(info.st_mode) or info.st_size != len(row["folder"]):
             return "identity"
         if registry.read_bytes() != row["folder"].encode("ascii"):
             return "identity"
+        if os.path.lexists(pointer):
+            # Verify the preserved Git marker while the registration still
+            # exists. Unexpected files in private control slots are retained.
+            info = pointer.lstat()
+            if _redirected(info) or not stat.S_ISREG(info.st_mode) or info.st_size > 8192:
+                return "identity"
+            contents = pointer.read_bytes().rstrip(b"\r\n")
+            if not contents.startswith(b"gitdir: "):
+                return "identity"
+            admin = (checkout / contents[8:].decode("utf-8")).resolve()
+            common = Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip())
+            if admin.parent != common / "worktrees" or _local_directory(str(admin)) != admin:
+                return "identity"
+            backlink = admin / "gitdir"
+            if _redirected(backlink.lstat()) or not backlink.is_file() or backlink.stat().st_size > 8192:
+                return "identity"
+            advertised = (admin / backlink.read_text(encoding="utf-8").rstrip("\r\n")).resolve()
+            if advertised != checkout / ".git" or not os.path.samestat(info, pointer.lstat()):
+                return "identity"
+            pointer.unlink()
         if checkout in _inventory(repo):
             _git(repo, "worktree", "remove", "--", str(checkout))
         db.execute("UPDATE studio_worktree_staging SET moved=3 WHERE run_id=?", (row["run_id"],))
-        pointer.unlink(missing_ok=True)
         registry.unlink()
         private.rmdir()
     return None
@@ -483,6 +507,8 @@ def _row_status(row, roots, store, tables, owners, inventory, *, held=False):
             item["reasons"].append("locked")
         if item:
             item["reasons"] = list(dict.fromkeys(item["reasons"]))
+            if not held:
+                item.pop("_checkout_id", None)
         return item
     except (OSError, ValueError, KeyError, TypeError):
         return {"run_id": run, "state": row["state"], "bytes": None, "head": None, "reasons": ["unknown"]}
@@ -553,7 +579,9 @@ def handle(server, workspace, data):
                             pass
                     except (ValueError, OSError, KeyError):
                         return _receipt(server, workspace, run, "git_version")
-                    checkout_id = _file_id(tree.path)
+                    checkout_id = item["_checkout_id"]
+                    if _file_id(tree.path) != checkout_id:
+                        return _receipt(server, workspace, run, "identity")
                     parent = _new_quarantine(tree)
                     try:
                         with store._write():
@@ -561,6 +589,7 @@ def handle(server, workspace, data):
                             db.execute("INSERT INTO studio_worktree_staging VALUES (?,?,?,?,0)",
                                        (run, parent.name, _file_id(parent), checkout_id))
                     except BaseException:
+                        (parent / "gate").unlink()
                         (parent / "registered").rmdir()
                         parent.rmdir()
                         raise
@@ -609,6 +638,7 @@ def check_reply(status, data, workspace, journal, payload):
         if (not isinstance(item, dict) or not isinstance(item.get("run_id"), str)
                 or not re.fullmatch(r"[0-9a-f]{32}", item["run_id"]) or item["run_id"] in seen
                 or not isinstance(item.get("state"), str) or not isinstance(item.get("reasons"), list)
+                or "location" in item and (not isinstance(item["location"], str) or len(item["location"]) > 32768)
                 or any(type(val) is not str or val not in REASONS for val in item["reasons"])
                 or item.get("bytes") is not None and (type(item["bytes"]) is not int or item["bytes"] < 0)
                 or item.get("head") is not None and not OID.fullmatch(str(item["head"]))

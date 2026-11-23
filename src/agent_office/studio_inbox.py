@@ -354,7 +354,7 @@ class InboxChannel:
             guidance = role_guidance(db, self.run_id, ("specialist", "verifier"))
             result = await run_consultation(plan.repo, plan.revision, plan.rule,
                                             plan.specialist, plan.verifier, json.loads(plan.folders_json),
-                                            skill_guidance=guidance, on_stage=on_stage)
+                                            skill_guidance=guidance, on_stage=on_stage, db_path=self.path)
             answer = _text(result["answer"])
             evidence = result["evidence"]
             if (evidence["revision"] != plan.revision or type(evidence["line"]) is not int or evidence["line"] < 1):

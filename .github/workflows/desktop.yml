@@ -102,6 +102,18 @@ jobs:
             sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/office-goal-evidence"
           }
           trap capture EXIT
+          # Exercise the installed coordinator as the ordinary user who owns the worktree.
+          packages=()
+          [[ -x /usr/bin/cargo && -x /usr/bin/rustc ]] || packages+=(cargo rustc)
+          [[ -x /usr/bin/go ]] || packages+=(golang-go)
+          [[ -x /usr/bin/npm && -x /usr/bin/node ]] || packages+=(npm)
+          if (( ${#packages[@]} )); then
+            sudo apt-get install -y --no-install-recommends "${packages[@]}"
+          fi
+          cp tests/{test_project_checks,test_goal_verification}.py "$tools/"
+          runtime="$(dirname "$(readlink -f /usr/bin/ai-agent-office-desktop)")/resources/runtime/bin/python3"
+          sudo --login --user office-goal-ci env PATH=/usr/bin:/bin "$runtime" -I -c "import shutil; from agent_office.goal_checks import _unprivileged; assert _unprivileged() and all(shutil.which(x) for x in ('node','npm','go','cargo'))"
+          sudo --login --user office-goal-ci env PATH=/usr/bin:/bin "$runtime" -I -m pytest -q -rA -p no:cacheprovider "$tools/test_project_checks.py"
           sudo --login --user office-goal-ci xvfb-run -a "$tools/node" "$tools/verify-goal.mjs" /usr/bin/ai-agent-office-desktop "$evidence" after
           sudo --login --user office-goal-ci xvfb-run -a "$tools/node" "$tools/verify-goal.mjs" /usr/bin/ai-agent-office-desktop "$evidence/github" github
           sudo --login --user office-goal-ci xvfb-run -a "$tools/node" "$tools/verify-goal.mjs" /usr/bin/ai-agent-office-desktop "$evidence/briefing" briefing-after
