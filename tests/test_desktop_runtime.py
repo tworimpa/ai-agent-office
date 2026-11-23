@@ -2,7 +2,6 @@ from contextlib import contextmanager
 import json
 import subprocess
 import sys
-import threading
 import time
 from urllib.request import urlopen
 
@@ -97,32 +96,27 @@ def test_second_runtime_leaves_live_receipt_and_journal_in_place(tmp_path):
 
 
 def test_runtime_keeps_receipt_until_studio_close_has_finished(tmp_path, monkeypatch):
-    before_close = threading.Event()
-    finish_close = threading.Event()
-    studio = desktop_runtime.StudioServer
-
-    class DelayedClose(studio):
-        def server_close(self):
-            before_close.set()
-            assert finish_close.wait(10)
-            super().server_close()
-
-    monkeypatch.setattr(desktop_runtime, "StudioServer", DelayedClose)
-    server = threading.Thread(target=desktop_runtime.serve, args=(tmp_path, ()))
-    server.start()
     receipt_path = tmp_path / "runtime.json"
-    try:
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not receipt_path.is_file() and server.is_alive():
-            time.sleep(0.05)
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        (tmp_path / f"stop-{receipt['boot_id']}").touch()
-        assert before_close.wait(5)
-        assert json.loads(receipt_path.read_text(encoding="utf-8")) == receipt
-    finally:
-        finish_close.set()
-        server.join(15)
-    assert not server.is_alive()
+    receipt = None
+    closed = False
+
+    class ObserveClose(desktop_runtime.StudioServer):
+        def handle_request(self):
+            # The actual serving loop reaches this boundary only after publication.
+            nonlocal receipt
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            (tmp_path / f"stop-{receipt['boot_id']}").touch()
+
+        def server_close(self):
+            nonlocal closed
+            assert receipt and json.loads(receipt_path.read_text(encoding="utf-8")) == receipt
+            super().server_close()
+            assert json.loads(receipt_path.read_text(encoding="utf-8")) == receipt
+            closed = True
+
+    monkeypatch.setattr(desktop_runtime, "StudioServer", ObserveClose)
+    desktop_runtime.serve(tmp_path, ())
+    assert closed
     assert not receipt_path.exists()
     with runtime(tmp_path) as (process, restarted):
         assert restarted["journal_id"] == receipt["journal_id"]
