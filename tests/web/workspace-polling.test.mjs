@@ -68,6 +68,26 @@ test('first GitHub read failure retries on the next visible tick in an idle rest
   assert.equal([...clock.timers.values()][0].delay, 20000);
 });
 
+test('hiding and showing a loading window preserves the single in-flight discovery', async t => {
+  const clock = pollingClock();
+  let finishDiscovery;
+  const {window, calls, get} = mount(t, path => {
+    if (path === '/api/hosts') return new Promise(resolve => { finishDiscovery = resolve; });
+    if (path === base) return room([]);
+  }, {setupWindow: clock.setupWindow});
+  await until(() => finishDiscovery);
+  for (const hidden of [true, false]) {
+    Object.defineProperty(window.document, 'hidden', {value: hidden, configurable: true});
+    window.document.dispatchEvent(new window.Event('visibilitychange'));
+    window.dispatchEvent(new window.Event('pageshow'));
+    window.dispatchEvent(new window.Event('focus'));
+  }
+  finishDiscovery({hosts: [{id: 'local', name: '이 컴퓨터'}]});
+  await until(() => !get('room').hidden && clock.timers.size === 1);
+  assert.equal(calls.filter(call => call.path === '/api/hosts').length, 1);
+  assert.equal(calls.filter(call => call.path === base).length, 1);
+});
+
 for (const supported of [false, true]) {
   test('visible active refresh uses ' + (supported ? 'one bundled request' : 'compatible individual reads'), async t => {
     const clock = pollingClock();
