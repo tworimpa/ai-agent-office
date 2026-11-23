@@ -277,7 +277,7 @@ class WorkspaceRooms:
             page = {"runs": runs, "next_cursor": next_cursor}
             if cursor is None:
                 page.update(workspace=workspace, settings=self._settings(db, workspace_id), engines=engines,
-                            bundle_supported=True, storage_supported=True, meeting_supported=True, goal_supported=True, github_supported=True, briefing_supported=True,
+                            bundle_supported=True, briefing_bundle_supported=True, storage_supported=True, meeting_supported=True, goal_supported=True, github_supported=True, briefing_supported=True,
                             work_profiles_supported=True, shared_visits_supported=True, quick_dispatch_supported=True, journal_id=self.journal_id,
                             goal_default=db.execute("SELECT 1 FROM studio_goal_policies WHERE workspace_id=?",
                                                     (workspace_id,)).fetchone() is not None)

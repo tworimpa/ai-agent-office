@@ -82,6 +82,12 @@ def test_full_bundle_checks_every_peer_projection_and_readers_do_not_take_owner_
             wire = frame(json.dumps(result).encode(), 200, server.journal_id)
             return _read_response(BytesIO(wire), server.journal_id, "GET", route, None)
         assert check() == (200, result)
+        attention = f"{base}/bundle/{rid}/briefing"
+        status, board = request(server, "/api" + attention)
+        assert status == 200 and set(board) == {"room", "run", "goal", "inbox", "directions", "briefing"}
+        assert board["briefing"]["workspace_id"] == workspace
+        wire = frame(json.dumps(board).encode(), 200, server.journal_id)
+        assert _read_response(BytesIO(wire), server.journal_id, "GET", attention, None) == (200, board)
         result["usage"]["workspace_id"] = uuid4().hex
         with pytest.raises(RemoteUnavailable):
             check()

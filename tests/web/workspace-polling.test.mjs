@@ -70,6 +70,36 @@ test('active team children have individual, keyboard-accessible workspace links'
   assert.match(window.document.querySelector('[data-visitor="verifier"]').textContent, /독립 검증자 · Claude Code/);
 });
 
+test('a plan and a replacement question on another run refresh even when its pending count stays one', async t => {
+  const clock = pollingClock();
+  const other = {...run, id: '8'.repeat(32), meeting_status: 'planning', pending_count: 1};
+  const snapshot = () => ({...room([run, other]), bundle_supported: true, briefing_bundle_supported: true,
+    briefing_supported: true});
+  let decisions = [];
+  const board = () => ({workspace_id: run.workspace_id, observed_at: run.created_at,
+    decisions, work: [], overlaps: [], candidates: []});
+  const {get, calls} = mount(t, path => {
+    if (path === base) return snapshot();
+    if (path === runPath) return {run};
+    if (path === base + '/briefing') return board();
+    if (path.startsWith(base + '/bundle/')) return {room: snapshot(), run: {run}, inbox: {requests: []},
+      directions: {directions: []}, ...(path.endsWith('/live') ? {} : {briefing: board()})};
+  }, {setupWindow: clock.setupWindow, query: '?workspace=' + run.workspace_id + '&run=' + runId});
+  await until(() => clock.timers.size);
+  calls.length = 0;
+  other.meeting_status = 'awaiting_review';
+  const plan = {kind: 'plan', run_id: other.id, request_id: 'plan:2', revision: 2, task: '별도 작업 계획',
+    owner: '조정자', role: 'coordinator', prompt: '이 계획으로 진행할까요?', impacts: []};
+  decisions = [plan];
+  await clock.tick();
+  assert.ok(get('brief-questions').querySelector('[data-action="plan"][data-run="' + other.id + '"]'));
+  decisions = [{...plan, request_id: 'e'.repeat(32), kind: 'question', prompt: '추가 확인이 필요합니다.'}];
+  await clock.tick();
+  assert.ok(get('brief-questions').querySelector('[data-action="answer"][data-run="' + other.id + '"]'));
+  assert.equal(get('brief-questions').querySelector('[data-action="plan"]'), null);
+  assert.deepEqual(calls.map(c => c.path), Array(2).fill(base + '/bundle/' + runId + '/briefing'));
+});
+
 test('a completed GitHub sync can run again while the same goal waits for an answer', async t => {
   const clock = pollingClock();
   const row = {...run, pending_count: 1};

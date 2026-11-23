@@ -222,7 +222,9 @@ export function mountBriefing({win, get, make, api, context, refresh, openAction
     for (const id of ['coordination-form','decision-revision-form']) {
       for (const node of get(id).elements) node.disabled = saving || !writable();
     }
-    get('brief-time').textContent = latest ? '마지막 확인 · ' + when(latest.observed_at) : '';
+    const observed = get('brief-time');
+    observed.dateTime = latest?.observed_at ?? '';
+    observed.textContent = latest ? '마지막 확인 · ' + when(latest.observed_at) : '';
     if (!writable()) note(latest ? '최신 상태를 확인할 수 없어 마지막 기록을 표시합니다.' :
       loadingFailed || !roomOK ? '브리핑을 불러올 수 없습니다.' : '목표 기록을 확인하고 있습니다.');
   }

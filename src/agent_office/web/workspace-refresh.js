@@ -18,13 +18,11 @@
  * @param {string} base
  * @param {string|null} id
  * @param {boolean} bundled
- * @param {boolean} slow
- * @param {boolean} usage
+ * @param {'full-usage'|'full'|'briefing'|'live'} mode
  * @param {() => boolean} current
  */
-export async function roomRefresh(api, base, id, bundled, slow, usage, current) {
+export async function roomRefresh(api, base, id, bundled, mode, current) {
   if (bundled) {
-    const mode = slow ? (usage ? 'full-usage' : 'full') : 'live';
     try {
       /** @type {RoomBundle} */
       const bundle = await api(base + '/bundle/' + (id ?? 'none') + '/' + mode);

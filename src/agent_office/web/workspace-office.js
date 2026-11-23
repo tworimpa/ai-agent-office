@@ -292,6 +292,8 @@ export function mountWorkspaceOffice(win = window) {
   const seat = role => doc.querySelector('.seat[data-person="' + role + '"]');
   const roomPerson = role => room.settings[role];
   const activeRuns = () => room.runs.filter(run => activeStates.has(run.state));
+  const briefingNeedsAttention = () => room?.briefing_supported && room.runs.some(row =>
+    row.pending_count > 0 || row.meeting_status === 'planning' || row.meeting_status === 'awaiting_review');
 
   function visibleRun(role) {
     const run = selected();
@@ -1062,9 +1064,11 @@ export function mountWorkspaceOffice(win = window) {
       online = true;
       if (!workspaceId) workspaceId = workspaces[0]?.id ?? null;
       if (workspaceId) {
+        const mode = updateSlow ? (get('work-usage').open ? 'full-usage' : 'full') :
+          room?.briefing_bundle_supported && briefingNeedsAttention() ? 'briefing' : 'live';
         const reads = await roomRefresh(api, roomPath(), trustedRun(runId) ? runId : null,
           room?.bundle_supported === true && Date.now() >= retryBundleAt,
-          updateSlow, get('work-usage').open, current);
+          mode, current);
         if (!current()) return;
         if (reads.retry) retryBundleAt = Date.now() + 60000;
         const snapshot = reads.room;
@@ -1095,7 +1099,7 @@ export function mountWorkspaceOffice(win = window) {
       await Promise.all([
         detailRequest,
         updateSlow && records.loadUsage(readSection),
-        updateSlow && briefing.load(readSection).then(() => github.controls()),
+        (updateSlow || briefingNeedsAttention()) && briefing.load(readSection).then(() => github.controls()),
         (updateSlow || github.needsStatus()) && github.load(readSection),
         loadChat(readSection),
         get('requests').open ? loadRequests() : null,

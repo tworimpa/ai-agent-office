@@ -54,8 +54,19 @@ export async function verifyBriefing(ctx) {
       return r.json()
     }, {path, body})
   }
-  async function waitPoll() {
-    await page.waitForResponse(r => r.ok() && r.url().includes(room + (after ? '/briefing' : '')), {timeout: 30000})
+  async function waitDecisionPoll(run, requestId) {
+    const response = await page.waitForResponse(async r => {
+      if (!r.ok() || r.request().method() !== 'GET') return false
+      const path = new URL(r.url()).pathname
+      const standalone = path === room + '/briefing'
+      if (!standalone && !['briefing', 'full', 'full-usage'].some(mode => path === room + '/bundle/' + run + '/' + mode)) return false
+      const data = await r.json()
+      const board = standalone ? data : data.briefing
+      return board?.workspace_id === roomId && board.decisions.some(row => row.run_id === run && row.request_id === requestId)
+    }, {timeout: 30000})
+    const data = await response.json()
+    const observed = (data.briefing ?? data).observed_at
+    await page.waitForFunction(stamp => Date.parse(document.querySelector('#brief-time')?.dateTime) >= Date.parse(stamp), observed)
   }
   async function select(run) {
     await page.locator('#run-list a[href*="' + run + '"]').click()
@@ -73,7 +84,7 @@ export async function verifyBriefing(ctx) {
     if (board) assert.ok(await edit.evaluate(el => el === document.activeElement))
     await edit.fill(answer)
     if (board) {
-      await waitPoll()
+      await waitDecisionPoll(run, q.id)
       assert.equal(await edit.inputValue(), answer)
       assert.ok(await edit.evaluate(el => el === document.activeElement))
       await screenshot('03-keyboard-answer')

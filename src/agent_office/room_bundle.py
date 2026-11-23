@@ -8,7 +8,7 @@ from .store import TaskStore
 
 def route(method, path):
     if method == "GET":
-        match = re.fullmatch(r"/rooms/([a-f0-9]{32})/bundle/(none|[a-f0-9]{32})/(live|full|full-usage)", path)
+        match = re.fullmatch(r"/rooms/([a-f0-9]{32})/bundle/(none|[a-f0-9]{32})/(live|briefing|full|full-usage)", path)
         if match:
             return match.groups()
     return None
@@ -18,7 +18,9 @@ def paths(workspace, run, mode):
     base = f"/rooms/{workspace}"
     result = {"room": base}
     if mode != "live":
-        result.update(briefing=base + "/briefing", github=base + "/github")
+        result["briefing"] = base + "/briefing"
+    if mode in ("full", "full-usage"):
+        result["github"] = base + "/github"
     if run != "none":
         selected = f"/runs/{run}"
         result.update(run=selected, goal=selected + "/goal", inbox=selected + "/inbox",
@@ -50,5 +52,6 @@ def read(server, workspace, run, mode):
             result["usage"] = work_profile_views.handle(server, workspace, "usage", run, None)
     if mode != "live":
         result["briefing"] = workspace_briefing.handle(server, workspace, "briefing", None, None)
+    if mode in ("full", "full-usage"):
         _, result["github"] = server.github.handle(workspace, None, None)
     return result
