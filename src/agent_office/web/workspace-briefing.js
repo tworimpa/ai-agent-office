@@ -222,7 +222,9 @@ export function mountBriefing({win, get, make, api, context, refresh, openAction
     for (const id of ['coordination-form','decision-revision-form']) {
       for (const node of get(id).elements) node.disabled = saving || !writable();
     }
-    get('brief-time').textContent = latest ? '마지막 확인 · ' + when(latest.observed_at) : '';
+    const observed = get('brief-time');
+    observed.dateTime = latest?.observed_at ?? '';
+    observed.textContent = latest ? '마지막 확인 · ' + when(latest.observed_at) : '';
     if (!writable()) note(latest ? '최신 상태를 확인할 수 없어 마지막 기록을 표시합니다.' :
       loadingFailed || !roomOK ? '브리핑을 불러올 수 없습니다.' : '목표 기록을 확인하고 있습니다.');
   }
@@ -404,7 +406,7 @@ export function mountBriefing({win, get, make, api, context, refresh, openAction
   function renderVisit() {
     const scope = context().visitKey;
     get('brief-visit').hidden = !scope;
-    if (!scope || !Number.isFinite(Date.parse(latest.observed_at))) return;
+    if (!scope || win.document.hidden || !Number.isFinite(Date.parse(latest.observed_at))) return;
     const key = 'office-last-visit:' + scope;
     if (visitKey !== key) {
       visitKey = key;
@@ -450,11 +452,11 @@ export function mountBriefing({win, get, make, api, context, refresh, openAction
       return item;
     }, previousVisit ? '이후에 확인된 변경이 없습니다.' : '', 4);
   }
-  async function load() {
+  async function load(readSection = api) {
     if (!context().supported) return;
     const seq = ++read, room = context().workspaceId;
     try {
-      const result = await api(path() + '/briefing');
+      const result = await readSection(path() + '/briefing');
       if (seq !== read || context().workspaceId !== room) return;
       if (result.workspace_id !== room || !['decisions','work','candidates','overlaps'].every(key => Array.isArray(result[key]))) throw Error();
       latest = result; fresh = true; loadingFailed = false; note(''); render();

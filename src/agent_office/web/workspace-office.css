@@ -25,6 +25,7 @@ p, h1, h2, h3 { margin: 0; }
 .seal { display: grid; place-items: center; inline-size: 35px; block-size: 35px; background: #713626; border: 1px solid #ba7a5b; outline: 1px solid #713626; outline-offset: 2px; color: #fff1dc; font: 23px var(--serif); }
 .top-actions, .section-title, .room-actions { display: flex; align-items: center; gap: 12px; }
 .top-actions, .operations-nav { flex-wrap: wrap; justify-content: flex-end; }
+.top-actions, .connection { min-inline-size: 0; max-inline-size: 100%; overflow-wrap: anywhere; }
 .operations-nav { display: flex; gap: 12px; }
 .operations-nav a { white-space: nowrap; }
 .connection { display: flex; align-items: center; gap: 7px; color: var(--soft); font-size: .82rem; }
@@ -123,6 +124,7 @@ h1 { font: 700 clamp(1.7rem, 4vw, 3rem)/1.25 var(--serif); overflow-wrap: anywhe
 .room-scene[data-first="true"] .seat[data-person="coordinator"] { background: #563a20f5; border: 2px solid var(--gold); }
 .seat-start { color: var(--gold); font-size: 1.05rem; }
 .scene-seats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(8px, 1.2vw, 16px); }
+.scene-seats .child-seat { display: flex; flex-direction: column; align-items: start; justify-content: center; text-decoration: none; overflow-wrap: anywhere; }
 .seat { display: flex; position: relative; min-width: 0; min-height: 94px; gap: 12px; align-items: center; text-align: start; padding: 10px; border: 1px solid #877257; color: var(--paper); background: #211e18f2; border-radius: 5px; box-shadow: 0 5px 16px #0b0807a0; transition: background-color 140ms ease-out, transform 140ms ease-out; }
 .seat[data-person="coordinator"] { border-color: #cda069; background: #45301ff5; }
 .seat:hover:enabled, .seat:focus-visible { background: #493a29; transform: translateY(-3px); }
@@ -274,7 +276,8 @@ h1 { font: 700 clamp(1.7rem, 4vw, 3rem)/1.25 var(--serif); overflow-wrap: anywhe
 .request-item { display: grid; gap: 8px; padding: 13px; border: 1px solid #5f5749; border-radius: 5px; }
 .chat-log .request-item { background: #2d2e23; border-color: #887052; }
 .request-item, .request-item > *, .request-log, .chat-log > *, .office-thread > * { min-inline-size: 0; }
-.request-item pre { max-inline-size: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.office-thread, .chat-log, .request-log, .request-item { grid-template-columns: minmax(0, 1fr); }
+.request-item pre { max-inline-size: 100%; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto; }
 .request-item label, .request-item p { overflow-wrap: anywhere; }
 .request-item h3 { font-size: 1rem; }
 .request-item p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }

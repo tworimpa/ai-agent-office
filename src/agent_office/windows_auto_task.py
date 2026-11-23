@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from .process_window import BACKGROUND_FLAGS
 
 
 ROOT = Path(r"C:\ProgramData\AI-Agent-Office")
@@ -106,7 +107,7 @@ def _preflight():
 
 def _probe(command, label):
     result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, timeout=30)
+                            stderr=subprocess.DEVNULL, timeout=30, creationflags=BACKGROUND_FLAGS)
     if result.returncode:
         raise ValueError(f"{label} check failed")
 

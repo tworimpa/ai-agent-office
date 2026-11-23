@@ -16,14 +16,15 @@ RULES = {
     "node_version": "이 프로젝트가 요구하는 Node.js 버전은 무엇인가요?",
 }
 EVIDENCE_FILES = {
-    "test_command": ("README.md", "AGENTS.md"),
+    "test_command": ("README.md", "AGENTS.md", "TESTING.md"),
     "python_version": ("pyproject.toml",),
     "node_version": ("package.json",),
 }
 
 
 def validate_rule(value) -> dict:
-    if not isinstance(value, dict) or set(value) != {"topic", "path"}:
+    if (not isinstance(value, dict) or set(value) - {"topic", "path", "verification"}
+            or not {"topic", "path"} <= value.keys() or value.get("verification", "fact") not in ("fact", "independent")):
         raise ValueError("위임 규칙에는 질문 종류와 근거 파일을 지정하세요.")
     topic, path = value["topic"], value["path"]
     if not isinstance(topic, str) or topic not in RULES:
@@ -37,7 +38,10 @@ def validate_rule(value) -> dict:
                    for part in parts[:-1])
             or any(word in path.casefold() for word in ("secret", "credential", "password", "private_key", "token"))):
         raise ValueError("질문에 맞는 저장소 상대 근거 파일을 지정하세요.")
-    return {"topic": topic, "path": path}
+    rule = {"topic": topic, "path": path}
+    if value.get("verification") == "independent":
+        rule["verification"] = "independent"
+    return rule
 
 
 def validate_policy(value) -> dict:
@@ -57,11 +61,11 @@ def validate_policy(value) -> dict:
 
 def in_scope(path: str, folders: list[str]) -> bool:
     relative = PurePosixPath(path)
-    return (any(path in names for names in EVIDENCE_FILES.values())
+    return (path == "docs/TESTING.md" or any(path in names for names in EVIDENCE_FILES.values())
             or any(relative.is_relative_to(folder) for folder in folders))
 
 
-def consult_role(role, engine, material, instructions, validate, guidance, scratch_root, on_stage):
+def consult_role(role, engine, material, instructions, validate, guidance, scratch_root, on_stage, db_path=None):
     failure = role + "_failed"
     payload = json.dumps(material, ensure_ascii=False)
     prompt = (f"AWAY_{role.upper()}\n{guidance}Read evidence.json in this directory. "
@@ -75,7 +79,8 @@ def consult_role(role, engine, material, instructions, validate, guidance, scrat
             if on_stage:
                 on_stage(role, "RUNNING")
                 entered = True
-            result = execute_fixture(engine, prompt, workspace=scratch, allow_edits=False, timeout=45)
+            result = execute_fixture(engine, prompt, workspace=scratch, allow_edits=False, timeout=45,
+                                     **({"db_path": db_path} if db_path is not None and engine == "cline" else {}))
         if result.returncode or result.truncated or len(result.message) > 2048:
             raise ValueError
         citation = validate(json.loads(result.message, object_pairs_hook=unique_object))
@@ -88,7 +93,7 @@ def consult_role(role, engine, material, instructions, validate, guidance, scrat
     return citation
 
 
-def _consult(role, engine, material, answer, guidance, scratch_root, on_stage):
+def _consult(role, engine, material, answer, guidance, scratch_root, on_stage, db_path=None):
     verifying = role == "verifier"
     instructions = ("Independently answer the technical question using only its numbered evidence. "
                     "Return just one JSON object with answer, line and quote"
@@ -106,7 +111,7 @@ def _consult(role, engine, material, answer, guidance, scratch_root, on_stage):
             raise ValueError
         return citation
 
-    return consult_role(role, engine, material, instructions, validate, guidance, scratch_root, on_stage)
+    return consult_role(role, engine, material, instructions, validate, guidance, scratch_root, on_stage, db_path)
 
 
 def document_fact(repo: Path, topic: str, path: str, document: str,
@@ -127,7 +132,7 @@ def document_fact(repo: Path, topic: str, path: str, document: str,
 
 def assess(repo: Path, revision: str, rule: dict, specialist_engine: str, verifier_engine: str,
            *, folders: list[str] | None = None, skill_guidance=None, scratch_root: Path | None = None,
-           on_stage=None) -> dict:
+           on_stage=None, db_path=None) -> dict:
     try:
         rule = validate_policy({"rules": [rule], "specialist_engine": specialist_engine,
                                 "verifier_engine": verifier_engine})["rules"][0]
@@ -138,13 +143,17 @@ def assess(repo: Path, revision: str, rule: dict, specialist_engine: str, verifi
         raise DelegationDeferred("out_of_scope")
     document = read_document(repo, revision, path)
     answer, citations = document_fact(repo, topic, path, document, folders)
+    if rule.get("verification") != "independent":
+        require_base(repo, revision)
+        return {"answer": answer, "evidence": {"path": path, **citations[0], "revision": revision,
+                                                "method": "committed_fact"}}
     material = {"topic": topic, "question": RULES[topic], "path": path, "revision": revision, "evidence": citations}
     guidance = skill_guidance or {}
     proposal = _consult("specialist", specialist_engine, material, answer, guidance.get("specialist", ""),
-                        scratch_root, on_stage)
+                        scratch_root, on_stage, db_path)
     require_base(repo, revision)
     verified = _consult("verifier", verifier_engine, material, answer, guidance.get("verifier", ""),
-                        scratch_root, on_stage)
+                        scratch_root, on_stage, db_path)
     if proposal != verified:
         raise DelegationDeferred("verifier_failed")
     require_base(repo, revision)

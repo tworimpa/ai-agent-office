@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+from .process_window import BACKGROUND_FLAGS
 from .acp import ProtocolError, _file_target, _unique_fields, close_stdio_process, write_record
 from .adapters import AgentResult
 from .dialogue import (FINAL_MARKER, MAX_QUESTIONS, PRODUCT_DECISION_MARKER, QUESTION_INSTRUCTIONS, QUESTION_MARKER,
@@ -142,7 +143,8 @@ def _changes(workspace, changes):
 
 
 class CodexSession:
-    def __init__(self, process, workspace, edits, inbox, timer, *, model=None, effort=None, telemetry=None):
+    def __init__(self, process, workspace, edits, inbox, timer, *, model=None, effort=None, telemetry=None, progress=None):
+        self.progress = progress
         self.timer = timer
         self.process = process
         self.workspace = workspace
@@ -194,6 +196,15 @@ class CodexSession:
             raise _CodexProtocolError("wrong Codex turn")
 
     def observe(self, msg):
+        if self.progress and "id" not in msg and self.turn and self.thread:
+            params = msg["params"]
+            if params.get("threadId") == self.thread and params.get("turnId") == self.turn:
+                activity = {
+                    "item/commandExecution/outputDelta": "command", "item/fileChange/outputDelta": "file",
+                    "item/agentMessage/delta": "response", "turn/plan/updated": "plan",
+                }.get(msg["method"])
+                if activity:
+                    self.progress(activity)
         if self.telemetry is None or "id" in msg:
             return
         method, params = msg["method"], msg["params"]
@@ -496,6 +507,9 @@ class CodexSession:
                 if item_id in active or item_id in finished or answer:
                     raise _CodexProtocolError("unexpected Codex item start")
                 active[item_id] = kind
+                if self.progress:
+                    self.progress({"commandExecution":"command", "fileChange":"file",
+                                   "agentMessage":"response"}.get(kind, "tool"))
                 if kind == "fileChange":
                     if item.get("status") != "inProgress":
                         raise _CodexProtocolError("invalid pending Codex file change")
@@ -596,7 +610,7 @@ async def _run(executable, prompt, workspace, edits, env, timeout, inbox, select
         async with asyncio.timeout_at(deadline) as timer:
             process = await asyncio.create_subprocess_exec(
                 executable, *codex_backend_args(), "app-server", "--listen", "stdio://", cwd=workspace, env=env,
-                start_new_session=os.name != "nt", stdin=asyncio.subprocess.PIPE,
+                start_new_session=os.name != "nt", stdin=asyncio.subprocess.PIPE, creationflags=BACKGROUND_FLAGS,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=1024 * 1024)
             try:
                 session = CodexSession(process, workspace.resolve(), edits, inbox, timer, **selection)

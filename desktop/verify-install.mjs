@@ -27,7 +27,7 @@ let app, child, failure
 console.log(`Evidence directory: ${root}`)
 
 function git(...args) {
-  return execFileSync('git', args, { cwd: repo, timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] }).toString()
+  return execFileSync('git', args, { cwd: repo, timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }).toString()
 }
 
 function shellQuote(value) {

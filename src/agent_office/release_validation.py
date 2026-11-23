@@ -15,6 +15,7 @@ import threading
 import unicodedata
 
 from .engines import resolve_executable
+from .process_window import BACKGROUND_FLAGS
 
 
 MAX_FILES = 4096
@@ -37,7 +38,7 @@ def _execute(argv, *, limit, timeout, env, source=None, stderr=subprocess.STDOUT
             raise FileNotFoundError(f"Missing required executable: {command}")
         argv = [executable, *argv[1:]]
     with subprocess.Popen(argv, stdin=source if source is not None else subprocess.DEVNULL,
-                          stdout=subprocess.PIPE, stderr=stderr, env=env) as process:
+                          stdout=subprocess.PIPE, stderr=stderr, env=env, creationflags=BACKGROUND_FLAGS) as process:
         chunks = []
 
         def read():

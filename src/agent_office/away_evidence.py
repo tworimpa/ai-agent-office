@@ -7,6 +7,7 @@ import subprocess
 import tomllib
 
 from .engines import resolve_executable
+from .process_window import BACKGROUND_FLAGS
 
 
 class DelegationDeferred(Exception):
@@ -28,7 +29,7 @@ def git(repo: Path, *args: str) -> bytes:
         return subprocess.run(
             [executable, "--no-pager", "--no-replace-objects", "--literal-pathspecs",
              "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull, *args],
-            cwd=repo, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            cwd=repo, env=env, creationflags=BACKGROUND_FLAGS, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, check=True, timeout=5,
         ).stdout
     except (OSError, subprocess.SubprocessError):

@@ -7,6 +7,7 @@ import secrets
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from .process_window import BACKGROUND_FLAGS
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,7 @@ def create_worktree(repo: Path, *, planned: Worktree | None = None, revision: st
         raise ValueError(f"Repository directory not found: {repo}")
     result = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
-        cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+        cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True, creationflags=BACKGROUND_FLAGS,
     )
     root = Path(result.stdout.removesuffix("\n")).resolve()
     if root != repo:
@@ -46,7 +47,7 @@ def create_worktree(repo: Path, *, planned: Worktree | None = None, revision: st
     git = ["git"] if revision == "HEAD" else ["git", "--no-replace-objects"]
     subprocess.run(
         [*git, "worktree", "add", "-b", branch, str(path), revision],
-        cwd=repo, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=repo, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=BACKGROUND_FLAGS,
     )
     return Worktree(path=path, branch=branch)
 
@@ -54,7 +55,7 @@ def create_worktree(repo: Path, *, planned: Worktree | None = None, revision: st
 def git_summary(workspace: Path) -> str:
     result = subprocess.run(
         ["git", "status", "--short"], cwd=workspace,
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False, creationflags=BACKGROUND_FLAGS,
     )
     return result.stdout[:4000] if result.returncode == 0 else "(git status unavailable)"
 
@@ -86,7 +87,7 @@ def read_git_prefix(root, *args):
     """Read up to 16 KiB of output from a Git command in a working directory."""
     with subprocess.Popen(
         ["git", "-c", "core.fsmonitor=false", "-c", "core.quotepath=false", "--no-pager", *args],
-        cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=BACKGROUND_FLAGS,
     ) as proc:
         data = proc.stdout.read(16385)
         if len(data) > 16384:

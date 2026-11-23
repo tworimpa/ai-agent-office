@@ -13,7 +13,7 @@ from .meeting import validate_plan
 from .release_store import run_git
 from .release_validation import MAX_FILES, MAX_SOURCE, _check_path, committed_files
 from .studio_catalog import _git, _redirected, read_workspace_revision
-from .team_runs import MAX_ACTIVE
+from .team_runs import active_slots
 
 
 MAX_CHANGE = 1024 * 1024
@@ -33,7 +33,7 @@ def _frontier(plan, *, all_independent=False):
                 group.append(item)
                 used.extend(scopes)
         return group if len(group) >= 2 else []
-    for size in range(min(MAX_ACTIVE, len(eligible)), 1, -1):
+    for size in range(min(active_slots(), len(eligible)), 1, -1):
         for group in combinations(eligible, size):
             if not any(a.is_relative_to(b) or b.is_relative_to(a)
                        for (_, left), (_, right) in combinations(group, 2) for a in left for b in right):
@@ -211,7 +211,7 @@ def execute_parallel(plan, workspace, adapters, developer, *, task, record, open
             roots.append(root)
         changes = {}
         try:
-            with ThreadPoolExecutor(max_workers=MAX_ACTIVE) as workers:
+            with ThreadPoolExecutor(max_workers=active_slots()) as workers:
                 jobs = {}
                 for item, root in zip(selected, roots):
                     record(item["id"], "별도 작업 트리에서 병렬 실행을 시작했습니다.")

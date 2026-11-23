@@ -68,20 +68,20 @@ def install(tmp_path, monkeypatch):
     return web, contracts, calls
 
 
-def submit(local, api, web, contracts):
+def submit(local, api, web, contracts, policy=POLICY):
     status, data = request(local, api + "/workspaces", {"name": "주문", "paths": [str(web), str(contracts)]})
     assert status == 201, data
     job = {"id": uuid.uuid4().hex, "workspace_id": data["workspace"]["id"], "indices": [0, 1], "developer_engine": "cline",
-           "allow_edits": False, "task": "런타임 확인", "use_inbox": True, "delegation": POLICY}
+           "allow_edits": False, "task": "런타임 확인", "use_inbox": True, "delegation": policy}
     assert request(local, api + "/runs", {**job, "use_inbox": False})[0] == 400
     status, data = request(local, api + "/runs", job)
-    assert status == 202 and data["run"]["delegation"] == POLICY, data
+    assert status == 202 and data["run"]["delegation"] == policy, data
     assert request(local, api + "/runs", job)[0] == 202
     assert request(local, api + "/runs", {**job, "delegation": None})[0] == 409
     return job["id"]
 
 
-def test_remote_expert_and_verifier_answer_only_the_question(tmp_path, monkeypatch):
+def test_remote_committed_fact_answers_only_the_question(tmp_path, monkeypatch):
     web, contracts, calls = install(tmp_path, monkeypatch)
     monkeypatch.setenv("OFFICE_FIXTURE_SOURCE", "delegate")
     db = tmp_path / "peer.db"
@@ -95,9 +95,7 @@ def test_remote_expert_and_verifier_answer_only_the_question(tmp_path, monkeypat
             status, office = request(local, api + "/office")
             assert status == 200, office
             assert {(card["role"], card["engine"], card["activity"]) for card in office["agents"]
-                    if card["run_id"] == rid} == {("developer", "cline", "waiting"),
-                                                   ("specialist", "claude", "done"),
-                                                   ("verifier", "antigravity", "done")}
+                    if card["run_id"] == rid} == {("developer", "cline", "waiting")}
             status, report = request(local, api + "/return-report")
             assert status == 200 and report["counts"]["permissions"] == 1, report
             assert report["counts"]["questions"] == 0 and report["counts"]["delegated"] == 1
@@ -106,8 +104,8 @@ def test_remote_expert_and_verifier_answer_only_the_question(tmp_path, monkeypat
             assert row["evidence"]["path"] == "pyproject.toml"
             assert row["evidence"]["revision"] == subprocess.check_output(["git","rev-parse","HEAD"], cwd=web.parent, text=True).strip()
             assert request(local, "/api/return-report")[1]["counts"]["delegated"] == 0
-            output = [json.loads(line) for line in calls.read_text().splitlines()]
-            assert [item[0] for item in output] == ["AWAY_SPECIALIST", "AWAY_VERIFIER"] and output[0][1] != output[1][1]
+            assert row["evidence"]["method"] == "committed_fact" and not calls.exists()
+            assert row["specialist_engine"] is None and row["verifier_engine"] is None
             assert request(local, f"{api}/runs/{rid}/inbox/{pending['id']}/decision", {"action": "reject"})[0] == 200
             outcome = wait_for(local, rid, {"PLAN_ONLY"}, api=api)
             assert "continued after refusal" in outcome["developer_output"]
@@ -133,7 +131,7 @@ def test_returning_operator_stops_active_consultation(tmp_path, monkeypatch, hel
                 (request_id,))]
 
     with studio(db_path) as local:
-        rid = submit(local, "/api", web, contracts)
+        rid = submit(local, "/api", web, contracts, {**POLICY, "rules": [dict(POLICY["rules"][0], verification="independent")]})
         row = wait_request(local, "/api", rid, "question")
         previous = [] if held_role == "specialist" else [("specialist", "claude", "COMPLETED")]
         engine = POLICY[held_role + "_engine"]
@@ -155,9 +153,15 @@ def test_returning_operator_stops_active_consultation(tmp_path, monkeypatch, hel
         if held_role == "verifier":
             activities["specialist"] = "done"
         assert desk_activity() == activities
+        workspace = local.runner.detail(rid)["workspace_id"]
+        def visitors():
+            snapshot = local.rooms.snapshot(workspace)
+            return next(run for run in snapshot["runs"] if run["id"] == rid).get("visiting_roles", [])
+        assert visitors() == [{"role": held_role, "engine": engine}]
         for _ in range(2):
             assert request(local, f"/api/runs/{rid}/delegation/stop", {}) == (200, {"run_id": rid, "active": False})
         assert desk_activity() == {**activities, "developer": "waiting", held_role: "stopped"}
+        assert visitors() == []
         assert request(local, f"/api/runs/{rid}/inbox/{row['id']}/decision", {"action": "answer", "answer": ">=3.11"})[0] == 200
         permission = wait_request(local, "/api", rid, "permission")
         with socket.socket() as probe:

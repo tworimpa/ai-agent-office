@@ -24,12 +24,13 @@ const localTime = value => {
   return Number.isNaN(date.getTime()) ? '시간 미확인' : date.toLocaleString('ko-KR');
 };
 
-export function mountGithub({get, make, api, context, openGoal, uuid, desktop, briefing}) {
+export function mountGithub({get, make, api, context, openGoal, uuid, desktop, briefing, pollSoon}) {
   const field = key => get('github-' + key);
   const note = (key, value) => { field(key).textContent = value; };
   const roomKey = () => JSON.stringify([context().host, context().id]);
   const path = () => '/rooms/' + context().id + '/github';
   let latest = null, viewKey = '', read = 0, formRead = 0, repoRead = 0, busy = false;
+  let syncPending = false;
   let repositories = [];
   let cursor = null, previousPages = [], changingPage = false, selectedIssue = null, eventCursor = null, previousEvents = [];
   let detail = null, detailError = '', detailRead = 0;
@@ -42,6 +43,7 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
   function reset() {
     ++read; ++formRead; ++repoRead;
     latest = null;
+    syncPending = false;
     cursor = null; previousPages = []; changingPage = false; resetDetail();
     busy = false;
     viewKey = '';
@@ -114,8 +116,10 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
     try {
       await api(path() + endpoint, body);
       if (identity === roomKey()) {
+        if (endpoint === '/sync') syncPending = true;
         note('action-note', message);
         await load();
+        if (endpoint === '/sync' && needsStatus() && context().writable) pollSoon();
       }
     } catch (err) {
       if (identity === roomKey()) note('action-note', err.message);
@@ -288,13 +292,14 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
     }
     controls();
   }
-  async function load() {
+  async function load(readSection = api) {
     if (!context().supported) return;
     const sequence = ++read, identity = roomKey();
     try {
-      const result = await api(path() + cursorPath(cursor));
+      const result = await readSection(path() + cursorPath(cursor));
       if (identity !== roomKey() || sequence !== read) return;
       latest = result;
+      syncPending = latest.status?.queued === true;
       if (selectedIssue && !result.issues.some(row => row.issue_id === selectedIssue)) resetDetail();
       render();
       if (selectedIssue) await loadDetail();
@@ -424,5 +429,8 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
   field('sync').addEventListener('click', () => action('/sync', {}, '가져오기를 요청했습니다.'));
   field('prev').addEventListener('click', () => changePage(null, true));
   field('next').addEventListener('click', () => changePage(latest?.next_cursor, false));
-  return {load, settings, reset, controls};
+  function needsStatus() {
+    return context().supported && (syncPending || !latest);
+  }
+  return {load, settings, reset, controls, needsStatus};
 }

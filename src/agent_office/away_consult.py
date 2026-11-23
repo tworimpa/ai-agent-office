@@ -26,8 +26,14 @@ def _command(mode):
 
 
 async def run_consultation(repo, revision, rule, specialist_engine, verifier_engine, folders, *,
-                           skill_guidance=None, on_stage=None):
+                           skill_guidance=None, on_stage=None, db_path=None):
     from agent_office.technical_choices import CHOICE_TOPIC
+    if rule["topic"] != CHOICE_TOPIC and rule.get("verification", "fact") == "fact":
+        from agent_office.away_expert import assess
+        # Only bounded reads of pinned Git objects run on this thread. The inbox
+        # still owns final delivery and rechecks the operator's decision or revocation.
+        return await asyncio.to_thread(assess, Path(repo), revision, rule, specialist_engine,
+                                       verifier_engine, folders=folders)
 
     # Only the closest selected ancestor is needed for each evidence file.
     paths = ([option["path"] for option in rule["choice"]["options"]]
@@ -35,7 +41,8 @@ async def run_consultation(repo, revision, rule, specialist_engine, verifier_eng
     scope = list(dict.fromkeys(next((str(parent) for parent in PurePosixPath(path).parents
                                      if str(parent) in folders), None) for path in paths))
     payload = json.dumps([str(repo), revision, rule, specialist_engine, verifier_engine,
-                          [folder for folder in scope if folder is not None], skill_guidance or {}],
+                          [folder for folder in scope if folder is not None], skill_guidance or {},
+                          str(Path(db_path).resolve()) if db_path is not None else None],
                          ensure_ascii=False).encode("utf-8") + b"\n"
     if len(payload) > MAX_CONSULT_INPUT:
         raise DelegationDeferred("specialist_failed")
@@ -97,8 +104,9 @@ if __name__ == "__main__":
         sys.stdout.buffer.write(f"{role} {status}\n".encode("ascii"))
         sys.stdout.buffer.flush()
 
-    repo, revision, rule, specialist, verifier, folders, guidance = json.load(sys.stdin.buffer)
-    opts = dict(folders=folders, skill_guidance=guidance, scratch_root=Path(sys.argv[2]), on_stage=emit_stage)
+    repo, revision, rule, specialist, verifier, folders, guidance, db_path = json.load(sys.stdin.buffer)
+    opts = dict(folders=folders, skill_guidance=guidance, scratch_root=Path(sys.argv[2]), on_stage=emit_stage,
+                db_path=Path(db_path) if db_path else None)
     try:
         if rule["topic"] == CHOICE_TOPIC:
             response = assess_choice(Path(repo), revision, rule["choice"], specialist, verifier,

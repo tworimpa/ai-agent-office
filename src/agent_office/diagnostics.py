@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import sys
+from .process_window import BACKGROUND_FLAGS
 from .engines import ENGINE_COMMANDS, resolve_executable
 
 
@@ -19,7 +20,7 @@ def doctor(required: list[str]) -> int:
         try:
             completed = subprocess.run(
                 [executable, "--version"], capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=15, check=False,
+                encoding="utf-8", errors="replace", timeout=15, check=False, creationflags=BACKGROUND_FLAGS,
             )
             version = (completed.stdout or completed.stderr).strip().splitlines()
             reports.append({

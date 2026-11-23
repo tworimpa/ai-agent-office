@@ -46,7 +46,12 @@ def test_plain_cli_and_studio_parents_cannot_share_an_id(tmp_path, repo, monkeyp
         assert [t["id"] for t in runner.detail(group_id)["subtasks"]] == [t["id"] for t in parent["subtasks"]]
 
 
-def test_parallel_children_pin_base_scope_skills_and_retain_partial_results(tmp_path, repo, monkeypatch):
+@pytest.mark.parametrize("slots", [1, 2])
+def test_parallel_children_pin_base_scope_skills_and_retain_partial_results(tmp_path, repo, monkeypatch, slots):
+    if slots == 1:
+        monkeypatch.setenv("AGENT_OFFICE_TEAM_SLOTS", "1")
+    else:
+        monkeypatch.delenv("AGENT_OFFICE_TEAM_SLOTS", raising=False)
     db = tmp_path / "office.db"
     for name in ("api", "ui"):
         (repo / name).mkdir()
@@ -94,7 +99,8 @@ def test_parallel_children_pin_base_scope_skills_and_retain_partial_results(tmp_
         assert [c["indices"] for c in receipt["subtasks"]] == [[1], [0], [1, 0]]
         assert [c["task"] for c in receipt["subtasks"]] == ["first", "second", "third"]
         assert [c["parent_id"] for c in receipt["subtasks"]] == [rid] * 3
-        wait_for(lambda: sum(1 for _ in tmp_path.glob("called-*")) == 2)
+        wait_for(lambda: sum(1 for _ in tmp_path.glob("called-*")) == slots)
+        assert len(runner.team_workers) == slots
         assert not (tmp_path / "called-third").exists()
         registry.create("development", "dev-skill-2")
         (repo / "new-source").touch()

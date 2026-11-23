@@ -12,7 +12,7 @@ const uv = process.env.OFFICE_BUILD_UV || 'uv'
 const windows = process.platform === 'win32'
 
 function run(command, args) {
-  const result = spawnSync(command, args, { cwd: project, stdio: 'inherit' })
+  const result = spawnSync(command, args, { cwd: project, stdio: 'inherit', windowsHide: true })
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`${command} failed (exit ${result.status})`)
 }

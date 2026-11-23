@@ -40,6 +40,13 @@ def make_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify-engine", help="Call a provider on a disposable fixture and record the result")
     verify.add_argument("engine", choices=SUPPORTED_ENGINES)
     verify.add_argument("capability", choices=("read", "edit", "review"))
+    update = sub.add_parser("update-engine", help="Interactively update a per-user CLI on an idle host")
+    update.add_argument("engine", choices=SUPPORTED_ENGINES)
+    update.add_argument("--from-version", required=True)
+    targets = update.add_mutually_exclusive_group(required=True)
+    targets.add_argument("--to-version", help="Install this exact npm version")
+    targets.add_argument("--vendor-latest", metavar="OBSERVED_VERSION", help="Accept the vendor updater channel")
+    update.add_argument("--journal", required=True)
     peer = sub.add_parser("peer-check", help="Offer one verification of a locally reviewed commit and recipe")
     peer.add_argument("--workspace-id", required=True)
     peer.add_argument("--base", required=True)
@@ -117,6 +124,12 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
             engine: CLIAdapter(engine, timeout=args.timeout)
             for engine in SUPPORTED_ENGINES
         }
+        for adapter in adapters.values():
+            adapter.db_path = store.path
+            if prepared and store.connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='studio_provider_progress'").fetchone():
+                from .run_progress import Reporter
+                adapter.progress = Reporter(store.path, run_id, adapter.engine)
         guidance = role_guidance(store.connection, run_id, ("developer", "reviewer")) if prepared else {}
         workers = None
         if room_assignment or goal_assignment:
@@ -240,6 +253,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "improve":
             from .improvement_cli import run_command
             return run_command(args, db_path)
+        if args.command == "update-engine":
+            from .engine_updates import apply
+            try:
+                result = apply(db_path, args.engine, args.from_version, args.to_version or args.vendor_latest,
+                               validate_id(args.journal), vendor_channel=args.vendor_latest is not None)
+            except (ValueError, EOFError) as exc:
+                print(str(exc) or "운영자 확인이 필요합니다.", file=sys.stderr)
+                return 2
+            print(json.dumps(result))
+            return 0
         if args.command == "verify-engine":
             from .engine_evidence import verify_engine
             result = verify_engine(db_path, args.engine, args.capability)
@@ -279,7 +302,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, indent=2, ensure_ascii=False))
             return 0
         run_id = uuid.uuid4().hex
-        with RunGuard(db_path, run_id), TaskStore(db_path) as store:
+        from .engine_updates import host_lease
+        with host_lease(), RunGuard(db_path, run_id), TaskStore(db_path) as store:
             report = execute_run(args, store, run_id)
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0 if report["status"] in ("PLAN_ONLY", "READY_FOR_HUMAN_REVIEW") else 1

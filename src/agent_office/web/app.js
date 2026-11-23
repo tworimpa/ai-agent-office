@@ -1,7 +1,7 @@
+import {validId} from './studio-shared.js';
 import {emptyEvents, mergeEvents, stateLabel, stateGroup} from './state.js';
 
 const $ = id => document.getElementById(id);
-const validId = id => typeof id === 'string' && /^[a-f0-9]{32}$/.test(id);
 const initial = new URL(location.href).searchParams.get('task');
 let selected = validId(initial) ? initial : null;
 let tasks = [], journal = emptyEvents(), generation = 0;

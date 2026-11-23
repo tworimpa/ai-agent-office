@@ -191,6 +191,9 @@ def _invocation_matches(result):
     from .goal_checks import _pytest_files
     argv, planned = result["argv"], result["recipe_argv"]
     kind = recipe(planned)
+    if kind in {"npm", "go", "cargo"}:
+        from .project_checks import invocation_matches
+        return result.get("result_format") == "exit" and invocation_matches(kind, argv, planned)
     if kind == "pytest":
         if len(argv) < 11 or argv[1:3] != ["-I","-B"] or PureWindowsPath(argv[3]).name != "goal_pytest.py":
             return False
@@ -242,6 +245,10 @@ def check_reply(status, data, identifier, requested):
             or not isinstance(cwd,str) or not (PurePosixPath(cwd).is_absolute() or PureWindowsPath(cwd).is_absolute())
             or not isinstance(argv,list) or not 1<=len(argv)<=2048 or not all(isinstance(s,str) and s for s in argv)):
         raise ValueError("원격 검증의 호스트 또는 실행 환경을 확인할 수 없습니다.")
+    if result.get("result_format") == "exit" and result.get("status") in ("passed", "failed"):
+        expected = {"command::" + " ".join(profile["argv"]): "passed" if result.get("exit_code") == 0 else "failed"}
+        if cases != expected:
+            raise ValueError("원격 검증 명령의 종료 결과가 일치하지 않습니다.")
     if (_timestamp(result.get("finished_at")) < _timestamp(result.get("started_at"))
             or type(result.get("elapsed_seconds")) not in (float,int) or not 0<=result["elapsed_seconds"]<=172800
             or not isinstance(result.get("summary"),str) or len(result["summary"])>8192

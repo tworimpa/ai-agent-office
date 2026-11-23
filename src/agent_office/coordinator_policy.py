@@ -17,6 +17,8 @@ def _paths(topic, filenames, folders):
             except ValueError:
                 continue
             paths.append(path)
+    if topic == "test_command" and "docs/TESTING.md" not in paths:
+        paths.append("docs/TESTING.md")
     return paths
 
 

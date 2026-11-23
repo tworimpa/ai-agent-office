@@ -43,12 +43,12 @@ await writeFile(
   'from settings import restore\n\ndef test_first_start_uses_default(tmp_path):\n    assert restore(tmp_path / "missing") == "light"\n'
 )
 function git(...args) {
-  return execFileSync('git', args, {cwd: repo, encoding: 'utf8'})
+  return execFileSync('git', args, {cwd: repo, encoding: 'utf8', windowsHide: true})
 }
 git('init', '-q', '-b', 'main')
 if (briefingMode) {
   await writeFile(join(repo, 'briefing-fixture.txt'), 'Disposable workspace briefing fixture\n')
-  execFileSync(python, [fileURLToPath(new URL('fixtures/briefing_worker.py', import.meta.url)), repo])
+  execFileSync(python, [fileURLToPath(new URL('fixtures/briefing_worker.py', import.meta.url)), repo], {windowsHide: true})
 } else if (githubMode) await writeFile(join(repo, 'github-journey.txt'), 'GitHub Issue integration fixture\n')
 git('add', '.')
 git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'settings fixture')
@@ -493,11 +493,28 @@ try {
 } catch (error) {
   failure = error
   console.error('Fixture evidence:', evidence, 'working directory:', root, error)
+  const diagnostic = {}
+  if (page && !page.isClosed()) {
+    diagnostic.renderer = {errors: (await page.pageErrors().catch(() => [])).slice(-4).map(e => e.message.slice(0, 300))}
+    try {
+      Object.assign(diagnostic.renderer, await page.locator('html').evaluate(() => ({
+        visibility: document.visibilityState, readyState: document.readyState,
+        host: document.querySelector('#host option:checked')?.textContent.slice(0, 100),
+        roomTitle: document.getElementById('room-title')?.textContent.slice(0, 100),
+        connection: document.getElementById('connection')?.textContent.slice(0, 100),
+        startupRequests: performance.getEntriesByType('resource').flatMap(entry => {
+          const path = new URL(entry.name).pathname
+          return ['/workspace-office.js', '/api/hosts', '/api/workspaces'].includes(path)
+            ? [{path, status: entry.responseStatus, ms: Math.round(entry.duration)}] : []
+        }).slice(-6)
+      }), null, {timeout: 3000}))
+    } catch (error) { diagnostic.renderer.readError = error.message.slice(0, 200) }
+  }
   if (origin && run) {
     try {
       const {run: detail} = await json('/api/runs/' + run.id)
       const {goal} = await json('/api/runs/' + run.id + '/goal')
-      const diagnostic = {
+      Object.assign(diagnostic, {
         run_id: run.id,
         state: detail.state,
         outcome: detail.outcome,
@@ -514,13 +531,13 @@ try {
         })),
         pending: goal?.recovery?.pending_decisions,
         next_action: goal?.next_action
-      }
-      console.error('Installed goal diagnostic:', JSON.stringify(diagnostic))
-      await writeFile(join(evidence, 'diagnostic.json'), JSON.stringify(diagnostic, null, 2))
+      })
     } catch (readError) {
       console.error('Could not read fixture diagnostic:', readError.message)
     }
   }
+  console.error('Installed goal diagnostic:', JSON.stringify(diagnostic))
+  await writeFile(join(evidence, 'diagnostic.json'), JSON.stringify(diagnostic, null, 2))
   if (page && !page.isClosed()) await page.screenshot({path: join(evidence, 'error.png'), timeout: 3000}).catch(() => {})
 } finally {
   await finishVerification(failure, () => app && close(), async () => {

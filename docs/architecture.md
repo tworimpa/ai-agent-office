@@ -1,65 +1,27 @@
-# AO-000 Architecture & Scope
+# AI Agent Office 아키텍처
 
-For the current local studio, see the [workspace and run controls](../README.md#로컬-작업실-시작) and [Stage 1 implementation plan](superpowers/plans/2026-11-19-local-studio.md). The bootstrap scope below records the earlier milestones.
+AI Agent Office는 Windows와 Linux에서 기존 코딩 CLI를 운영하는 작업실이다. 사용자는 Workspace에서 목표를 맡기고 담당자의 진행, 질문, 변경 후보와 검증 결과를 확인한다. 호스트는 프로세스를 실행하고 저널을 소유한다. 다른 기기에서 접속해도 실행 신원은 해당 호스트의 저널에 연결된다.
 
-## Intent
+## 의뢰에서 결과까지
 
-Build a personal Windows/Linux AI coding team orchestrator that can eventually improve its own implementation. Agents are existing CLI coding assistants, not reimplementations of their internal tool loops.
+| 구성 요소 | 책임 |
+| --- | --- |
+| Studio와 설치형 앱 | Studio가 작업실 화면과 HTTP API를 제공한다. Electron 설치판은 로컬 실행 환경을 제공하며 Rust 비교판은 Studio에 연결한다. |
+| Workspace와 조정자 | 저장소와 선택 폴더, 엔진·스킬·검증 기본값을 관리한다. 빠른 확인은 담당자에게 직접 배정한다. 회의가 필요한 의뢰는 계획과 검증 범위를 같은 실행에 기록한다. |
+| 실행기와 LangGraph | 감독 프로세스가 실행의 소유권·중지·복구를 관리한다. LangGraph가 개발 → 검증 → 리뷰와 재작업 한도를 조정한다. Codex, Antigravity, Claude, Gemini, Cline의 내부 작업 루프는 각 CLI가 수행한다. |
+| 실행과 장시간 목표 | 각 시도는 기준 커밋과 별도 Git worktree를 갖는다. 장시간 목표는 최초 실패, 시도별 변경과 결과, 후보 및 체크포인트를 연결한다. |
+| SQLite 저널과 요청함 | 작업, 이벤트, 사용자 결정, 대리 답변 근거, 추가 지시, 모델 사용량을 보존한다. 기술 질문은 위임 범위에서 처리하며 제품 결정과 권한 승인은 사용자에게 전달한다. |
 
-## Architectural boundaries
+기본 엔진 조합은 개발 Codex와 리뷰 Antigravity다. 역할 지정과 해당 호스트의 실제 기능 검증은 별도로 기록한다. 공급자가 알려 주지 않은 계정 한도나 사용량은 미확인으로 표시한다. [엔진](engines.md) · [작업 프로필](work-profiles.md) · [장시간 목표](overnight-goals.md)
 
-1. **Task Intake:** structured task specification from the user (AO-000: CLI arguments).
-2. **LangGraph:** deterministic routing of development, test and review, with bounded retries.
-3. **CLI Adapter Layer:** command construction and output normalization for Claude Code and Codex (AO-000). Planned: Gemini, Cline, Antigravity.
-4. **Workspace:** new Git worktree per task; no direct writes to running install.
-5. **Evidence:** local test output + reviewer response + isolated workspace. Reviewers are advisory, not deployment authority.
-6. **Approval boundary:** AO-000 always stops before merge, push or deploy.
+## 호스트와 외부 연동
 
-## Proposed future workflow
+로컬 Studio는 선택된 원격 Studio에 SSH를 통해 요청을 전달하며 응답의 저널 ID를 확인한다. 원격 검증은 호스트, 소스 커밋, 레시피, 실제 결과를 함께 기록한다. GitHub 및 Enterprise 연결은 등록한 저장소와 라벨, 허용된 사용자 범위에서 이슈를 목표로 접수하고 상태를 동기화한다. [원격 검증](goal-peer-checks.md) · [GitHub 연결](github-connections.md) · [이슈 동기화](github-issue-sync.md)
 
-```text
-Intake -> Planner -> Worker assignment -> CLI adapter
-            |                                    |
-            +---- Question Router <--------------+
-                     |
-         Policy -> Delegate / User Inbox
-                     |
-                  Resume
-                     |
-             Test -> Independent Review
-                     |
-             Human-approved promotion
-```
+## 검토와 운영 배포
 
-**AO-001 candidate:** local SQLite task/run/phase-event journal, read-only task/event queries, per-run OS ownership and explicit interrupted-run marking. See [storage guide](storage.md). This is phase-event polling, not provider tool-call streaming.
+후보 채택, Git 병합, 안정 소스 승격, 서비스 배포는 서로 다른 기록이다. 작업실 에이전트는 후보와 증거를 제출한다. 릴리스 저장소는 기준 소스와 격리 검증을 확인한다. 등록된 운영자는 배포 대상과 실행 중 버전을 확인하고 전환하며, 새 버전 기동에 실패하면 이전 정상 버전 복구를 시도한다. Windows 분리 세션에서는 일반 로그인 계정이 GitHub·Docker 검증을, UAC로 허용한 배포 계정이 해당 서비스의 전환을 담당한다. [승격](improvement-promotion.md) · [배포와 복구](studio-deployment.md)
 
-**Not yet implemented:** planner, automatic queue consumption, checkpoint resume, question interception, session resume, automatic delegation, UI, GitHub PR automation, deploy management.
+Git worktree는 소스 변경을 분리한다. 프로세스의 파일·네트워크 접근은 호스트 계정과 엔진 샌드박스가 통제한다. 설치 여부, 모의 CLI 테스트, 인증한 공급자의 실제 작업 성공은 각각 다른 검증 결과다. [저장소와 소유권](storage.md) · [검증 기준](verification.md)
 
-## Worktree vs sandbox
-
-Git worktrees isolate the *git working directory*; they do not isolate processes, network access, secrets, user home or other filesystem paths. A production-grade autonomous mode must add OS-level process sandboxing, restricted credentials and explicit policy gates at tool execution boundaries.
-
-## Task completion states
-
-- `PLAN_ONLY`: developer produced a response in no-edit mode; no tests/review ran.
-- `FAILED`: developer CLI returned nonzero.
-- `TEST_FAILED`: tests failed after bounded attempts.
-- `REVIEW_FAILED`: reviewer CLI returned nonzero.
-- `NEEDS_HUMAN_REVIEW`: unknown reviewer verdict.
-- `CHANGES_REQUESTED`: reviewer requested changes but retry budget exhausted.
-- `READY_FOR_HUMAN_REVIEW`: tests passed and reviewer returned strict approval marker. Not merged.
-
-## Decisions made for bootstrap
-
-- Python 3.11+ / LangGraph for orchestration.
-- stdlib subprocess for local CLI integration; JSON output parsing.
-- Separate Git worktree for each run.
-- Claude Code and Codex only in first executable MVP; later CLI support via adapters.
-- No automatic source promotion, self-update, background execution or delegated high-risk approval.
-- Test command explicit (argv array) and default pytest; run only on a user-initiated task.
-
-## Next milestone
-
-The owner-selected initial engines are now Codex and Antigravity (`agy`), with default developer/reviewer roles respectively and explicit overrides. Legacy Claude remains compatible. Metadata status is an observer-startup snapshot; it is not a model-call or task-acceptance result. See [engine guide](engines.md).
-
-AO-002: add an office observation UI and verified additional CLI capabilities. Session continuation and unattended operation require separate designs and acceptance checks.
+초기 AO-000~AO-002의 설계와 당시 검증 기록은 [인수인계 문서](CODEX_HANDOFF_2026-11-06.md)에 보존한다.

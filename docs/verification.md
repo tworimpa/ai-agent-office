@@ -27,6 +27,12 @@ git switch feature/ao-000-bootstrap
 
 ## Windows
 
+이미 준비한 개발 환경에서 단위 테스트만 실행할 때는 아래 명령을 사용한다. pytest와 테스트가 시작하는 일반 콘솔 도구는 숨은 콘솔을 공유하고, 테스트 로그와 종료 코드는 실행한 터미널로 전달된다. 같은 명령 뒤에 테스트 파일 경로를 지정할 수 있다.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\quiet_pytest.py -q
+```
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\verify-windows.ps1
 # Optional only after installing and authenticating both CLIs:
@@ -61,6 +67,12 @@ Confirm: task worktree is created outside original checkout, new test is present
 | Windows GitHub Actions | 3.11/3.13 | CI | not installed | not installed | pending | N/A | mock only | pending |
 | Windows user machine | user environment | required | user setup | user setup | pending | pending | pending | pending |
 | Linux user machine | user environment | required | user setup | user setup | pending | pending | pending | pending |
+
+## Workspace refresh measurement
+
+On Windows, the same disposable single-run workspace was read 15 times against the pre-change commit `3e2ae40` and the bundled projection. The fixture used an empty inbox, no directions and no goal. SQLite connection tracing counted 6 opens and 2 immediate write transactions per original refresh, then 3 opens and zero immediate write transactions per bundled refresh. Median in-process retrieval time was 15.4 ms and 7.7 ms respectively. With a separate read transaction held open and a 100 ms busy timeout, the original rollback-mode commit returned `SQLITE_BUSY` after 182.49 ms. The new standalone WAL journal committed in 7.01 ms.
+
+The DOM regression `node --test tests/web/workspace-polling.test.mjs` counts 5 GETs against a legacy active-room fixture and 1 against the equivalent bundle-capable fixture after initial discovery. While hidden, neither a timer nor the online event starts another refresh. A visible idle room schedules its next check in 20 seconds. SSH peer tests validate the bundle with the same journal identity and per-section response checks as individual routes. These timings measure local database access. SSH key-exchange time and production latency were outside the fixture.
 
 ## Troubleshooting
 

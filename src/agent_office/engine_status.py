@@ -7,7 +7,8 @@ import subprocess
 import sys
 import tempfile
 
-from .engines import CLINE_ACP_VERSION, ENGINE_COMMANDS, INITIAL_ENGINES, resolve_executable
+from .process_window import BACKGROUND_FLAGS
+from .engines import CLINE_ACP_VERSION, cline_compatible, ENGINE_COMMANDS, INITIAL_ENGINES, resolve_executable
 
 LABELS = {"codex": "Codex", "antigravity": "Antigravity", "claude": "Claude Code",
           "gemini": "Gemini CLI", "cline": "Cline CLI"}
@@ -28,7 +29,7 @@ def _probe(argv, timeout):
         with tempfile.TemporaryDirectory(prefix="office-metadata-") as cwd:
             with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
                 result = subprocess.run(argv, cwd=cwd, env=worker_env(os.environ), stdin=subprocess.DEVNULL, stdout=stdout,
-                                        stderr=stderr, timeout=timeout, check=False)
+                                        stderr=stderr, timeout=timeout, check=False, creationflags=BACKGROUND_FLAGS)
                 for name, stream in (("stdout", stdout), ("stderr", stderr)):
                     stream.seek(0)
                     if getattr(result, name) is None:
@@ -114,7 +115,9 @@ def probe_engine(engine, executable, timeout=5):
             entry["probe_status"] = "ok" if entry["headless_support"] else "unsupported"
         else:
             entry["probe_status"] = help_status
-        if engine == "cline" and entry["version"] != CLINE_ACP_VERSION:
+        if engine == "cline" and entry["probe_status"] == "ok" and entry["version"] != CLINE_ACP_VERSION:
+            entry["probe_status"] = "unverified_version"
+        if engine == "cline" and not cline_compatible(entry["version"]):
             entry["headless_support"] = False
             entry["probe_status"] = "unsupported_version"
         if engine == "codex":

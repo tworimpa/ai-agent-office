@@ -37,7 +37,8 @@ def save(path, data):
 def studio(root, python, dataset):
     env = {**os.environ, "PYTHONPATH": str(HERE.parents[1] / "src"), "PYTHONUTF8": "1"}
     with subprocess.Popen([python, HERE / "bench-studio.py", root, dataset], stdin=subprocess.PIPE,
-                          stdout=subprocess.PIPE, env=env) as process:
+                          stdout=subprocess.PIPE, env=env,
+                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0) as process:
         try:
             line = process.stdout.readline()
             if not line:

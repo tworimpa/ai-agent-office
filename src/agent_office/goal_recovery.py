@@ -163,9 +163,10 @@ def _environment(root, checks, update):
                       for d in metadata.distributions(path=sites))
     update(encode(packages).encode())
     host_module = Path(__file__).parent
-    for name in ("goal_checks.py", "goal_candidates.py", "goal_verification.py", "goal_host_checks.py",
+    for name in ("goal_checks.py", "office_checks.py", "project_checks.py", "goal_candidates.py", "goal_verification.py", "goal_host_checks.py",
                  "goal_peer.py", "goal_pytest.py", "goal_process.py", "goal_artifact.py",
-                 "goal_reproduction.py", "studio_process.py", "workflow.py", "goal_stage_wait.py",
+                 "goal_reproduction.py", "studio_process.py", "process_window.py", "worker_environment.py",
+                 "workflow.py", "goal_stage_wait.py",
                  "workspace_coordination.py", "goal_usage.py", "goal_workers.py"):
         file(host_module / name)
     files = set()
@@ -179,6 +180,10 @@ def _environment(root, checks, update):
         argv, kind = _command(root, check, Path("report.xml"))
         update(encode(argv).encode())
         files.add(Path(argv[0]))
+        if kind == "npm":
+            files.add(Path(argv[1]))
+            from .project_checks import dependency_inputs
+            files.update(dependency_inputs(root))
         if kind == "web":
             project = root
             if not (root / "node_modules/jsdom/package.json").is_file():
@@ -194,6 +199,8 @@ def _environment(root, checks, update):
                           harness.parent / "fixtures/codex.py", harness.parent / "fixtures/agy.py",
                           harness.parent / "fixtures/meeting.py"))
     for path in sorted(files):
+        if path.is_symlink():
+            update(encode(str(path)).encode())
         file(path)
 
 
@@ -220,7 +227,10 @@ def _fingerprint(db, run_id):
         digest.update(value)
     update(encode({k: goal[k] for k in ("id","request","scope_json","criteria_json","policy_json","base_commit")}).encode())
     update(encode([str(project), str(root), task["developer_engine"], task["reviewer_engine"], task["max_attempts"]]).encode())
-    _environment(root, json.loads(goal["policy_json"]).get("checks", []), update)
+    checks = json.loads(goal["policy_json"]).get("checks", [])
+    if _needs_native_revalidation(db, run_id, checks):
+        raise ValueError("Go·Rust 외부 의존성과 도구 체인은 복구 후 새로 검증해야 합니다.")
+    _environment(root, checks, update)
     update(run_git(root, "ls-files", "--stage", "-z"))
     def check_name(name):
         if private_name(name):
@@ -243,6 +253,20 @@ def _fingerprint(db, run_id):
         for row in rows:
             update(encode(tuple(row)).encode())
     return digest.hexdigest()
+
+
+def _needs_native_revalidation(db, run_id, checks):
+    from .goal_checks import recipe
+    if not any(recipe(check["argv"]) in {"go", "cargo"} for check in checks):
+        return False
+    # A local module replacement, Cargo path dependency or rustup toolchain
+    # can change independently of both the worktree and the launcher binary.
+    # A fresh attempt can run these recipes, but never replay a previous pass.
+    for (raw,) in db.execute("SELECT receipt FROM studio_goal_checks WHERE run_id=?", (run_id,)):
+        argv = json.loads(raw).get("recipe_argv")
+        if argv is None or recipe(argv) in {"go", "cargo"}:
+            return True
+    return False
 
 
 def checkpoint(db, run_id, next_stage, state):
@@ -327,6 +351,9 @@ def detail(store, run_id):
         action, reason = "inspect", "미전달 지시나 미결 요청을 확인하세요."
     elif not db.execute("SELECT 1 FROM studio_goal_drains WHERE run_id=?", (run_id,)).fetchone():
         action, reason = "inspect", "감독 프로세스가 하위 프로세스의 종료를 확인하기 전에 연결이 끊겼습니다."
+    elif cp and not cp["digest"] and _needs_native_revalidation(
+            db, run_id, json.loads(db.execute("SELECT policy_json FROM studio_goals WHERE id=?", (run_id,)).fetchone()[0]).get("checks", [])):
+        action, reason = "inspect", "저장한 Go·Rust 검증의 외부 의존성과 도구 체인을 확인한 뒤 새 검증을 실행하세요."
     elif not cp or not cp["digest"] or db.execute("SELECT 1 FROM events WHERE run_id=? AND seq>? "
                                 "AND event_type='STAGE_STARTED'", (run_id, cp["seq"])).fetchone():
         action, reason = "inspect", "외부 작업의 종료 및 다음 실행 경계를 확인할 수 없습니다."

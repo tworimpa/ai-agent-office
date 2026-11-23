@@ -23,7 +23,7 @@ export async function prepare(electronExe) {
     'def test_missing_default(tmp_path):','    assert restore(tmp_path / "missing") == "light"',''
   ].join('\n'))
   for (const args of [['init','-q','-b','main'],['add','.'],['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','settings fixture']]) {
-    execFileSync('git',args,{cwd:repo})
+    execFileSync('git',args,{cwd:repo,windowsHide:true})
   }
   // goal_worker imports its sibling briefing_worker only inside a marked disposable project.
   const source = join(bin,'goal_worker.py')

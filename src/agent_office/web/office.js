@@ -1,3 +1,4 @@
+import {requestJson, visiblePoller} from './studio-shared.js';
 const idPattern = /^[0-9a-f]{32}$/;
 const roles = {developer: '개발자', reviewer: '리뷰어', specialist: '전문가', verifier: '독립 검증자'};
 const engines = {codex: 'Codex', antigravity: 'Antigravity', claude: 'Claude Code', gemini: 'Gemini CLI', cline: 'Cline CLI'};
@@ -21,7 +22,7 @@ export function mountOffice(win) {
   if (selected.length === 1 && idPattern.test(selected[0])) get('versions-link').href = '/versions?host=' + selected[0];
   const hostURL = id => id ? '/office?host=' + id : '/office';
   const nodes = new Map();
-  let cycle = 0, timer, disposed = false;
+  let cycle = 0, disposed = false;
   const controllers = new Set();
 
   function element(tag, className, text) {
@@ -133,19 +134,7 @@ export function mountOffice(win) {
     return {id: info.id, el, body, pager, meta, heading, previous: new Map(), seq: 0};
   }
 
-  async function json(path) {
-    const controller = new win.AbortController();
-    controllers.add(controller);
-    const timeout = win.setTimeout(() => controller.abort(), 15000);
-    try {
-      const response = await win.fetch(path, {signal: controller.signal, mode: 'same-origin', redirect: 'error', cache: 'no-store'});
-      if (!response.ok) throw new Error('HTTP ' + response.status);
-      return await response.json();
-    } finally {
-      win.clearTimeout(timeout);
-      controllers.delete(controller);
-    }
-  }
+  const json = path => requestJson(win, path, undefined, {controllers});
 
   function markStale(host) {
     host.stale = true;
@@ -202,9 +191,10 @@ export function mountOffice(win) {
     }));
   }
 
+  const poller = visiblePoller(win, refresh, cancel);
   function cancel() {
     cycle++;
-    win.clearTimeout(timer);
+    poller.cancel();
     for (const controller of controllers) controller.abort();
   }
   async function refresh() {
@@ -248,17 +238,15 @@ export function mountOffice(win) {
       for (const host of nodes.values()) markStale(host);
       notice('호스트 목록을 확인할 수 없습니다. 새로고침으로 다시 연결하세요.');
     } finally {
-      if (!disposed && revision === cycle && !doc.hidden) timer = win.setTimeout(refresh, 6000);
+      if (!disposed && revision === cycle && !doc.hidden) poller.schedule(6000);
     }
   }
-  const visibility = () => doc.hidden ? cancel() : refresh();
   get('refresh').addEventListener('click', refresh);
-  doc.addEventListener('visibilitychange', visibility);
   refresh();
   return () => {
     disposed = true;
     cancel();
-    doc.removeEventListener('visibilitychange', visibility);
+    poller.dispose();
     get('refresh').removeEventListener('click', refresh);
   };
 }

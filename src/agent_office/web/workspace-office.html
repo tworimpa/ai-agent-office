@@ -73,7 +73,7 @@
         <section id="workspace-briefing" class="briefing" aria-labelledby="brief-title" hidden>
           <header class="brief-heading">
             <h2 id="brief-title" tabindex="-1">조정자 브리핑</h2>
-            <p id="brief-time"></p>
+            <time id="brief-time"></time>
           </header>
           <p id="brief-note" role="status"></p>
           <div class="brief-columns">
@@ -128,7 +128,8 @@
               </span>
               <span class="seat-arrow" aria-hidden="true">›</span>
             </button>
-            <button type="button" class="seat" data-person="developer" aria-haspopup="dialog">
+            <template id="agent-seat">
+            <button type="button" class="seat" aria-haspopup="dialog">
               <span class="portrait" aria-hidden="true"></span>
               <span class="seat-copy">
                 <span class="seat-name"></span>
@@ -138,16 +139,7 @@
               </span>
               <span class="seat-arrow" aria-hidden="true">›</span>
             </button>
-            <button type="button" class="seat" data-person="reviewer" aria-haspopup="dialog">
-              <span class="portrait" aria-hidden="true"></span>
-              <span class="seat-copy">
-                <span class="seat-name"></span>
-                <span class="seat-role"></span>
-                <span class="seat-task" hidden></span>
-                <span class="seat-line"></span>
-              </span>
-              <span class="seat-arrow" aria-hidden="true">›</span>
-            </button>
+            </template>
           </div>
         </div>
 
@@ -189,6 +181,7 @@
           </details>
           <details id="selected-summary" hidden><summary>선택한 작업의 요약과 다음 행동</summary></details>
           <div id="room-view-controls"></div>
+          <p id="provider-progress" aria-live="polite" hidden></p>
           <div id="office-thread" class="office-thread" aria-label="작업 대화" tabindex="-1"></div>
           <p id="thread-read-note" class="form-note" role="status"></p>
           <p id="thread-note" class="form-note" role="status"></p>
@@ -363,6 +356,16 @@
         <button id="policy-save" class="primary" type="submit">프로필 기본값 저장</button>
       </form>
       <p id="policy-note" role="status"></p>
+    </details>
+    <details id="worktree-storage" hidden>
+      <summary>작업 트리 저장 공간</summary>
+      <p>종료 후 7일이 지난 작업 트리의 파일과 임시 브랜치를 정리합니다.</p>
+      <button type="button" id="storage-preview" class="secondary">사용량과 보존 사유 조회</button>
+      <form id="storage-form" method="post" class="settings-form" aria-label="작업 트리 정리">
+        <fieldset id="storage-entries" hidden><legend>정리할 실행 선택</legend></fieldset>
+        <button id="storage-clean" type="submit" class="secondary" disabled>선택한 작업 트리 정리</button>
+      </form>
+      <p id="storage-note" role="status"></p>
     </details>
     <details id="github-settings" hidden>
       <summary id="github-settings-title">GitHub 이슈 연결</summary>

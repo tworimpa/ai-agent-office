@@ -56,11 +56,13 @@ def answer(history):
             "citations": [{"run_id": row["run_id"], "event": row["events"][-1]} for row in history]}
 
 
-def test_pinned_independent_checkout_and_minimal_readonly_evidence(fixture, monkeypatch):
+@pytest.mark.parametrize("selected", ["codex", "cline"])
+def test_pinned_independent_checkout_and_minimal_readonly_evidence(fixture, monkeypatch, selected):
     db, repo, base = fixture
     paths = []
-    def worker(engine, prompt, *, workspace, allow_edits, timeout):
-        assert engine == "codex" and allow_edits is False
+    def worker(engine, prompt, *, workspace, allow_edits, timeout, db_path=None):
+        assert engine == selected and allow_edits is False
+        assert db_path == (db if engine == "cline" else None)
         paths.append(workspace)
         assert workspace.resolve() != repo.resolve()
         assert (workspace / ".git").is_dir() and git(workspace, "remote") == b""
@@ -76,7 +78,7 @@ def test_pinned_independent_checkout_and_minimal_readonly_evidence(fixture, monk
         assert len(history[0]["request"].encode()) <= proposals.REQUEST_BYTES
         return AgentResult(0, json.dumps(answer(history)))
     monkeypatch.setattr(proposals, "execute_fixture", worker)
-    result = proposals.create_proposal(db, repo, base, [RUN], "codex")
+    result = proposals.create_proposal(db, repo, base, [RUN], selected)
     assert result["patch"] == PATCH and result["history"][0]["citation"] == 17
     assert proposals.validate_proposal(result) == result
     with TaskStore(db, readonly=True) as source:

@@ -152,6 +152,7 @@ export function mountGoals({win, get, make, api, refresh, onPolicySaved, context
         if (check[key]?.length) lines(node, check[key]);
       }
     }
+    if (check.result_format === 'exit') node.append(make('p', '명령 종료 코드로 검증했습니다. 개별 테스트 수는 수집되지 않았습니다.'));
     if (check.summary) node.append(make('pre', check.summary));
     return node;
   }
@@ -579,11 +580,11 @@ export function mountGoals({win, get, make, api, refresh, onPolicySaved, context
       node.disabled = false;
     }
   }
-  async function load(id) {
+  async function load(id, readSection = api) {
     const current = identity(),
       serial = ++counter;
     try {
-      const {goal} = await api('/runs/' + id + '/goal');
+      const {goal} = await readSection('/runs/' + id + '/goal');
       if (current !== identity() || serial !== counter) return;
       if (!goal) {
         reset();
@@ -634,7 +635,32 @@ export function mountGoals({win, get, make, api, refresh, onPolicySaved, context
       stage.append(option);
     }
     stage.value = check.stage;
+    const presets = [
+      ['Python · pytest', ['python', '-m', 'pytest', '-q']],
+      ['Node.js · npm test', ['npm', 'test']],
+      ['Rust · cargo test', ['cargo', 'test']],
+      ['Go · go test', ['go', 'test', './...']]
+    ];
+    const preset = field('preset', '검증 명령 선택', 'select');
+    preset.required = false;
+    const custom = make('option', '직접 지정 · 호스트 검사');
+    custom.value = '';
+    preset.append(custom);
+    for (const [title, command] of presets) {
+      const option = make('option', title);
+      option.value = command.join('\n');
+      preset.append(option);
+    }
     const argv = field('argv', '명령과 인수', 'textarea', check.argv.join('\n'));
+    function matchPreset() {
+      preset.value = presets.some(([, command]) => command.join('\n') === argv.value) ? argv.value : '';
+    }
+    matchPreset();
+    preset.addEventListener('change', () => {
+      if (preset.value) argv.value = preset.value;
+      else argv.focus();
+    });
+    argv.addEventListener('input', matchPreset);
     argv.rows = Math.max(3, Math.min(6, check.argv.length));
     argv.spellcheck = false;
     argv.setAttribute('aria-describedby', 'goal-argv-help');

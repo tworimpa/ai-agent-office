@@ -14,6 +14,7 @@ import unicodedata
 from uuid import uuid4
 
 from .models import OfficeError, validate_db_file, validate_id
+from .process_window import BACKGROUND_FLAGS
 
 
 def _redirected(info: os.stat_result) -> bool:
@@ -47,7 +48,7 @@ def _local_directory(value: str) -> Path:
 def _git(folder: Path, *args: str, error: str, env=None) -> str:
     try:
         result = subprocess.run(["git", *args], cwd=folder, stdin=subprocess.DEVNULL, check=True, capture_output=True,
-                                encoding="utf-8", env=env, timeout=10)
+                                encoding="utf-8", env=env, timeout=10, creationflags=BACKGROUND_FLAGS)
     except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
         raise ValueError(error) from exc
     return result.stdout.removesuffix("\n")

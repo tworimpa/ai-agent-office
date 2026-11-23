@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import sys
@@ -12,17 +13,17 @@ def result(status="SUCCESS",response="VERDICT: APPROVED",**extra):
 
 def test_antigravity_transports_one_literal_prompt_with_plan_and_sandbox(tmp_path, monkeypatch):
     prompt='한글 /model test & $(echo x) "quotes"'
-    monkeypatch.setattr("agent_office.adapters.resolve_executable", lambda name: "fake-agy" if name=="agy" else None)
-    def run(argv, **kwargs):
-        assert prompt not in argv
-        assert argv[0] == "fake-agy"
-        assert argv[argv.index("--mode")+1] == "plan"
-        assert "--sandbox" in argv and "--dangerously-skip-permissions" not in argv
-        assert json.loads(kwargs["input"]) == {"event":"user","message":{"content":prompt}}
-        assert not kwargs.get("shell")
-        return subprocess.CompletedProcess(argv,0,json.dumps({"event":"result","result":result()}),"")
-    monkeypatch.setattr("agent_office.adapters.subprocess.run",run)
-    answer=CLIAdapter("antigravity").execute(prompt,workspace=tmp_path,allow_edits=False)
+    adapter = CLIAdapter("antigravity")
+    original = adapter.command(prompt, allow_edits=False)
+    assert prompt not in original and original[0] == "agy"
+    assert original[original.index("--mode")+1] == "plan"
+    assert "--sandbox" in original and "--dangerously-skip-permissions" not in original
+    expected = hashlib.sha256(prompt.encode()).hexdigest()
+    script = ("import hashlib,json,sys; row=json.loads(sys.stdin.read()); "
+              "assert row['event']=='user' and hashlib.sha256(row['message']['content'].encode()).hexdigest()==" + repr(expected) + "; "
+              "print(" + repr(json.dumps({"event":"result","result":result()})) + ")")
+    monkeypatch.setattr(adapter, "command", lambda *a,**kw: [sys.executable,"-c",script,*original[1:]])
+    answer=adapter.execute(prompt,workspace=tmp_path,allow_edits=False)
     assert answer.returncode==0 and answer.message=="VERDICT: APPROVED"
 
 

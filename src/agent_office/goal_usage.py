@@ -21,6 +21,8 @@ def schema(db):
         source TEXT NOT NULL,observed_at TEXT,actual_model TEXT,actual_effort TEXT,
         input_tokens INTEGER,cached_input_tokens INTEGER,output_tokens INTEGER,reasoning_output_tokens INTEGER,
         total_tokens INTEGER,context_used INTEGER,context_window INTEGER)""")
+    if "total_cost_usd" not in {row[1] for row in db.execute("PRAGMA table_info(studio_usage_calls)")}:
+        db.execute("ALTER TABLE studio_usage_calls ADD COLUMN total_cost_usd REAL")
     db.execute("CREATE INDEX IF NOT EXISTS studio_usage_run ON studio_usage_calls(run_id)")
     db.execute("""CREATE TABLE IF NOT EXISTS studio_usage_rates(
         id INTEGER PRIMARY KEY,run_id TEXT NOT NULL,role TEXT NOT NULL,engine TEXT NOT NULL,host TEXT NOT NULL,
@@ -129,6 +131,9 @@ def observe(db, ident, event):
             value = number(event.get(k))
             if value is not None:
                 values[k] = max(call[k] or 0,value) if k in COUNTERS else value
+        cost = event.get("total_cost_usd")
+        if type(cost) in (float,int) and 0 <= cost <= 1_000_000:
+            values["total_cost_usd"] = cost
         if any(call[k] != v for k,v in values.items()):
             _update(db,ident,values,"provider_usage")
     elif kind == "model":
@@ -188,6 +193,8 @@ def rate_rows(db,run_id,role=None,selection=None):
 
 
 def exhausted(row):
+    if row["engine"] == "claude" and row["ordinary_usage_allowed"] == 1:
+        return False
     return (row["ordinary_usage_allowed"] == 0 or row["limit_reached"] == 1 or
             row["spend_control_reached"] == 1 or (row["used_percent"] or 0) >= 100)
 
@@ -206,6 +213,11 @@ def blockers(db,run_id,role,selection):
     for row in rows:
         if row["engine"] == "codex" and row["limit_id"] not in ("default", "codex", model):
             continue
+        if row["engine"] == "claude":
+            pool = row["limit_id"]
+            if pool == "overage" or (pool in ("seven_day_opus", "seven_day_sonnet") and
+                    pool.removeprefix("seven_day_") not in (model or "").lower()):
+                continue
         if exhausted(row):
             if not any(same_pool(row,grant) and grant["name"] == row["name"]
                        and (row["account_alias"] or row["account_key"])
@@ -242,7 +254,8 @@ def describe(db,run_id):
     calls = [dict(row) for row in db.execute("SELECT * FROM studio_usage_calls WHERE run_id=? ORDER BY started_at,id",
                                             (run_id,))]
     for call in calls:
-        call["context_basis"] = "last_response_total" if call["context_used"] is not None else None
+        call["context_basis"] = (("provider_context" if call["engine"] in ("cline", "gemini") else "last_response_total")
+                                 if call["context_used"] is not None else None)
     seen = set()
     rates = []
     for row in rate_rows(db,run_id):

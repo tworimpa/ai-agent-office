@@ -18,14 +18,14 @@ ANSWER = "VERDICT: APPROVED"
 
 
 def run_fixture(tmp_path, monkeypatch, engine="cline", scenario="success", edit=False, strict=False, inbox=None,
-                prompt_only=False):
+                prompt_only=False, telemetry=None):
     adapter = CLIAdapter(engine, timeout=0.5 if scenario == "timeout" else 10)
     command = adapter.command(PROMPT, allow_edits=edit)
     monkeypatch.setattr(adapter, "command", lambda *args, **kwargs: [
         sys.executable, __file__, engine, scenario, str(int(edit)), *command[1:],
     ])
     return adapter.execute(PROMPT, workspace=tmp_path, allow_edits=edit, strict_completion=strict, inbox=inbox,
-                           prompt_only=prompt_only)
+                           prompt_only=prompt_only, telemetry=telemetry)
 
 
 @pytest.mark.parametrize("engine", ["gemini", "cline"])
@@ -167,7 +167,9 @@ def test_inbox_guard_expiring_before_write_delivers_no_bytes():
 @pytest.mark.parametrize("engine,decision", [("cline", "approve"), ("cline", "reject"), ("gemini", None)])
 def test_same_session_question_and_native_permission(tmp_path, monkeypatch, engine, decision):
     inbox = Answers(decision)
-    result = run_fixture(tmp_path, monkeypatch, engine, "inbox_flow", edit=True, inbox=inbox)
+    events = []
+    result = run_fixture(tmp_path, monkeypatch, engine, "inbox_flow", edit=True, inbox=inbox, telemetry=events.append)
+    assert not any("total_tokens" in e for e in events)
     assert (result.returncode, result.session_id, result.message) == (0, "fixture", "finished")
     assert inbox.requests[0] == ("question", "어느 값인가요?")
     if engine == "cline":
@@ -261,7 +263,7 @@ def serve_inbox(engine, scenario, req, receive, send, update):
             if scenario == "inbox_rejected_success":
                 update("tool_call_update", toolCallId="op", status="completed", rawOutput={"success": True})
     update("agent_message_chunk", content={"type": "text", "text": "finished\nAGENT_OFFICE_FINAL"})
-    send(id=req["id"], result={"stopReason": "end_turn"})
+    send(id=req["id"], result={"stopReason": "end_turn", "usage":{"totalTokens":42}})
     if scenario in ("inbox_direction", "inbox_direction_lost"):
         req = receive("session/prompt")
         assert req["id"] == 6 and req["params"]["sessionId"] == "fixture"

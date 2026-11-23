@@ -209,6 +209,13 @@ class Inbox:
                               (run_id,)).fetchall()
             return [_public(db, _refresh(db, self.path, row, run)) for row in rows]
 
+    @staticmethod
+    def settled_history(db, run_id):
+        rows = db.execute("SELECT * FROM studio_requests WHERE run_id=? ORDER BY rowid", (run_id,)).fetchall()
+        if any(row["status"] in ("pending", "decided") for row in rows):
+            return None  # The holder may have exited; reconcile through history().
+        return [_public(db, row) for row in rows]
+
     def decide(self, run_id, request_id, payload):
         action, answer = _action(payload)
         with TaskStore(self.path, existing=True) as store, store._write():
@@ -347,7 +354,7 @@ class InboxChannel:
             guidance = role_guidance(db, self.run_id, ("specialist", "verifier"))
             result = await run_consultation(plan.repo, plan.revision, plan.rule,
                                             plan.specialist, plan.verifier, json.loads(plan.folders_json),
-                                            skill_guidance=guidance, on_stage=on_stage)
+                                            skill_guidance=guidance, on_stage=on_stage, db_path=self.path)
             answer = _text(result["answer"])
             evidence = result["evidence"]
             if (evidence["revision"] != plan.revision or type(evidence["line"]) is not int or evidence["line"] < 1):
@@ -360,6 +367,8 @@ class InboxChannel:
                     raise ValueError("Invalid choice evidence")
             elif receipt["path"] != plan.path:
                 raise ValueError("Invalid delegation evidence path")
+            elif evidence.get("method") == "committed_fact":
+                receipt["method"] = "committed_fact"
             evidence = receipt
         except DelegationDeferred as exc:
             reason = DEFERRED_REASONS.get(exc.reason, away_ledger.FAILED)
@@ -430,6 +439,12 @@ class InboxChannel:
                     raise OfficeError("REQUEST_CLOSED")
                 plan, answer, evidence = proposal
                 current, reason = away_ledger.match_question(db, row)
+                if current == plan and evidence.get("method") == "committed_fact":
+                    from .away_evidence import DelegationDeferred, require_base
+                    try:
+                        require_base(plan.repo, plan.revision)
+                    except DelegationDeferred as exc:
+                        current, reason = None, DEFERRED_REASONS.get(exc.reason, away_ledger.CHANGED)
                 if current != plan:
                     withdrawn = True
                     if row["status"] == "pending":

@@ -13,7 +13,7 @@ if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
 if ($LASTEXITCODE -ne 0) { throw "dependency installation failed" }
 & $PythonExe -m compileall -q src tests
 if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
-& $PythonExe -m pytest -q
+& $PythonExe (Join-Path $PSScriptRoot 'quiet_pytest.py') -q
 if ($LASTEXITCODE -ne 0) { throw "tests failed" }
 
 Write-Host "== Available CLI versions (not required for unit tests) =="

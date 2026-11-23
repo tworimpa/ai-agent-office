@@ -17,10 +17,10 @@ from test_workflow import MockAdapter, base_state
 
 def test_truncated_review_cannot_hide_conflicting_verdict(tmp_path, monkeypatch):
     text = "VERDICT: APPROVED\n" + "x" * 13000 + "\nVERDICT: CHANGES_REQUESTED"
-    monkeypatch.setattr("agent_office.adapters.resolve_executable", lambda name: sys.executable)
-    with monkeypatch.context() as patch:
-        patch.setattr("agent_office.adapters.subprocess.run", lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps({"result": text}), ""))
-        result = CLIAdapter("claude").execute("review", workspace=tmp_path, allow_edits=False)
+    adapter = CLIAdapter("claude")
+    script = "import json; print(json.dumps({'result':" + repr(text) + "}))"
+    monkeypatch.setattr(adapter, "command", lambda *a,**kw: [sys.executable, "-c", script])
+    result = adapter.execute("review", workspace=tmp_path, allow_edits=False)
     graph = build_graph({"claude": MockAdapter([AgentResult(0, "done")]), "codex": MockAdapter([result])})
     assert graph.invoke(base_state(tmp_path))["status"] == "NEEDS_HUMAN_REVIEW"
 

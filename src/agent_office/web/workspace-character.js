@@ -83,7 +83,8 @@ function usageView(make, data) {
     row(tokens, who + ' · 요청 ' + [call.requested_model || 'CLI 기본 모델', call.requested_effort || 'CLI 기본 강도'].join(' / ') +
       ' · 관측 ' + [call.actual_model || unknown, call.actual_effort || unknown].join(' / ') +
       ' · 입력 ' + metric(call.input_tokens) + ' (캐시 ' + metric(call.cached_input_tokens) + ') · 출력 ' + metric(call.output_tokens) +
-      ' (추론 ' + metric(call.reasoning_output_tokens) + ') · 합계 ' + metric(call.total_tokens), call.source, call.observed_at);
+      ' (추론 ' + metric(call.reasoning_output_tokens) + ') · 합계 ' + metric(call.total_tokens) +
+      (Number.isFinite(call.total_cost_usd) ? ' · 공급자 비용 $' + call.total_cost_usd : ''), call.source, call.observed_at);
     const estimate = call.context_basis === 'last_response_total';
     const occupancy = estimate ? '직전 응답 기준 추정 점유 ' : '점유 ';
     const remaining = estimate && Number.isFinite(call.context_window) && Number.isFinite(call.context_used) ?
@@ -175,12 +176,12 @@ export function mountCharacterRecords({get, make, api, context, openEvidence}) {
       note.textContent = '';
     } catch { if (current()) { record.replaceChildren(); note.textContent = '작업 근거를 확인하지 못했습니다. 닫았다가 다시 열어 주세요.'; } }
   }
-  async function loadUsage() {
+  async function loadUsage(readSection = api) {
     if (usage.hidden || !usage.open) return;
     const {workspaceId, runId, identity} = context(), ticket = ++usageRead;
     const current = () => ticket === usageRead && context().identity === identity && context().runId === runId && usage.open;
     try {
-      const result = await api('/rooms/' + workspaceId + '/usage/' + runId);
+      const result = await readSection('/rooms/' + workspaceId + '/usage/' + runId);
       if (!current()) return;
       if (result.workspace_id !== workspaceId || result.run_id !== runId || !result.usage) throw Error();
       const key = JSON.stringify(result) + Math.floor(Date.now() / 60000);
@@ -201,6 +202,6 @@ export function mountCharacterRecords({get, make, api, context, openEvidence}) {
     }
   }
   char.addEventListener('toggle', loadCharacter);
-  usage.addEventListener('toggle', loadUsage);
+  usage.addEventListener('toggle', () => loadUsage());
   return {portrait, controls, loadUsage};
 }

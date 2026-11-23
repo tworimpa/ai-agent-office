@@ -1,5 +1,6 @@
 """Workspace defaults and the coordinator's durable assignment receipt."""
 from collections import Counter
+from contextlib import nullcontext
 from importlib.util import find_spec
 import json
 import platform
@@ -12,7 +13,7 @@ from . import workspace_coordination, work_profiles
 from . import meeting_store
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .models import OfficeError, validate_id
-from .office_state import _latest_stages
+from .office_state import _away_roles, _latest_stages
 from .store import TaskStore, encode
 from .studio_catalog import _single_line, normalize_test_files, read_workspace_revision, verify_committed_test_files
 from .studio_inbox import ROLE_STATE, holder_alive
@@ -67,7 +68,9 @@ def normalize_settings(data):
 
 
 def _eligible(row, capability):
-    return (row["installed"] and row["headless_support"] and row["probe_status"] == "ok"
+    verified_version = (row["probe_status"] == "unverified_version" and row["engine"] == "cline"
+                        and row["capabilities"][capability]["status"] == "passed")
+    return (row["installed"] and row["headless_support"] and (row["probe_status"] == "ok" or verified_version)
             and row["auth_status"] != "not_authenticated"
             and row["capabilities"][capability]["status"] != "failed")
 
@@ -116,9 +119,9 @@ def _assignment_note(settings, roles, allow_edits, delegated, choices):
 
 def _requests_by_role(store, ids):
     if not ids:
-        return Counter()
+        return Counter(), {}
     binds = ",".join("?" for _ in ids)
-    rows = store.connection.execute(f"""SELECT q.run_id,q.role,q.holder,
+    rows = store.connection.execute(f"""SELECT q.id,q.run_id,q.role,q.holder,
         (((p.run_id IS NOT NULL AND p.revoked_at IS NULL) OR
           (cp.run_id IS NOT NULL AND cp.revoked_at IS NULL)) AND c.request_id IS NOT NULL
           AND c.reason IS NULL AND c.evidence IS NULL) AS checking
@@ -133,8 +136,12 @@ def _requests_by_role(store, ids):
           AND ((q.role='developer' AND r.state=? AND q.engine=t.developer_engine)
             OR (q.role='reviewer' AND r.state=? AND q.engine=t.reviewer_engine))""",
         (*ids, ROLE_STATE["developer"], ROLE_STATE["reviewer"]))
-    return Counter((row["run_id"], row["role"], bool(row["checking"]))
-                   for row in rows if holder_alive(store.path, row["holder"]))
+    live = [row for row in rows if holder_alive(store.path, row["holder"])]
+    counts = Counter((row["run_id"], row["role"], bool(row["checking"])) for row in live)
+    delegated = [row for row in live if row["checking"]]
+    roles = _away_roles(store.connection, tuple({row["run_id"] for row in delegated}),
+                        {row["id"] for row in delegated}) if delegated else {}
+    return counts, roles
 
 
 def _lines(row, requests, stages):
@@ -178,6 +185,8 @@ class WorkspaceRooms:
         self.engines = engines
         self.assignments = threading.Lock()
         with TaskStore(db_path, existing=True) as store, store._write():
+            from . import worktree_storage
+            worktree_storage.schema(store.connection)
             overnight_goals.ensure_schema(store.connection)
             workspace_coordination.ensure_schema(store.connection)
             work_profiles.schema(store.connection)
@@ -211,13 +220,13 @@ class WorkspaceRooms:
             with store._write():
                 return overnight_goals.save_policy(store.connection, workspace_id, data)
 
-    def snapshot(self, workspace_id, cursor=None):
+    def snapshot(self, workspace_id, cursor=None, *, store=None):
         workspace = self._workspace(workspace_id)
         engines = self.engines.snapshot()["engines"] if cursor is None else None
-        with self.runner.lock, TaskStore(self.path, existing=True) as store:
-            self.runner._refresh(store)
+        with (TaskStore(self.path, readonly=True) if store is None else nullcontext(store)) as store:
             db = store.connection
-            db.execute("BEGIN")
+            if not db.in_transaction:
+                db.execute("BEGIN")
             scope = (workspace_id, platform.node())
             before, params = "", ()
             if cursor is not None:
@@ -230,15 +239,16 @@ class WorkspaceRooms:
                     raise OfficeError("NOT_FOUND")
                 before = " AND (r.ended_at IS NULL,r.started_at,r.run_id) < (?,?,?)"
                 params = (int(cursor.startswith("a-")), anchor[0], cursor[2:])
-            rows = db.execute(SUMMARY + ",a.assignment_json,r.ended_at IS NULL AS active" + SOURCE + """
+            rows = db.execute(SUMMARY + ",a.assignment_json,c.parent_id AS team_parent_id,r.ended_at IS NULL AS active" + SOURCE + """
                 LEFT JOIN studio_room_assignments a ON a.run_id=s.id
+                LEFT JOIN studio_team_children c ON c.id=s.id
                 WHERE s.workspace_id=? AND r.host_name=?""" + before + " ORDER BY active DESC,r.started_at DESC,r.run_id DESC LIMIT ?",
                 (*scope, *params, ROOM_LIMIT + 1)).fetchall()
             more = len(rows) > ROOM_LIMIT
             rows = rows[:ROOM_LIMIT]
             ids = [row["id"] for row in rows]
             stages = _latest_stages(db, ids) if ids else {}
-            requests = _requests_by_role(store, ids)
+            requests, consultations = _requests_by_role(store, ids)
             runs = []
             for row in rows:
                 run = self.runner._summary(row)
@@ -247,6 +257,10 @@ class WorkspaceRooms:
                 pending = sum(requests[row["id"], role, False] for role in ROLES)
                 run.update(assignment=json.loads(assignment) if assignment else None, pending_count=pending,
                            lines=_lines(row, requests, stages[row["id"]]))
+                visiting = [{"role": role, "engine": engine} for role, (engine, activity, _) in
+                            consultations.get(row["id"], {}).items() if activity == "working"]
+                if visiting:
+                    run["visiting_roles"] = visiting
                 if (run["assignment"] or {}).get("meeting"):
                     meeting = meeting_store.summary(db, row["id"])
                     run["meeting_status"] = meeting["status"]
@@ -263,7 +277,7 @@ class WorkspaceRooms:
             page = {"runs": runs, "next_cursor": next_cursor}
             if cursor is None:
                 page.update(workspace=workspace, settings=self._settings(db, workspace_id), engines=engines,
-                            meeting_supported=True, goal_supported=True, github_supported=True, briefing_supported=True,
+                            bundle_supported=True, briefing_bundle_supported=True, storage_supported=True, meeting_supported=True, goal_supported=True, github_supported=True, briefing_supported=True,
                             work_profiles_supported=True, shared_visits_supported=True, quick_dispatch_supported=True, journal_id=self.journal_id,
                             goal_default=db.execute("SELECT 1 FROM studio_goal_policies WHERE workspace_id=?",
                                                     (workspace_id,)).fetchone() is not None)

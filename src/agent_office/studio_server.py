@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import threading
 import socket
 import sqlite3
 from urllib.parse import parse_qsl, urlsplit
@@ -29,14 +30,24 @@ from .role_skills import RoleSkillRegistry
 from .studio_runner import LocalRunner
 from .away_ledger import return_report, revoke_policy
 from .studio_ssh import RemoteUnavailable, is_peer_route, remote_request
+from . import worktree_storage
 from .workspace_rooms import WorkspaceRooms, room_route
+from . import room_bundle
 from . import github_studio
 from . import workspace_briefing, work_profile_views
 from .github_connection import GitHubError
 from . import overnight_goals
 
 ASSETS = {
+    "/studio-shared.js": ("studio-shared.js", "text/javascript"),
+    "/workspace-seats.js": ("workspace-seats.js", "text/javascript"),
+    "/workspace-refresh.js": ("workspace-refresh.js", "text/javascript"),
+    "/workspace-summary.js": ("workspace-summary.js", "text/javascript"),
+
+    "/engine-maintenance.js": ("engine-maintenance.js", "text/javascript"),
+    "/workspace-progress.js": ("workspace-progress.js", "text/javascript"),
     "/": ("workspace-office.html", "text/html"),
+    "/workspace-storage.js": ("workspace-storage.js", "text/javascript"),
     "/workspace-office.css": ("workspace-office.css", "text/css"),
     "/workspace-office.js": ("workspace-office.js", "text/javascript"),
     "/workspace-goal.js": ("workspace-goal.js", "text/javascript"),
@@ -107,9 +118,12 @@ class StudioServer(ThreadingHTTPServer):
         super().server_bind()
 
     def __init__(self, db_path: Path, port: int = 8766, *, remotes=(), accept_remote=False,
-                 improvement_source=None, release_view=None, deployment_target=None, expected_journal=None):
+                 improvement_source=None, release_view=None, deployment_target=None, expected_journal=None,
+                 standalone=False):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Invalid port")
+        self.progress_slots = threading.BoundedSemaphore(8)
+        self.progress_closed = threading.Event()
         self.runner = None
         self.github = None
         self.engines = None
@@ -125,7 +139,10 @@ class StudioServer(ThreadingHTTPServer):
         try:
             self.db_path = Path(db_path).expanduser().resolve()
             if expected_journal is None:
-                with TaskStore(self.db_path) as store:
+                mode = os.environ.get("AGENT_OFFICE_SQLITE_JOURNAL", "wal") if standalone else "delete"
+                if mode not in {"wal", "delete"}:
+                    raise ValueError("AGENT_OFFICE_SQLITE_JOURNAL must be wal or delete")
+                with TaskStore(self.db_path, wal_on_create=mode == "wal") as store:
                     self.journal_id = _journal_id(store)
             else:
                 # Restoring a saved Desktop must never initialize a replacement journal.
@@ -157,6 +174,7 @@ class StudioServer(ThreadingHTTPServer):
         return connection, address
 
     def server_close(self):
+        self.progress_closed.set()
         super().server_close()
         if self.github is not None:
             self.github.close()
@@ -290,6 +308,29 @@ class StudioHandler(ObserverHandler):
 
     def _local_api(self, path, data):
         write = data is not None
+        bundle = room_bundle.route("POST" if write else "GET", path.removeprefix("/api"))
+        if bundle:
+            self._reply(200, room_bundle.read(self.server, *bundle))
+            return
+        maintenance = re.fullmatch(r"/api/engines/(codex|claude|antigravity|gemini|cline)/check", path)
+        if maintenance and write and not getattr(self, "_peer_reply", False):
+            from .engine_updates import check
+            if data:
+                raise ValueError("버전 확인 요청을 확인하세요.")
+            self._reply(200, {**check(maintenance[1]), "journal_id": self.server.journal_id})
+            return
+        progress = re.fullmatch(r"/api/runs/([a-f0-9]{32})/stream", path)
+        if progress and not write and not getattr(self, "_peer_reply", False):
+            from .run_progress import stream
+            cursor = self.headers.get("Last-Event-ID", "0")
+            if not re.fullmatch(r"[0-9]{1,18}", cursor):
+                raise ValueError("진행 기록 번호를 확인하세요.")
+            stream(self, progress[1], int(cursor))
+            return
+        storage = worktree_storage.route("POST" if write else "GET", path.removeprefix("/api"))
+        if storage:
+            self._reply(200, worktree_storage.handle(self.server, storage, data))
+            return
         profile = work_profile_views.route("POST" if write else "GET", path.removeprefix("/api"))
         if profile:
             self._reply(200, work_profile_views.handle(self.server, *profile, data))
@@ -502,7 +543,7 @@ def serve_studio(db_path: Path, port: int, *, remotes=(), accept_remote=False,
                  improvement_source=None, release_view=None, deployment_target=None):
     with StudioServer(db_path, port, remotes=remotes, accept_remote=accept_remote,
                       improvement_source=improvement_source, release_view=release_view,
-                      deployment_target=deployment_target) as server:
+                      deployment_target=deployment_target, standalone=deployment_target is None) as server:
         print(f"Agent Office studio: http://127.0.0.1:{server.server_address[1]}/", flush=True)
         if accept_remote:
             print(f"Remote studio port: {server.server_address[1]} | Journal ID: {server.journal_id}", flush=True)

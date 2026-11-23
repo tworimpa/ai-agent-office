@@ -110,12 +110,13 @@
                 <button type="button" id="add-subtask" class="secondary">하위 작업 추가</button>
               </fieldset>
               <label class="check inbox-option" for="use-delegation"><input id="use-delegation" name="use_delegation" type="checkbox" aria-controls="delegation-fields" aria-describedby="delegation-help">이번 실행의 부재중 기술 답변 위임</label>
-              <small id="delegation-help">선택한 질문과 정확히 일치하면 전문가와 독립 검증자가 별도 세션에서 최대 두 번 호출됩니다. 그 밖의 질문과 권한 요청은 직접 처리합니다.</small>
+              <small id="delegation-help">등록한 질문은 기준 커밋에서 확인한 값과 근거 줄로 답합니다. 근거가 모호한 질문과 권한 요청은 요청함에 남습니다.</small>
               <small id="delegation-availability" role="status"></small>
               <fieldset id="delegation-fields" class="delegation-fields" hidden disabled>
                 <legend>위임할 질문과 근거 파일</legend>
                 <small>질문을 선택하고 기준 커밋에 있는 파일의 저장소 상대 경로를 입력하세요.</small>
                 <div id="delegation-topics"></div>
+                <label><input id="independent-facts" type="checkbox">파일에서 확인한 답도 전문가와 검증자에게 재확인 (모델 호출 2회)</label>
                 <div class="role-pickers">
                   <div><label for="specialist-engine">전문가 엔진</label><select id="specialist-engine" name="specialist_engine" required></select></div>
                   <div><label for="verifier-engine">독립 검증자 엔진</label><select id="verifier-engine" name="verifier_engine" required></select></div>
