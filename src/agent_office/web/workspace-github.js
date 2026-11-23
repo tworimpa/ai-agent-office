@@ -430,7 +430,7 @@ export function mountGithub({get, make, api, context, openGoal, uuid, desktop, b
   field('prev').addEventListener('click', () => changePage(null, true));
   field('next').addEventListener('click', () => changePage(latest?.next_cursor, false));
   function needsStatus() {
-    return context().supported && syncPending;
+    return context().supported && (syncPending || !latest);
   }
   return {load, settings, reset, controls, needsStatus};
 }

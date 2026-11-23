@@ -27,9 +27,14 @@ def main(args):
         except (KeyboardInterrupt, BrokenPipeError):
             if child.poll() is None:
                 taskkill = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
-                subprocess.run([str(taskkill), "/PID", str(child.pid), "/T", "/F"],
-                               creationflags=subprocess.CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                try:
+                    subprocess.run([str(taskkill), "/PID", str(child.pid), "/T", "/F"],
+                                   creationflags=subprocess.CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                if child.poll() is None:
+                    child.kill()
             raise
 
 

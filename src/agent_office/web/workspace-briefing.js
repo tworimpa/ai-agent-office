@@ -406,7 +406,7 @@ export function mountBriefing({win, get, make, api, context, refresh, openAction
   function renderVisit() {
     const scope = context().visitKey;
     get('brief-visit').hidden = !scope;
-    if (!scope || !Number.isFinite(Date.parse(latest.observed_at))) return;
+    if (!scope || win.document.hidden || !Number.isFinite(Date.parse(latest.observed_at))) return;
     const key = 'office-last-visit:' + scope;
     if (visitKey !== key) {
       visitKey = key;

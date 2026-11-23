@@ -55,7 +55,7 @@ export function visiblePoller(win, refresh, invalidate) {
   const doc = win.document;
   /** @type {number|undefined} */
   let timer;
-  const cancel = () => win.clearTimeout(timer);
+  const cancel = () => { win.clearTimeout(timer); timer = undefined; };
   const visibility = () => {
     cancel();
     if (doc.hidden) invalidate();
@@ -64,6 +64,7 @@ export function visiblePoller(win, refresh, invalidate) {
   doc.addEventListener('visibilitychange', visibility);
   return {
     cancel,
+    scheduled: () => timer !== undefined,
     /** @param {number} delay */
     schedule(delay) {
       cancel();

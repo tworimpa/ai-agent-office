@@ -25,6 +25,49 @@ function pollingClock() {
   };
 }
 
+test('a restored window loads once while hidden and coalesces visible wake events', async t => {
+  const clock = pollingClock();
+  const restored = {...run, state: 'FAILED'};
+  const roomData = {...room([restored]), github_supported: true};
+  const github = {config: {enabled: true}, connections: [], status: {},
+    issues: [{issue_id: 107, number: 7, title: '설정 복원', run_id: runId}]};
+  const {window, calls, get} = mount(t, path => {
+    if (path === base) return roomData;
+    if (path === runPath) return {run: restored};
+    if (path === base + '/github') return github;
+  }, {setupWindow(win) {
+    clock.setupWindow(win);
+    Object.defineProperty(win.document, 'hidden', {value: true, configurable: true});
+  }});
+  await until(() => get('github-issues').querySelector('[data-issue="107"] button'));
+  assert.equal(clock.timers.size, 0);
+  const reads = calls.length;
+  for (const event of ['online', 'focus', 'pageshow']) window.dispatchEvent(new window.Event(event));
+  assert.equal(calls.length, reads);
+  Object.defineProperty(window.document, 'hidden', {value: false, configurable: true});
+  for (const event of ['pageshow', 'focus']) window.dispatchEvent(new window.Event(event));
+  window.document.dispatchEvent(new window.Event('visibilitychange'));
+  await until(() => clock.timers.size === 1);
+  assert.equal(calls.filter(call => call.path === base).length, 2);
+});
+
+test('first GitHub read failure retries on the next visible tick in an idle restored room', async t => {
+  const clock = pollingClock();
+  let reads = 0;
+  const {get} = mount(t, path => {
+    if (path === base) return {...room([]), github_supported: true};
+    if (path === base + '/github') {
+      if (++reads === 1) throw Error('starting');
+      return {config: {enabled: true}, connections: [], status: {}, issues: [{issue_id: 107, number: 7, title: '설정', run_id: runId}]};
+    }
+  }, {setupWindow: clock.setupWindow});
+  await until(() => clock.timers.size && reads === 1);
+  assert.equal([...clock.timers.values()][0].delay, 3000);
+  await clock.tick();
+  assert.ok(get('github-issues').querySelector('[data-issue="107"] button'));
+  assert.equal([...clock.timers.values()][0].delay, 20000);
+});
+
 for (const supported of [false, true]) {
   test('visible active refresh uses ' + (supported ? 'one bundled request' : 'compatible individual reads'), async t => {
     const clock = pollingClock();

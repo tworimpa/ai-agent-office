@@ -84,7 +84,12 @@ export function mountWorkspaceOffice(win = window) {
   let olderRuns = [], historyCursor = null, historyPaged = false, historyBusy = false, historyEpoch = 0;
   let online = false, roomOnline = false, closed = false, epoch = 0, refreshToken = 0;
   let retryBundleAt = 0, slowReadAt = 0, previousRunState = '';
-  const poller = visiblePoller(win, () => refresh(true), () => { ++refreshToken; });
+  let activeRead = 0, initialRead = 0;
+  const poll = () => { if (!activeRead) return refresh(true); };
+  const poller = visiblePoller(win, poll, () => {
+    // The initial load also serves a desktop window created with show:false.
+    if (activeRead && activeRead !== initialRead) { ++refreshToken; activeRead = 0; }
+  });
   let chatRole = null, chatAttempt = null, receiptRunId = null, chatRows = [], directionRows = [], chatDetailsOnline = false, inboxDetailsOnline = false;
   let chatState = null, settingsBusy = false, registrationBusy = false, deciding = new Set();
   let meetingDecision = null, meetingReadOK = false;
@@ -992,7 +997,7 @@ export function mountWorkspaceOffice(win = window) {
     requestControls();
   }
 
-  async function fetchRun(token, expected, readSection = api) {
+  async function fetchRun(token, expected, readSection = api, initial = false) {
     if (!expected) return;
     const read = ++detailRead;
     try {
@@ -1008,7 +1013,7 @@ export function mountWorkspaceOffice(win = window) {
         return;
       }
       detail = run;
-      if (!doc.hidden && room?.goal_supported === true) await goals.load(expected, readSection);
+      if ((!doc.hidden || initial) && room?.goal_supported === true) await goals.load(expected, readSection);
       if (!sameContext(token) || expected !== runId || read !== detailRead) return;
       meetingReadOK = true;
       say('detail-status', '');
@@ -1029,13 +1034,15 @@ export function mountWorkspaceOffice(win = window) {
     }
   }
 
-  async function refresh(periodic = false) {
+  async function refresh(periodic = false, initial = false) {
     poller.cancel();
-    if (closed || doc.hidden) return;
+    if (closed || (doc.hidden && !initial)) return;
     let readSection = api;
     let updateSlow = periodic !== true || Date.now() - slowReadAt >= 60000;
     const token = epoch;
     const sequence = ++refreshToken;
+    activeRead = sequence;
+    if (initial) initialRead = sequence;
     const current = () => sameContext(token) && sequence === refreshToken;
     try {
       if (!directory.length || roomLoadError) {
@@ -1092,8 +1099,8 @@ export function mountWorkspaceOffice(win = window) {
       const state = [hostId, workspaceId, runId, ...(room?.runs ?? []).map(row => row.id + row.state + (row.pending_count ?? 0))].join(':');
       updateSlow ||= previousRunState !== state;
       previousRunState = state;
-      if (updateSlow) slowReadAt = Date.now();
-      const detailRequest = fetchRun(token, runId, readSection);
+      if (updateSlow && !doc.hidden) slowReadAt = Date.now();
+      const detailRequest = fetchRun(token, runId, readSection, initial);
       if (runId && !trustedRun(runId)) await detailRequest;
       if (!current()) return;
       await Promise.all([
@@ -1121,6 +1128,8 @@ export function mountWorkspaceOffice(win = window) {
         say('request-note', '연결이 끊겼습니다. 마지막으로 확인한 요청을 표시합니다.');
       }
     } finally {
+      if (activeRead === sequence) activeRead = 0;
+      if (initialRead === sequence) initialRead = 0;
       if (current()) poller.schedule(roomOnline && room && !activeRuns().length && !github.needsStatus() ? 20000 : 3000);
     }
   }
@@ -2119,13 +2128,18 @@ export function mountWorkspaceOffice(win = window) {
   }
   win.addEventListener('popstate', restoreAddress);
   win.addEventListener('online', refresh);
-  refresh();
+  const wake = () => { if (!doc.hidden && !poller.scheduled()) poll(); };
+  win.addEventListener('pageshow', wake);
+  win.addEventListener('focus', wake);
+  refresh(false, true);
   return () => {
     closed = true;
     poller.dispose();
     progress.dispose();
     win.removeEventListener('popstate', restoreAddress);
     win.removeEventListener('online', refresh);
+    win.removeEventListener('pageshow', wake);
+    win.removeEventListener('focus', wake);
   };
 }
 
