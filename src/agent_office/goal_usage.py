@@ -193,6 +193,8 @@ def rate_rows(db,run_id,role=None,selection=None):
 
 
 def exhausted(row):
+    if row["engine"] == "claude" and row["ordinary_usage_allowed"] == 1:
+        return False
     return (row["ordinary_usage_allowed"] == 0 or row["limit_reached"] == 1 or
             row["spend_control_reached"] == 1 or (row["used_percent"] or 0) >= 100)
 
@@ -211,6 +213,11 @@ def blockers(db,run_id,role,selection):
     for row in rows:
         if row["engine"] == "codex" and row["limit_id"] not in ("default", "codex", model):
             continue
+        if row["engine"] == "claude":
+            pool = row["limit_id"]
+            if pool == "overage" or (pool in ("seven_day_opus", "seven_day_sonnet") and
+                    pool.removeprefix("seven_day_") not in (model or "").lower()):
+                continue
         if exhausted(row):
             if not any(same_pool(row,grant) and grant["name"] == row["name"]
                        and (row["account_alias"] or row["account_key"])
