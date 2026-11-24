@@ -454,7 +454,7 @@ def main():
         output("release_id", release["id"])
         output("already_public", str(not release["draft"]).lower())
         if release["draft"]:
-            output("asset_ids", read_draft_bytes(api, release, commit, args.manifest, args.readback))
+            output("asset_ids", read_draft_bytes(api, release, args.commit, args.manifest, args.readback))
     elif args.cmd == "publish":
         publish(api, args.version, args.commit, args.release_id, args.manifest, args.evidence, args.asset_ids)
     else:

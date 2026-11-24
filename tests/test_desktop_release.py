@@ -9,6 +9,7 @@ from io import BytesIO
 import json
 from pathlib import Path
 import re
+import sys
 from urllib.error import HTTPError
 from urllib.request import Request
 from zipfile import ZipFile
@@ -246,6 +247,32 @@ def test_retry_reads_actual_draft_bytes_and_does_not_replace_public_assets(repo,
     writes = repo.writes.copy()
     assert not release.ensure_draft(repo, VERSION, COMMIT, hashes, evidence, src)["draft"]
     release.publish(repo, VERSION, COMMIT, 80, hashes, evidence, ids)
+    assert repo.writes == writes
+
+
+def test_draft_command_resumes_existing_assets_and_emits_verified_ids(repo, tmp_path, monkeypatch):
+    packages = tmp_path / "packages"
+    hashes, evidence = release.prepare(repo, VERSION, COMMIT, packages)
+    draft = release.ensure_draft(repo, VERSION, COMMIT, hashes, evidence, packages)
+    writes = repo.writes.copy()
+    readback = tmp_path / "readback"
+    outputs = tmp_path / "outputs"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+    monkeypatch.setenv("GITHUB_REPOSITORY", repo.repo)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(outputs))
+    monkeypatch.setattr(release, "GitHub", lambda slug: repo)
+    monkeypatch.setattr(sys, "argv", [
+        "desktop_release.py", "draft", "--version", VERSION, "--commit", COMMIT,
+        "--manifest", json.dumps(hashes), "--evidence", json.dumps(evidence),
+        "--out", str(packages), "--readback", str(readback),
+    ])
+    release.main()
+    values = dict(line.split("=", 1) for line in outputs.read_text().splitlines())
+    assert values["release_id"] == str(draft["id"]) and values["already_public"] == "false"
+    assert json.loads(values["asset_ids"]) == {name: item["id"] for name, item in repo.assets.items()}
+    assert {file.name: release.digest_file(file) for file in readback.iterdir()} == hashes
     assert repo.writes == writes
 
 
