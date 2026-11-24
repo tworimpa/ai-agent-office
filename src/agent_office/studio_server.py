@@ -49,6 +49,7 @@ ASSETS = {
     "/": ("workspace-office.html", "text/html"),
     "/workspace-storage.js": ("workspace-storage.js", "text/javascript"),
     "/workspace-office.css": ("workspace-office.css", "text/css"),
+    "/workspace-bootstrap.js": ("workspace-bootstrap.js", "text/javascript"),
     "/workspace-office.js": ("workspace-office.js", "text/javascript"),
     "/workspace-goal.js": ("workspace-goal.js", "text/javascript"),
     "/workspace-briefing.js": ("workspace-briefing.js", "text/javascript"),

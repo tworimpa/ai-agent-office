@@ -92,6 +92,37 @@ async function close() {
   app = null
   await closeDesktop(child, () => launched.close())
 }
+// Report only fixed Studio asset/API paths and standard error codes. Browser
+// diagnostics can otherwise contain complete URLs, query values and fixture data.
+function startupPath(raw) {
+  const url = URL.parse(raw)
+  if (!url || url.origin !== origin) return null
+  const path = url.pathname
+  return /^\/(?:workspace-[a-z-]+|studio-shared|office-content|office-flow)\.js$/.test(path) ||
+    ['/api/hosts', '/api/workspaces'].includes(path) ? path : null
+}
+function networkError(text) {
+  return text?.match(/\b(?:net::)?ERR_[A-Z0-9_]+\b/)?.[0]
+}
+async function startupDiagnostic(page) {
+  const requests = await page.requests()
+  const messages = await page.consoleMessages()
+  return {
+    errors: (await page.pageErrors()).slice(-4).map(error => error.name),
+    startupRequests: requests.flatMap(request => {
+      const path = startupPath(request.url())
+      if (!path) return []
+      const failure = request.failure()
+      return [{path, status: request.existingResponse()?.status(), ms: Math.round(request.timing().responseEnd),
+        ...(failure ? {failure: networkError(failure.errorText) || 'request failed'} : {})}]
+    }),
+    consoleErrors: messages.filter(message => message.type() === 'error').slice(-8).map(message => ({
+      path: startupPath(message.location().url),
+      category: networkError(message.text()) || (message.text().includes('MIME type') ? 'MIME' :
+        /Content Security Policy/i.test(message.text()) ? 'CSP' : 'renderer error')
+    }))
+  }
+}
 async function screenshot(name) {
   await page.screenshot({path: join(evidence, name + '.png')})
 }
@@ -495,20 +526,17 @@ try {
   console.error('Fixture evidence:', evidence, 'working directory:', root, error)
   const diagnostic = {}
   if (page && !page.isClosed()) {
-    diagnostic.renderer = {errors: (await page.pageErrors().catch(() => [])).slice(-4).map(e => e.message.slice(0, 300))}
+    diagnostic.renderer = {}
     try {
-      Object.assign(diagnostic.renderer, await page.locator('html').evaluate(() => ({
+      Object.assign(diagnostic.renderer, await startupDiagnostic(page))
+      Object.assign(diagnostic.renderer, await page.locator('html').evaluate(html => ({
+        boot: html.dataset.workspaceBoot ?? 'not started',
         visibility: document.visibilityState, readyState: document.readyState,
         host: document.querySelector('#host option:checked')?.textContent.slice(0, 100),
         roomTitle: document.getElementById('room-title')?.textContent.slice(0, 100),
-        connection: document.getElementById('connection')?.textContent.slice(0, 100),
-        startupRequests: performance.getEntriesByType('resource').flatMap(entry => {
-          const path = new URL(entry.name).pathname
-          return ['/workspace-office.js', '/api/hosts', '/api/workspaces'].includes(path)
-            ? [{path, status: entry.responseStatus, ms: Math.round(entry.duration)}] : []
-        }).slice(-6)
+        connection: document.getElementById('connection')?.textContent.slice(0, 100)
       }), null, {timeout: 3000}))
-    } catch (error) { diagnostic.renderer.readError = error.message.slice(0, 200) }
+    } catch (error) { diagnostic.renderer.readError = error.name }
   }
   if (origin && run) {
     try {

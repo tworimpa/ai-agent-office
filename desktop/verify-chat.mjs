@@ -7,7 +7,7 @@ import { chromium, _electron as electron } from 'playwright'
 import { LocalStudio } from './studio.mjs'
 
 const [target, output, ...flags] = process.argv.slice(2)
-if (!target || !output) throw new Error('Usage: node verify-chat.mjs EXECUTABLE OUTPUT_DIR [--browser] [--before]')
+if (!target || !output) throw new Error('Usage: node verify-chat.mjs EXECUTABLE OUTPUT_DIR [--browser] [--before] [--verify-bootstrap]')
 const exe = await realpath(target)
 const root = await mkdtemp(join(tmpdir(), 'office-chat-'))
 const installPython = join(dirname(exe), 'resources', 'runtime', process.platform === 'win32' ? 'python.exe' : 'bin/python3')
@@ -80,6 +80,29 @@ try {
     const data = paths.get(path) ?? (path.endsWith('/inbox') ? {requests:[]} : null)
     return data ? route.fulfill({json:data}) : route.continue()
   })
+  if (flags.includes('--verify-bootstrap')) {
+    const target = runtime.origin + '/?workspace=' + workspace.id + '&run=' + id
+    const documents = [], mutations = []
+    const observe = request => {
+      if (request.isNavigationRequest()) documents.push(request.url())
+      if (request.method() !== 'GET' && request.method() !== 'HEAD') mutations.push(request.method())
+    }
+    let failures = 0
+    page.on('request', observe)
+    await page.route(runtime.origin + '/workspace-profile.js', route => {
+      ++failures
+      return route.abort('connectionreset')
+    }, {times: 1})
+    await page.goto(target, {waitUntil: 'commit'})
+    await page.locator('#room-title').filter({hasText: workspace.name}).waitFor()
+    await page.locator('.seat[data-person="developer"] .seat-task').filter({hasText: /알림/}).waitFor()
+    page.off('request', observe)
+    assert.equal(failures, 1)
+    assert.deepEqual(documents, [target, target])
+    assert.equal(page.url(), target)
+    assert.deepEqual(mutations, [])
+    console.log('Installed renderer recovered its workspace and run after one module request failed; two document GETs, zero writes.')
+  }
   for (const width of [1280,390]) {
     await page.setViewportSize({width,height:800})
     await page.goto(`${runtime.origin}/?workspace=${workspace.id}&run=${id}`)
