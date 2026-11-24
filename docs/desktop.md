@@ -40,6 +40,8 @@ npm run package --prefix desktop
 
 설치 파일과 `SHA256SUMS.txt`는 `desktop/dist`에 생성된다. 설치된 실행 파일을 대상으로 모의 Codex로 연결·수정·추가 지시·창 재연결·테스트·리뷰의 흐름을 검증할 수 있다.
 
+CI에서는 각 운영체제의 설치 검사가 통과하면 파일명, 버전, 설치 파일 SHA-256, Actions 아티팩트 ID와 digest를 영수증에 기록한다. 같은 커밋을 다시 빌드해도 설치 파일의 바이트와 아티팩트 ID가 달라질 수 있다. 배포할 때는 해당 커밋의 `main` 빌드에서 검사를 통과한 작업의 영수증으로 파일을 선택한다.
+
 ```shell
 node desktop/verify-install.mjs PATH_TO_INSTALLED_EXECUTABLE
 ```
