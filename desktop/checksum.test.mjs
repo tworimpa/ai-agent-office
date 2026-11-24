@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { buildChecksum, installerName, installerReceipt, selectReceipt, verifyInstaller } from './checksum.mjs'
+import { buildChecksum, installerName, installerReceipt, selectReceipt, verifyInstaller, packageVersion } from './checksum.mjs'
 
 const version = '0.9.0'
 const contents = Buffer.from([0, 0xff, 0x10])
@@ -75,4 +75,12 @@ test('Rust retries use the newest successful desktop receipt from this run and p
   await assert.rejects(selectReceipt(dir, { ...later, GITHUB_SHA: 'd'.repeat(40) }, version), /does not match/)
   await assert.rejects(selectReceipt(dir, { ...later, RUNNER_OS: 'Linux' }, version), /Unexpected receipt/)
   await assert.rejects(selectReceipt(dir, later, '0.9.1'), /does not match/)
+})
+
+test('release version agrees with both npm lockfile version fields', () => {
+  const pkg = { name: 'ai-agent-office-desktop', version: '0.9.0' }
+  const lock = { ...pkg, packages: { '': { ...pkg } } }
+  assert.equal(packageVersion(pkg, lock), pkg.version)
+  assert.throws(() => packageVersion(pkg, { ...lock, version: '0.8.1' }))
+  assert.throws(() => packageVersion(pkg, { ...lock, packages: { '': { ...pkg, version: '0.8.1' } } }))
 })
