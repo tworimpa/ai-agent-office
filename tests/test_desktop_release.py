@@ -338,3 +338,17 @@ def test_public_download_rejects_unexpected_redirect():
     assert not redirected.has_header("Authorization")
     with pytest.raises(release.ReleaseError, match="Unexpected GitHub"):
         handler.redirect_request(request, None, 302, "", {}, "https://outside.example/asset")
+
+@pytest.mark.parametrize(("path", "headers"), [
+    ("actions/artifacts/14932212147/zip", []),
+    ("releases/assets/12345", ["-H", "Accept: application/octet-stream"]),
+])
+def test_github_requests_the_correct_binary_representation(tmp_path, monkeypatch, path, headers):
+    api = release.GitHub("owner/repo")
+    def request(command, **kwargs):
+        assert command == ["gh", "api", "repos/owner/repo/" + path, *headers]
+        kwargs["stdout"].write(b"package bytes")
+    monkeypatch.setattr(release.subprocess, "run", request)
+    dest = tmp_path / "download"
+    api.download(path, dest)
+    assert dest.read_bytes() == b"package bytes"
