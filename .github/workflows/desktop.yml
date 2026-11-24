@@ -41,7 +41,6 @@ jobs:
           name: split-operator-runtime-Windows
           path: desktop/build/runtime/
           include-hidden-files: true
-          overwrite: true
           if-no-files-found: error
           retention-days: 7
       - name: Share Electron installer with coexistence checks
@@ -155,7 +154,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: goal-journey-${{ runner.os }}
-          overwrite: true
           path: |
             ${{ runner.temp }}/office-goal-evidence
             ${{ runner.temp }}/office-github-evidence

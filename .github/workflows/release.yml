@@ -1,0 +1,165 @@
+name: Electron desktop release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Desktop package version (x.y.z)
+        required: true
+        type: string
+      commit:
+        description: Full 40-character commit SHA of a tested main push
+        required: true
+        type: string
+      mode:
+        description: Verify CI only, verify a draft, or publish after native upgrade verification
+        required: true
+        type: choice
+        default: draft
+        options: [dry-run, draft, publish]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: electron-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  VERSION: ${{ inputs.version }}
+  COMMIT: ${{ inputs.commit }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      manifest: ${{ steps.source.outputs.manifest }}
+      evidence: ${{ steps.source.outputs.evidence }}
+      artifact_id: ${{ steps.transfer.outputs.artifact-id }}
+      artifact_digest: ${{ steps.transfer.outputs.artifact-digest }}
+      artifact_attempt: ${{ github.run_attempt }}
+    steps:
+      - name: Require dispatch from main
+        run: test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify eight main push jobs, receipts and installer bytes
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/desktop_release.py prepare --version "$VERSION" --commit "$COMMIT" --out "$RUNNER_TEMP/packages"
+      - uses: actions/upload-artifact@v4
+        if: inputs.mode != 'dry-run'
+        id: transfer
+        with:
+          name: release-input-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/packages/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  draft:
+    if: github.ref == 'refs/heads/main' && inputs.mode != 'dry-run'
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+      already_public: ${{ steps.release.outputs.already_public }}
+      asset_ids: ${{ steps.release.outputs.asset_ids }}
+      readback_id: ${{ steps.readback.outputs.artifact-id }}
+      readback_digest: ${{ steps.readback.outputs.artifact-digest }}
+      readback_attempt: ${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download the exact prepared archive by REST ID and verify all three files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST: ${{ needs.prepare.outputs.manifest }}
+          ARTIFACT_ID: ${{ needs.prepare.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.prepare.outputs.artifact_digest }}
+          ARTIFACT_ATTEMPT: ${{ needs.prepare.outputs.artifact_attempt }}
+        run: |
+          python3 scripts/desktop_release.py unpack --tag "v$VERSION" --commit "$COMMIT" --manifest "$MANIFEST" \
+            --artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST" --artifact-attempt "$ARTIFACT_ATTEMPT" \
+            --out "$RUNNER_TEMP/packages"
+      - name: Verify or create the tag and draft, then download the actual draft bytes
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST: ${{ needs.prepare.outputs.manifest }}
+          EVIDENCE: ${{ needs.prepare.outputs.evidence }}
+        run: |
+          python3 scripts/desktop_release.py draft --version "$VERSION" --commit "$COMMIT" \
+            --manifest "$MANIFEST" --evidence "$EVIDENCE" --out "$RUNNER_TEMP/packages" --readback "$RUNNER_TEMP/readback"
+      - uses: actions/upload-artifact@v4
+        if: steps.release.outputs.already_public == 'false'
+        id: readback
+        with:
+          name: draft-readback-${{ steps.release.outputs.release_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/readback/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  upgrade:
+    needs: [prepare, draft]
+    if: needs.draft.outputs.already_public == 'false'
+    uses: ./.github/workflows/desktop-upgrade.yml
+    with:
+      tag: v${{ inputs.version }}
+      commit: ${{ inputs.commit }}
+      release-id: ${{ needs.draft.outputs.release_id }}
+      manifest: ${{ needs.prepare.outputs.manifest }}
+      artifact-id: ${{ needs.draft.outputs.readback_id }}
+      artifact-digest: ${{ needs.draft.outputs.readback_digest }}
+      artifact-attempt: ${{ needs.draft.outputs.readback_attempt }}
+
+  publish:
+    needs: [prepare, draft, upgrade]
+    if: github.ref == 'refs/heads/main' && inputs.mode == 'publish' && needs.upgrade.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recheck the tag, CI, release asset IDs and digests before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST: ${{ needs.prepare.outputs.manifest }}
+          EVIDENCE: ${{ needs.prepare.outputs.evidence }}
+          RELEASE_ID: ${{ needs.draft.outputs.release_id }}
+          ASSET_IDS: ${{ needs.draft.outputs.asset_ids }}
+        run: |
+          python3 scripts/desktop_release.py publish --version "$VERSION" --commit "$COMMIT" --release-id "$RELEASE_ID" \
+            --manifest "$MANIFEST" --evidence "$EVIDENCE" --asset-ids "$ASSET_IDS"
+
+  public-download:
+    needs: [prepare, draft, publish]
+    if: >-
+      always() && !cancelled() && inputs.mode == 'publish' && needs.prepare.result == 'success'
+      && needs.draft.result == 'success' && (needs.publish.result == 'success' || needs.draft.outputs.already_public == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download all three public assets without credentials and compare SHA-256
+        env:
+          MANIFEST: ${{ needs.prepare.outputs.manifest }}
+        run: python3 scripts/desktop_release.py verify-public --version "$VERSION" --commit "$COMMIT" --manifest "$MANIFEST"

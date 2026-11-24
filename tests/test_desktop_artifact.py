@@ -28,14 +28,15 @@ def test_direct_artifact_retries_metadata_and_archive_404_by_id(monkeypatch):
             "workflow_run": {"id": 99}, "expired": False}
     requests = []
 
-    def run(cmd, stdout, stderr):
+    def run(cmd, stdout, stderr, *, timeout, creationflags):
+        assert 0 < timeout <= 300 and creationflags == getattr(artifact.subprocess, 'CREATE_NO_WINDOW', 0)
         path = cmd[-1]
         assert cmd[:-1] == ["gh", "api", "--hostname", "github.com"]
         assert path in [endpoint, endpoint + "/zip"]
         requests.append(path)
         if requests.count(path) == 1:
             stdout.write(b"a partly downloaded response")
-            return SimpleNamespace(returncode=1, stderr=b"gh: Not Found (HTTP 404)")
+            return SimpleNamespace(returncode=1, stderr=b"gh: Not Found (HTTP 404)" if path == endpoint else b"gh: HTTP 404")
         stdout.write(json.dumps(meta).encode() if path == endpoint else body)
         return SimpleNamespace(returncode=0, stderr=b"")
 

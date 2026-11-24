@@ -19,11 +19,12 @@ def _download(endpoint, stream):
         stream.seek(0)
         stream.truncate()
         result = subprocess.run(["gh", "api", "--hostname", "github.com", endpoint],
-                                stdout=stream, stderr=subprocess.PIPE)
+                                stdout=stream, stderr=subprocess.PIPE, timeout=300,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if result.returncode == 0:
             stream.seek(0)
             return
-        status = re.search(rb"\(HTTP (\d{3})\)", result.stderr)
+        status = re.search(rb"\bHTTP (\d{3})\b", result.stderr)
         code = int(status[1]) if status else None
         if attempt == 4 or code not in (404, 408, 429, 500, 502, 503, 504):
             raise RuntimeError(f"GitHub artifact request failed: {endpoint} (gh exit {result.returncode}, HTTP {code})")

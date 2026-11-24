@@ -1,0 +1,100 @@
+name: Verify drafted desktop installers
+on:
+  workflow_call:
+    inputs:
+      tag: {type: string, required: true}
+      commit: {type: string, required: true}
+      release-id: {type: string, required: true}
+      manifest: {type: string, required: true}
+      artifact-id: {type: string, required: true}
+      artifact-digest: {type: string, required: true}
+      artifact-attempt: {type: string, required: true}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify:
+    name: '${{ matrix.os }} / ${{ matrix.scenario }} install'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        scenario: [clean, upgrade]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The trusted dispatch workflow may verify an earlier main build.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+      - name: Recover verified downloads from the draft release
+        env:
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ inputs.commit }}
+          RELEASE_ID: ${{ inputs.release-id }}
+          MANIFEST: ${{ inputs.manifest }}
+          ARTIFACT_ID: ${{ inputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ inputs.artifact-digest }}
+          ARTIFACT_ATTEMPT: ${{ inputs.artifact-attempt }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/desktop_release.py unpack --tag $env:TAG --commit $env:COMMIT --release-id $env:RELEASE_ID --manifest $env:MANIFEST --artifact-id $env:ARTIFACT_ID --artifact-digest $env:ARTIFACT_DIGEST --artifact-attempt $env:ARTIFACT_ATTEMPT --platform $env:RUNNER_OS --out (Join-Path $env:RUNNER_TEMP office-release)
+      - name: Download pinned 0.8.1 baseline
+        if: matrix.scenario == 'upgrade'
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/desktop_upgrade_baseline.py --platform $env:RUNNER_OS --out (Join-Path $env:RUNNER_TEMP office-baseline)
+      - name: Check out the canonical 0.8.1 source if the original artifact expired
+        if: steps.baseline.outputs.rebuild == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: tworimpa/ai-agent-office
+          ref: ${{ steps.baseline.outputs.source-commit }}
+          path: baseline-source
+          persist-credentials: false
+      - if: steps.baseline.outputs.rebuild == 'true'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.12.3'
+      - name: Rebuild and record the 0.8.1 installer from its locked inputs
+        if: steps.baseline.outputs.rebuild == 'true'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm ci --prefix baseline-source/desktop
+          npm run package --prefix baseline-source/desktop
+          python scripts/desktop_upgrade_baseline.py --platform $env:RUNNER_OS --out (Join-Path $env:RUNNER_TEMP office-baseline) --rebuilt baseline-source
+      - run: npm ci --prefix desktop
+      - name: Exercise installed desktop with fixture workers
+        env:
+          TAG: ${{ inputs.tag }}
+          SCENARIO: ${{ matrix.scenario }}
+        run: ./scripts/verify-release-install.ps1 -Scenario $env:SCENARIO -Version $env:TAG.Substring(1) -ReleaseDirectory (Join-Path $env:RUNNER_TEMP office-release)
+      - name: Keep native installation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-install-${{ runner.os }}-${{ matrix.scenario }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/office-authenticode.json
+            ${{ runner.temp }}/office-baseline/baseline.json
+            ${{ runner.temp }}/office-install-journey/result.json
+            ${{ runner.temp }}/office-install-journey/upgrade.json
+            ${{ runner.temp }}/office-install-journey/window.png
+            ${{ runner.temp }}/office-install-journey/upgrade-reopened.png
+          if-no-files-found: warn
+          retention-days: 30

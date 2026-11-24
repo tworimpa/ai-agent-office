@@ -4,7 +4,9 @@ Windows x64 사용자별 설치판과 Ubuntu·Debian 계열 Linux x64 설치판�
 
 ## 설치와 첫 실행
 
-- **Windows**에서는 `AI Agent Office Setup <버전>.exe`를 실행하고 시작 메뉴에서 **AI Agent Office**를 연다. 이 첫 개인용 설치판의 SHA-256을 빌드 결과의 `SHA256SUMS.txt`와 대조할 수 있다.
+[GitHub Releases](https://github.com/tworimpa/ai-agent-office/releases)의 Assets에서 운영체제에 맞는 설치 파일과 `SHA256SUMS.txt`를 받는다. [다운로드 검증 및 배포 절차](desktop-release.md)
+
+- **Windows**에서는 `AI-Agent-Office-Setup-<버전>.exe`를 실행하고 시작 메뉴에서 **AI Agent Office**를 연다.
 - **Linux**에서는 데스크톱 패키지 설치 도구로 `ai-agent-office-desktop_<버전>_amd64.deb`를 열거나, 패키지가 있는 폴더에서 `sudo apt install ./ai-agent-office-desktop_<버전>_amd64.deb`를 실행한다. 앱 목록에서 **AI Agent Office**를 연다. WSL에서는 WSLg가 실행 중인 Ubuntu에서 같은 앱을 열 수 있다.
 
 **기존 작업실 연결**은 실행 중인 이 컴퓨터의 Studio 주소를 사용한다. 예를 들어 Windows의 `AgentOfficeStudio`가 포트 8766으로 동작 중이면 `http://127.0.0.1:8766`을 입력한다. 기존 저널과 작업공간이 연결된다.
