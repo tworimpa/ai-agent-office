@@ -231,7 +231,9 @@ def test_retry_reads_actual_draft_bytes_and_does_not_replace_public_assets(repo,
     draft = release.ensure_draft(repo, VERSION, COMMIT, hashes, evidence, src)
     assert sum(method == "upload" for method, _ in repo.writes) == 3
     readback = tmp_path / "readback"
-    ids = release.read_draft_bytes(repo, draft, hashes, readback)
+    # GitHub may retain a branch name here even though the existing tag is fixed.
+    draft["target_commitish"] = "main"
+    ids = release.read_draft_bytes(repo, draft, COMMIT, hashes, readback)
     assert set(ids) == set(hashes)
     payload = packed({name: (readback / name).read_bytes() for name in hashes})
     repo.add(99, "draft-readback-80-11-1", payload)
@@ -275,7 +277,7 @@ def test_changed_draft_or_source_blocks_publication(repo, tmp_path, damage, erro
     src = tmp_path / "src"
     hashes, evidence = release.prepare(repo, VERSION, COMMIT, src)
     draft = release.ensure_draft(repo, VERSION, COMMIT, hashes, evidence, src)
-    ids = release.read_draft_bytes(repo, draft, hashes, tmp_path / "readback")
+    ids = release.read_draft_bytes(repo, draft, COMMIT, hashes, tmp_path / "readback")
     if damage == "id":
         repo.assets[release.CHECKSUMS]["id"] += 1
     elif damage == "digest":
@@ -299,7 +301,7 @@ def test_declared_digest_is_insufficient_if_the_draft_returns_other_bytes(repo, 
     draft = release.ensure_draft(repo, VERSION, COMMIT, hashes, evidence, src)
     repo.asset_payloads[repo.assets[release.CHECKSUMS]["id"]] = b"wrong"
     with pytest.raises(release.ReleaseError, match="Downloaded draft hash mismatch"):
-        release.read_draft_bytes(repo, draft, hashes, tmp_path / "readback")
+        release.read_draft_bytes(repo, draft, COMMIT, hashes, tmp_path / "readback")
     assert repo.release["draft"]
 
 

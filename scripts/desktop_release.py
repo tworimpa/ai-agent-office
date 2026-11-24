@@ -264,8 +264,10 @@ def remote_assets(api, release_id, hashes, *, complete):
     return mapped
 
 
-def check_release(release, tag, commit, release_id, *, draft=None):
-    require(release["id"] == release_id and release["tag_name"] == tag and release["target_commitish"] == commit
+def check_release(api, release, tag, commit, release_id, *, draft=None):
+    # GitHub documents target_commitish as unused for a pre-existing tag.
+    # Resolve the actual Git ref every time we are about to trust the release.
+    require(release["id"] == release_id and release["tag_name"] == tag and tag_exists(api, tag, commit)
             and not release["prerelease"], "Unexpected release identity")
     if draft is not None:
         require(release["draft"] == draft, "Unexpected release publication state")
@@ -284,7 +286,7 @@ def ensure_draft(api, version, commit, hashes, evidence, directory):
     exists = tag_exists(api, tag, commit)
     if releases:
         release = releases[0]
-        check_release(release, tag, commit, release["id"])
+        check_release(api, release, tag, commit, release["id"])
         require(exists and release["body"].replace("\r\n", "\n") == notes, "Release tag or provenance notes differ")
     else:
         if not exists:
@@ -292,19 +294,19 @@ def ensure_draft(api, version, commit, hashes, evidence, directory):
         require(tag_exists(api, tag, commit), "Release tag was not created")
         release = api.write("POST", "releases", {"tag_name": tag, "target_commitish": commit, "name": f"AI Agent Office {version}",
                                                  "body": notes, "draft": True, "prerelease": False})
-        check_release(release, tag, commit, release["id"], draft=True)
+        check_release(api, release, tag, commit, release["id"], draft=True)
     release_id = release["id"]
     assets = remote_assets(api, release_id, hashes, complete=not release["draft"])
     for name in sorted(set(hashes) - set(assets)):
-        check_release(api.get(f"releases/{release_id}"), tag, commit, release_id, draft=True)
+        check_release(api, api.get(f"releases/{release_id}"), tag, commit, release_id, draft=True)
         api.upload(tag, directory / name)
     remote_assets(api, release_id, hashes, complete=True)
     return release
 
 
-def read_draft_bytes(api, release, hashes, out):
+def read_draft_bytes(api, release, commit, hashes, out):
     release_id = release["id"]
-    check_release(api.get(f"releases/{release_id}"), release["tag_name"], release["target_commitish"], release_id, draft=True)
+    check_release(api, api.get(f"releases/{release_id}"), release["tag_name"], commit, release_id, draft=True)
     assets = remote_assets(api, release_id, hashes, complete=True)
     out.mkdir(parents=True, exist_ok=False)
     for name in hashes:
@@ -340,14 +342,14 @@ def publish(api, version, commit, release_id, hashes, evidence, asset_ids):
     tag = f"v{version}"
     require(tag_exists(api, tag, commit), "Missing release tag")
     release = api.get(f"releases/{release_id}")
-    check_release(release, tag, commit, release_id)
+    check_release(api, release, tag, commit, release_id)
     require(release["body"].replace("\r\n", "\n") == release_notes(api, version, commit, evidence), "Release notes changed")
     require(green_workflows(api, commit) == evidence["workflows"], "Source CI changed since package verification")
     assets = remote_assets(api, release_id, hashes, complete=True)
     require({name: item["id"] for name, item in assets.items()} == asset_ids, "Draft assets changed since native verification")
     if release["draft"]:
         api.write("PATCH", f"releases/{release_id}", {"draft": False})
-    check_release(api.get(f"releases/{release_id}"), tag, commit, release_id, draft=False)
+    check_release(api, api.get(f"releases/{release_id}"), tag, commit, release_id, draft=False)
     remote_assets(api, release_id, hashes, complete=True)
     require(tag_exists(api, tag, commit), "Published tag missing")
 
@@ -443,7 +445,7 @@ def main():
         output("release_id", release["id"])
         output("already_public", str(not release["draft"]).lower())
         if release["draft"]:
-            output("asset_ids", read_draft_bytes(api, release, args.manifest, args.readback))
+            output("asset_ids", read_draft_bytes(api, release, commit, args.manifest, args.readback))
     elif args.cmd == "publish":
         publish(api, args.version, args.commit, args.release_id, args.manifest, args.evidence, args.asset_ids)
     else:
