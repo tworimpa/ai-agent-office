@@ -2,6 +2,7 @@ name: Rust comparison installers
 on: workflow_call
 permissions:
   contents: read
+  actions: read
 jobs:
   verify:
     name: '${{ matrix.os }} / Rust comparison'
@@ -25,8 +26,22 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - uses: actions/download-artifact@v4
         with:
-          name: electron-installer-${{ runner.os }}
-          path: electron-installer
+          pattern: desktop-receipt-${{ runner.os }}-*
+          github-token: ${{ github.token }}
+          path: desktop-receipts
+      - id: receipt
+        run: node desktop/checksum.mjs select desktop-receipts
+      - name: Fetch the exact installer identified by the desktop receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.receipt.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ steps.receipt.outputs.artifact_digest }}
+          INSTALLER_NAME: ${{ steps.receipt.outputs.installer_name }}
+        run: python scripts/desktop_artifact.py electron-installer
+      - name: Verify the installer used in the desktop checks
+        env:
+          INSTALLER_SHA256: ${{ steps.receipt.outputs.installer_sha256 }}
+        run: node desktop/checksum.mjs verify electron-installer
       - name: Set up Linux WebView and WebDriver
         if: runner.os == 'Linux'
         run: |
@@ -60,6 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rust-comparison-${{ runner.os }}
+          overwrite: true
           path: |
             rust-desktop/target/release/bundle/nsis/*setup.exe
             rust-desktop/target/release/bundle/deb/*.deb

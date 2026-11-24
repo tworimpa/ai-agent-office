@@ -1,6 +1,6 @@
 {
   "name": "ai-agent-office-desktop",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "private": true,
   "license": "Apache-2.0",
   "description": "AI Agent Office의 데스크톱 작업실",

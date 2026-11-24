@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   desktop:
@@ -31,7 +32,8 @@ jobs:
           version: '0.12.3'
       - run: npm ci --prefix desktop
       - run: npm test --prefix desktop
-      - run: npm run package --prefix desktop
+      - id: build
+        run: npm run package --prefix desktop
       - name: Publish the tested standalone Windows operator runtime
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
@@ -39,22 +41,38 @@ jobs:
           name: split-operator-runtime-Windows
           path: desktop/build/runtime/
           include-hidden-files: true
+          overwrite: true
           if-no-files-found: error
           retention-days: 7
       - name: Share Electron installer with coexistence checks
+        id: upload
         uses: actions/upload-artifact@v4
         with:
           name: electron-installer-${{ runner.os }}
           path: |
-            desktop/dist/*Setup*.exe
-            desktop/dist/*.deb
+            desktop/dist/${{ steps.build.outputs.installer_name }}
+            desktop/dist/SHA256SUMS.txt
+          overwrite: true
           if-no-files-found: error
           retention-days: 7
+      - name: Fetch the uploaded installer by ID for installation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          INSTALLER_NAME: ${{ steps.build.outputs.installer_name }}
+        run: python scripts/desktop_artifact.py electron-installer
+      - name: Verify the downloaded installer and build checksum
+        env:
+          INSTALLER_SHA256: ${{ steps.build.outputs.installer_sha256 }}
+        run: node desktop/checksum.mjs verify electron-installer
       - name: Install and verify the Windows desktop app
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          INSTALLER_NAME: ${{ steps.build.outputs.installer_name }}
         run: |
-          $installer = (Get-ChildItem -LiteralPath desktop/dist -Filter '*Setup*.exe' -File).FullName
+          $installer = (Get-Item -LiteralPath (Join-Path 'electron-installer' $env:INSTALLER_NAME)).FullName
           $installed = Start-Process -FilePath $installer -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
           if ($installed.ExitCode -ne 0) { exit $installed.ExitCode }
           $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'AI Agent Office.lnk'
@@ -77,9 +95,11 @@ jobs:
           }
       - name: Install and verify the Linux desktop app
         if: runner.os == 'Linux'
+        env:
+          INSTALLER_NAME: ${{ steps.build.outputs.installer_name }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ./desktop/dist/*.deb xvfb xauth
+          sudo apt-get install -y --no-install-recommends "./electron-installer/$INSTALLER_NAME" xvfb xauth
           test -f /usr/share/applications/ai-agent-office-desktop.desktop
           xvfb-run -a node desktop/verify-install.mjs /usr/bin/ai-agent-office-desktop
           xvfb-run -a node desktop/verify-chat.mjs /usr/bin/ai-agent-office-desktop "$RUNNER_TEMP/office-chat-evidence"
@@ -117,11 +137,25 @@ jobs:
           sudo --login --user office-goal-ci xvfb-run -a "$tools/node" "$tools/verify-goal.mjs" /usr/bin/ai-agent-office-desktop "$evidence" after
           sudo --login --user office-goal-ci xvfb-run -a "$tools/node" "$tools/verify-goal.mjs" /usr/bin/ai-agent-office-desktop "$evidence/github" github
           sudo --login --user office-goal-ci xvfb-run -a "$tools/node" "$tools/verify-goal.mjs" /usr/bin/ai-agent-office-desktop "$evidence/briefing" briefing-after
+      - name: Record the installer that passed the desktop checks
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          INSTALLER_SHA256: ${{ steps.build.outputs.installer_sha256 }}
+        run: node desktop/checksum.mjs receipt electron-installer
+      - name: Upload the verified installer receipt for this attempt
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-receipt-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/receipt.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Keep the fixture report and screen captures
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: goal-journey-${{ runner.os }}
+          overwrite: true
           path: |
             ${{ runner.temp }}/office-goal-evidence
             ${{ runner.temp }}/office-github-evidence
