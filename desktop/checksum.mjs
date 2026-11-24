@@ -118,7 +118,8 @@ if (import.meta.main) {
     }
     case 'select': {
       const receipt = await selectReceipt(directory, env, version)
-      await appendFile(env.GITHUB_OUTPUT, `artifact_id=${receipt.artifact_id}\ninstaller_sha256=${receipt.installer_sha256}\n`)
+      const outputs = ['artifact_id', 'artifact_digest', 'installer_name', 'installer_sha256']
+      await appendFile(env.GITHUB_OUTPUT, outputs.map(key => `${key}=${receipt[key]}\n`).join(''))
       break
     }
     default:

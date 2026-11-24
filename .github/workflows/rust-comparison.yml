@@ -2,6 +2,7 @@ name: Rust comparison installers
 on: workflow_call
 permissions:
   contents: read
+  actions: read
 jobs:
   verify:
     name: '${{ matrix.os }} / Rust comparison'
@@ -26,14 +27,17 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: desktop-receipt-${{ runner.os }}-*
+          github-token: ${{ github.token }}
           path: desktop-receipts
       - id: receipt
         run: node desktop/checksum.mjs select desktop-receipts
-      - uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ steps.receipt.outputs.artifact_id }}
-          merge-multiple: true
-          path: electron-installer
+      - name: Fetch the exact installer identified by the desktop receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.receipt.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ steps.receipt.outputs.artifact_digest }}
+          INSTALLER_NAME: ${{ steps.receipt.outputs.installer_name }}
+        run: python scripts/desktop_artifact.py electron-installer
       - name: Verify the installer used in the desktop checks
         env:
           INSTALLER_SHA256: ${{ steps.receipt.outputs.installer_sha256 }}

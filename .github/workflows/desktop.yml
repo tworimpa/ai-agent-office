@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   desktop:
@@ -55,11 +56,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Fetch the uploaded installer by ID for installation
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ steps.upload.outputs.artifact-id }}
-          merge-multiple: true
-          path: electron-installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          INSTALLER_NAME: ${{ steps.build.outputs.installer_name }}
+        run: python scripts/desktop_artifact.py electron-installer
       - name: Verify the downloaded installer and build checksum
         env:
           INSTALLER_SHA256: ${{ steps.build.outputs.installer_sha256 }}
