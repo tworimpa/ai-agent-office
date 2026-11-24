@@ -83,8 +83,17 @@ class GitHub:
         return [item for page in pages for item in (page[key] if key else page)]
 
     def download(self, path, dest):
+        # Actions ZIPs use the REST endpoint's normal redirect response; release
+        # assets need octet-stream negotiation to receive bytes instead of JSON.
+        if re.fullmatch(r"actions/artifacts/[1-9][0-9]*/zip", path):
+            headers = []
+        elif re.fullmatch(r"releases/assets/[1-9][0-9]*", path):
+            headers = ["-H", "Accept: application/octet-stream"]
+        else:
+            raise ReleaseError("Unexpected download endpoint")
         with dest.open("wb") as stream:
-            subprocess.run([*self.command(path), "-H", "Accept: application/octet-stream"], stdout=stream, check=True, timeout=300, creationflags=BACKGROUND)
+            subprocess.run([*self.command(path), *headers], stdout=stream, check=True,
+                           timeout=300, creationflags=BACKGROUND)
 
     def verified_artifact(self, artifact_id, **expected):
         from desktop_artifact import verified_artifact
