@@ -6,6 +6,8 @@ The selected local or SSH-connected host owns its folders, processes, requests a
 
 ## 설치형 앱
 
+**[GitHub Releases에서 설치판 다운로드](https://github.com/tworimpa/ai-agent-office/releases)** · Windows x64는 `Setup.exe`, Ubuntu amd64는 `.deb`를 선택하세요. [파일 확인과 업그레이드 방법](docs/desktop-release.md)
+
 조정자에게 일을 맡기면 작업 방식과 역할별 배정이 실행에 저장됩니다. 사용한 모델·effort, 토큰과 계정 한도, 지난 방문 이후의 결정과 캐릭터별 근거를 같은 작업에서 확인할 수 있습니다. [작업 방식·한도·육각형 사용법](docs/work-profiles.md)
 
 기존 Studio에 연결하는 **AI Agent Office (Rust 비교판)**도 Windows와 Ubuntu x64에 별도로 설치할 수 있습니다. 같은 Workspace와 실행을 두 앱에서 이어 보는 방법은 [Rust 비교판 사용 및 검증 안내](docs/rust-comparison.md)에 있습니다.

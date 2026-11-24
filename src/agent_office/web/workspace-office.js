@@ -2142,5 +2142,3 @@ export function mountWorkspaceOffice(win = window) {
     win.removeEventListener('focus', wake);
   };
 }
-
-if (typeof document !== 'undefined') mountWorkspaceOffice();

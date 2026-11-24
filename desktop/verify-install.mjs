@@ -16,14 +16,19 @@ const live = process.argv.includes('--live')
 const nativePicker = process.argv.includes('--native-picker')
 const windows = process.platform === 'win32'
 const python = join(dirname(exe), 'resources', 'runtime', windows ? 'python.exe' : 'bin/python3')
-const root = await mkdtemp(join(tmpdir(), 'agent-office-desktop-'))
-const profile = join(root, 'profile')
+const root = process.env.OFFICE_VERIFY_DIRECTORY ?? await mkdtemp(join(tmpdir(), 'agent-office-desktop-'))
+if (process.env.OFFICE_VERIFY_DIRECTORY) await mkdir(root) // Must be a fresh fixture directory.
+const hostProfile = process.env.OFFICE_VERIFY_DEFAULT_PROFILE
+if (hostProfile && (process.env.RUNNER_ENVIRONMENT !== 'github-hosted' || process.env.GITHUB_ACTIONS !== 'true')) {
+  throw Error('Testing the default desktop profile requires a disposable hosted runner')
+}
+const profile = hostProfile || join(root, 'profile')
 const fixtureDir = join(root, 'mock-bin')
 const repo = join(root, nativePicker ? 'desktop-project' : '작업공간')
 const views = []
 const peerProfile = join(root, 'peer')
 const resultFile = join(root, 'result.json')
-let app, child, failure
+let app, child, failure, installedVersion, observedProfile
 console.log(`Evidence directory: ${root}`)
 
 function git(...args) {
@@ -67,10 +72,15 @@ const attached = new LocalStudio(peerProfile, python)
 const standalone = new LocalStudio(join(profile, 'local-studio'), python)
 
 async function launch() {
-  app = await electron.launch({ executablePath: exe, args: [`--user-data-dir=${profile}`], env,
+  app = await electron.launch({ executablePath: exe, args: hostProfile ? [] : [`--user-data-dir=${profile}`], env,
     chromiumSandbox: true, timeout: 30000 })
   child = app.process()
   const window = await app.firstWindow({ timeout: 30000 })
+  const observed = await app.evaluate(({ app }) => ({version: app.getVersion(), profile: app.getPath('userData')}))
+  installedVersion = observed.version
+  observedProfile = await realpath(observed.profile)
+  assert.equal(observedProfile, await realpath(profile), 'Unexpected desktop profile selected by the installed app')
+  if (process.env.OFFICE_VERIFY_VERSION) assert.equal(installedVersion, process.env.OFFICE_VERIFY_VERSION)
   window.context().setDefaultTimeout(live ? 150000 : 20000)
   return window
 }
@@ -233,8 +243,59 @@ async function approvePlan(window, revision, edit) {
   return body.meeting
 }
 
+async function verifyPeerAndRecovery(local, runId) {
+  const peer = await attached.start()
+  assert.notEqual(peer.journalId, local.journalId)
+  const setup = nextWindow()
+  await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items[0].submenu.items[0].click())
+  let window = await setup
+  await window.locator('#connection-options summary').first().click()
+  await window.locator('#address').fill('http://example.invalid:8766')
+  await window.locator('#connect button').click()
+  await window.getByRole('alert').filter({ hasText: '이 컴퓨터의 Studio 주소' }).waitFor()
+  await window.locator('#address').fill(peer.origin)
+  const connected = nextWindow()
+  await window.locator('#connect button').click()
+  window = await connected
+  await window.locator('#empty-register').waitFor()
+  assert.equal(new URL(window.url()).origin, peer.origin)
+  await register(window, false)
+  await close()
+  assert.equal((await attached.running()).journalId, peer.journalId)
+  assert.equal((await read(peer.origin, '/api/workspaces')).workspaces.length, 1)
+  window = await launch()
+  await window.getByRole('heading', { name: '설치판 검증' }).waitFor()
+  assert.equal(new URL(window.url()).origin, peer.origin)
+  await close()
+  const config = join(profile, 'connection.json')
+  const saved = JSON.parse(await readFile(config, 'utf8'))
+  const db = join(profile, 'local-studio', 'tasks.sqlite3')
+  assert.ok(await standalone.stop(local.bootId))
+  await rename(db, db + '.backup')
+  saved.connection = { mode: 'local', origin: local.origin }
+  await writeFile(config, JSON.stringify(saved))
+  window = await launch()
+  await window.getByRole('alert').filter({ hasText: '저장된 로컬 저널 ID' }).waitFor()
+  await rename(config, config + '.backup')
+  await window.locator('#retry').click()
+  await window.getByRole('alert').filter({ hasText: 'connection.json' }).waitFor()
+  assert.equal(await window.locator('#start-options').isVisible(), false)
+  await assert.rejects(access(db), { code: 'ENOENT' })
+  saved.connection.journalId = local.journalId
+  await writeFile(config, JSON.stringify(saved))
+  await window.locator('#retry').click()
+  await window.getByRole('alert').filter({ hasText: local.journalId }).waitFor()
+  await assert.rejects(access(db), { code: 'ENOENT' })
+  await rename(db + '.backup', db)
+  const repaired = nextWindow()
+  await window.locator('#retry').click()
+  window = await repaired
+  await window.waitForURL(url => url.searchParams.get('run') === runId)
+  return peer
+}
+
 try {
-  await verifyClosingRestore()
+  if (!hostProfile) await verifyClosingRestore()
   let window = await launch()
   await capture(window, '01-setup')
   assert.equal(await window.locator('#address').isVisible(), false)
@@ -400,57 +461,16 @@ try {
     assert.match(final.meeting.plan.tasks[0].description, /desktop verified/)
   }
   await window.screenshot({ path: join(root, 'window.png') })
-  const peer = await attached.start()
-  assert.notEqual(peer.journalId, local.journalId)
-  const setup = nextWindow()
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items[0].submenu.items[0].click())
-  window = await setup
-  await window.locator('#connection-options summary').first().click()
-  await window.locator('#address').fill('http://example.invalid:8766')
-  await window.locator('#connect button').click()
-  await window.getByRole('alert').filter({ hasText: '이 컴퓨터의 Studio 주소' }).waitFor()
-  await window.locator('#address').fill(peer.origin)
-  const connected = nextWindow()
-  await window.locator('#connect button').click()
-  window = await connected
-  await window.locator('#empty-register').waitFor()
-  assert.equal(new URL(window.url()).origin, peer.origin)
-  await register(window, false)
-  await close()
-  assert.equal((await attached.running()).journalId, peer.journalId)
-  assert.equal((await read(peer.origin, '/api/workspaces')).workspaces.length, 1)
-  window = await launch()
-  await window.getByRole('heading', { name: '설치판 검증' }).waitFor()
-  assert.equal(new URL(window.url()).origin, peer.origin)
-  await close()
-  const config = join(profile, 'connection.json')
-  const saved = JSON.parse(await readFile(config, 'utf8'))
-  const db = join(profile, 'local-studio', 'tasks.sqlite3')
-  assert.ok(await standalone.stop(local.bootId))
-  await rename(db, db + '.backup')
-  saved.connection = { mode: 'local', origin: local.origin }
-  await writeFile(config, JSON.stringify(saved))
-  window = await launch()
-  await window.getByRole('alert').filter({ hasText: '저장된 로컬 저널 ID' }).waitFor()
-  await rename(config, config + '.backup')
-  await window.locator('#retry').click()
-  await window.getByRole('alert').filter({ hasText: 'connection.json' }).waitFor()
-  assert.equal(await window.locator('#start-options').isVisible(), false)
-  await assert.rejects(access(db), { code: 'ENOENT' })
-  saved.connection.journalId = local.journalId
-  await writeFile(config, JSON.stringify(saved))
-  await window.locator('#retry').click()
-  await window.getByRole('alert').filter({ hasText: local.journalId }).waitFor()
-  await assert.rejects(access(db), { code: 'ENOENT' })
-  await rename(db + '.backup', db)
-  const repaired = nextWindow()
-  await window.locator('#retry').click()
-  window = await repaired
-  await window.waitForURL(url => url.searchParams.get('run') === run.id)
-  assert.equal((await standalone.running()).journalId, local.journalId)
+  // Preserve the profile written by the old app for the actual installation upgrade.
+  const peer = hostProfile ? null : await verifyPeerAndRecovery(local, run.id)
+  const resumed = await standalone.running()
+  assert.equal(resumed.journalId, local.journalId)
   await writeFile(resultFile, JSON.stringify({
     provider: live ? 'codex' : 'fixture', platform: process.platform, exe, attached: peer, local,
     folderPicker: nativePicker ? 'operating-system' : 'dialog-result-fixture', views,
+    installedVersion, observedProfile, profileMode: hostProfile ? 'default' : 'fixture',
+    lastBootId: resumed.bootId, workspaceId: final.workspace_id,
+    workspaceName: basename(repo), repository: repo, task: final.task,
     runId: run.id, simpleId, sameRouteAfterReopen: true, state: final.state, meeting: final.meeting,
     persistedDirection: direction.id, test: final.test_output, review: final.review_output,
   }, null, 2))

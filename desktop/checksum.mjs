@@ -10,6 +10,15 @@ const dist = fileURLToPath(new URL('./dist/', import.meta.url))
 const hex256 = /^[a-f0-9]{64}$/
 const gitSha = /^[a-f0-9]{40}$/
 
+export function packageVersion(pkg, lock) {
+  const root = lock.packages?.['']
+  if (!root || pkg.name !== root.name || pkg.name !== lock.name || pkg.version !== lock.version ||
+      pkg.version !== root.version || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(pkg.version)) {
+    throw new Error('Desktop package and lockfile must identify the same x.y.z release')
+  }
+  return pkg.version
+}
+
 export function installerName(platform, version) {
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Invalid desktop version')
   if (platform === 'Windows') return `AI Agent Office Setup ${version}.exe`
@@ -97,7 +106,7 @@ export async function selectReceipt(directory, env, version) {
 
 if (import.meta.main) {
   const env = process.env
-  const version = manifest.version
+  const version = packageVersion(manifest, JSON.parse(await readFile(new URL('./package-lock.json', import.meta.url), 'utf8')))
   const platform = { linux: 'Linux', win32: 'Windows' }[process.platform]
   const name = installerName(platform, version)
   const [command = 'build', directory] = process.argv.slice(2)

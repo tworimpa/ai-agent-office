@@ -75,7 +75,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rust-comparison-${{ runner.os }}
-          overwrite: true
           path: |
             rust-desktop/target/release/bundle/nsis/*setup.exe
             rust-desktop/target/release/bundle/deb/*.deb
