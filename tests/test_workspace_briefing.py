@@ -155,7 +155,8 @@ def test_same_numbered_plan_questions_keep_both_origins_and_reused_answers_keep_
             db = store.connection
             for rid, prompt in zip(sources,["변환할까요?","내보낼까요?"]):
                 plan = {"questions":[{"question":prompt,"options":["예","아니요"]}]}
-                db.execute("INSERT INTO studio_meetings VALUES(?,1,'awaiting_review',1,NULL)",(rid,))
+                db.execute("""INSERT INTO studio_meetings(run_id,review_plan,status,revision,error)
+                              VALUES(?,1,'awaiting_review',1,NULL)""",(rid,))
                 db.execute("INSERT INTO studio_meeting_revisions VALUES(?,1,?,'coordinator','초안',NULL,'{}',NULL,?,NULL)",
                            (rid,encode(plan),now()))
             consumer=assign("복원",dict(dependencies=[
