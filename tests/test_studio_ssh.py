@@ -100,6 +100,19 @@ def test_system_ssh_avoids_current_directory_and_path(tmp_path, monkeypatch):
         assert option in argv
 
 
+def test_legacy_projection_omits_only_bot_receipts_from_history_and_bundles():
+    note = {"message": "operator data", "bots": "literal"}
+    assignment = {"roles": {"developer": {"name": "Release developer"}}, "bots": {"developer": {"id": "release"}}}
+    run = {"id": JOURNAL, "assignment": assignment}
+    page = {"runs": [run], "next_cursor": "h-" + JOURNAL}
+    bundle = {"room": page, "run": {"run": run}, "briefing": note}
+    expected = {"id": JOURNAL, "assignment": {"roles": assignment["roles"]}}
+    assert ssh.legacy_role_bot_reply(page) == {"runs": [expected], "next_cursor": page["next_cursor"]}
+    projected = ssh.legacy_role_bot_reply(bundle)
+    assert projected["room"]["runs"] == [expected] and projected["run"]["run"] == expected
+    assert projected["briefing"] == note and "bots" in run["assignment"]
+
+
 RUN_LIST = frame(b'{"runs":[]}')
 
 

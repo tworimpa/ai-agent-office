@@ -28,6 +28,9 @@ prompt = sys.stdin.buffer.read().decode("utf-8")
 if engine == "agy":
     prompt = json.loads(prompt)["message"]["content"]
 stage = prompt.splitlines()[0]
+if trace_path := os.environ.get("OFFICE_TEST_BOT_PROMPTS"):
+    with open(trace_path, "a", encoding="utf-8") as log:
+        log.write(json.dumps([engine, prompt]) + "\n")
 if stage in ("MEETING_DEVELOPER", "MEETING_REVIEWER"):
     material = json.loads(prompt.splitlines()[-1])
     assert "web/test_value.py" in material["evidence"]["excerpts"]
@@ -131,6 +134,62 @@ def test_room_auto_executes_verifies_and_preserves_meeting_journal(tmp_path, mon
         assert trace.read_text().splitlines() == ["claude MEETING_DEVELOPER", "agy MEETING_REVIEWER", "claude edit", "agy review"]
     with studio(db) as reopened:
         assert request(reopened, f"/api/runs/{key}")[1]["run"]["meeting"] == meeting
+
+
+def test_workspace_role_bots_pin_handoffs_and_each_workers_own_instructions(tmp_path, monkeypatch, setup):
+    from agent_office.cli import main
+    from agent_office.studio_server import StudioServer
+
+    folders, _ = setup
+    db = tmp_path / "bots.db"
+    log = tmp_path / "prompts.jsonl"
+    monkeypatch.setenv("OFFICE_TEST_BOT_PROMPTS", str(log))
+    monkeypatch.setenv("USERPROFILE" if os.name == "nt" else "HOME", str(tmp_path))
+    with StudioServer(db, port=0) as server:
+        monkeypatch.setattr(server.engines, "snapshot", lambda: engine_snapshot("claude", "antigravity"))
+        workspace = server.catalog.create("My office", [str(path) for path in folders])["id"]
+        roles = ("coordinator", "developer", "reviewer")
+        for role in roles:
+            args = ["--workspace-id", workspace, "--id", f"custom-{role}", "--role", role]
+            assert main(["--db", str(db), "bots", "create", *args, "--name", f"My {role}",
+                         "--instructions", f"role-message-{role}"]) == 0
+            assert main(["--db", str(db), "bots", "assign", *args]) == 0
+        run_id = uuid4().hex
+        body = {"id": run_id, "meeting": True, "review_plan": True, "allow_edits": True,
+                "message": "설정 값 변경", "delegation": False, "test_files": ["web/test_value.py"],
+                "role_engines": {"developer": "claude"}}
+        receipt = server.rooms.assign(workspace, body)["assignment"]
+        assert {role: bot["id"] for role, bot in receipt["bots"].items()} == {r: f"custom-{r}" for r in roles}
+        assert "instructions" not in json.dumps(receipt["bots"])
+        assert receipt["roles"]["developer"] == {"name": "My developer", "engine": "claude", "skills": []}
+        def wait_until(predicate):
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline:
+                run = server.runner.detail(run_id)
+                if predicate(run):
+                    return run
+                assert run["state"] not in ("FAILED", "RECOVERY_REQUIRED", "WAITING_USER"), run
+                time.sleep(0.1)
+            pytest.fail("Timed out waiting for the role bot workflow")
+
+        meeting = wait_until(lambda run: run["meeting"]["status"] == "awaiting_review")["meeting"]
+        for role in roles:
+            assert main(["--db", str(db), "bots", "assign", "--workspace-id", workspace,
+                         "--role", role, "--id", f"office-{role}"]) == 0
+        assert server.rooms.assign(workspace, body)["assignment"] == receipt
+        decision = {"id": uuid4().hex, "revision": meeting["revision"], "plan": meeting["plan"], "answers": {}}
+        server.runner.decide_meeting(run_id, decision)
+        final = wait_until(lambda run: run["state"] == "READY_FOR_HUMAN_REVIEW")
+        assert final["assignment"] == receipt
+        assert final["meeting"]["verification"][0]["status"] == "passed"
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert [engine for engine, _ in calls] == ["claude", "agy", "claude", "agy"]
+        for engine, prompt in calls:
+            assert "role-message-coordinator" in prompt
+            assert ("role-message-developer" in prompt) == (engine == "claude")
+            assert ("role-message-reviewer" in prompt) == (engine == "agy")
+    with StudioServer(db, port=0) as reopened:
+        assert reopened.runner.detail(run_id)["assignment"] == receipt
 
 
 def test_remote_product_gate_applies_one_edited_plan_and_authenticates_receipt(tmp_path, monkeypatch, setup):

@@ -34,6 +34,7 @@ _MAX_HEADER = 16 * 1024
 # 200 snapshots of 8192 UTF-8 bytes, including JSON control-character escaping.
 _MAX_RESPONSE = 12 * 1024 * 1024
 _MAX_REQUEST = 128 * 1024
+ROLE_BOT_RECEIPT_HEADER = "X-Agent-Office-Role-Bots"
 
 
 @dataclass(frozen=True)
@@ -110,7 +111,7 @@ def _request_bytes(host: RemoteHost, method: str, route: str, payload: dict | No
         raise ValueError("지원하지 않는 원격 작업실 요청입니다.")
     address = f"127.0.0.1:{host.port}"
     headers = [f"{method} /api/peer/{host.journal_id}{route} HTTP/1.0",
-               f"Host: {address}", "Connection: close"]
+               f"Host: {address}", "Connection: close", f"{ROLE_BOT_RECEIPT_HEADER}: 1"]
     if method == "GET" and route.startswith("/improvements/candidates/"):
         headers.append("X-Agent-Office-Candidate-Basis: 1")
     body = b""
@@ -130,6 +131,22 @@ def _request_bytes(host: RemoteHost, method: str, route: str, payload: dict | No
 
 def _reject_constant(_value):
     raise ValueError("Invalid JSON constant")
+
+
+def legacy_role_bot_reply(section):
+    """Project run detail, room pages, and their bundle wrappers onto the older wire format."""
+    if not isinstance(section, dict):
+        return section
+    result = dict(section)
+    assignment = result.get("assignment")
+    if isinstance(assignment, dict) and "bots" in assignment:
+        result["assignment"] = {key: value for key, value in assignment.items() if key != "bots"}
+    for key in ("room", "run"):
+        if isinstance(result.get(key), dict):
+            result[key] = legacy_role_bot_reply(result[key])
+    if isinstance(result.get("runs"), list):
+        result["runs"] = [legacy_role_bot_reply(row) for row in result["runs"]]
+    return result
 
 
 def _check_reply(status, data, journal_headers, journal_id, method, route, payload):
@@ -340,7 +357,7 @@ def _check_assignment(row, required=False):
     if assignment is None and not required:
         return
     goal_fields = {"goal_policy", "goal_criteria", "reproduce_required", "planning_mode"}
-    if (not isinstance(assignment, dict) or set(assignment) - {"test_files", "meeting", "review_plan", "work_profile"} - goal_fields != {"roles", "note", "delegation"}
+    if (not isinstance(assignment, dict) or set(assignment) - {"test_files", "meeting", "review_plan", "work_profile", "bots"} - goal_fields != {"roles", "note", "delegation"}
             or type(assignment["delegation"]) is not bool or not isinstance(assignment["note"], str)
             or not 1 <= len(assignment["note"]) <= 520 or row.get("use_inbox") is not True):
         raise RemoteUnavailable()
@@ -369,6 +386,12 @@ def _check_assignment(row, required=False):
             assignment.get("meeting") is not True or type(assignment.get("review_plan")) is not bool):
         raise RemoteUnavailable()
     profiles = normalize_profiles(assignment["roles"])
+    if "bots" in assignment:
+        from .local_bots import validate_receipt
+        bots = assignment["bots"]
+        if (not validate_receipt(bots) or any(not bots[role]["builtin"] and
+                bots[role]["name"] != profiles[role]["name"] for role in ROLES)):
+            raise RemoteUnavailable()
     if any(profiles[role]["engine"] != row.get(f"{role}_engine") for role in ROLES):
         raise RemoteUnavailable()
     if row.get("delegation") is not None and not assignment["delegation"]:

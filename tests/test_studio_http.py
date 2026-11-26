@@ -193,3 +193,25 @@ def test_studio_accepts_only_local_explicit_json_commands(tmp_path):
             assert status == 200 and body
         assert request(server, "/?run=bad")[0] == 400
         assert request(server, "/api/workspaces")[1] == {"workspaces": []}
+
+
+def test_local_role_bots_create_bind_and_reject_peer_routes(tmp_path):
+    with studio(tmp_path / "office.db", accept_remote=True) as server:
+        ws = server.catalog.create("local", [str(tmp_path)])
+        path = "/api/rooms/" + ws["id"] + "/bots"
+        status, catalog = request(server, path)
+        assert status == 200
+        assert catalog["assignments"]["reviewer"] == "office-reviewer"
+        assert len(catalog["assignments"]) == 3
+        bot = {"id": "api-review", "role": "reviewer", "name": "API 리뷰어", "instructions": "Review API changes."}
+        assert request(server, path, bot, Origin="https://elsewhere.invalid")[0] == 403
+        assert request(server, path, {**bot, "engine": "codex"})[0] == 400
+        status, created = request(server, path, bot)
+        assert status == 200 and bot["id"] in {row["id"] for row in created["bots"]}
+        assert created["assignments"]["reviewer"] == "office-reviewer"
+        body = {"id": bot["id"], "role": "reviewer"}
+        assert request(server, path + "/assignment", {**body, "role": "developer"})[0] == 400
+        assert request(server, "/api/peer/" + server.journal_id + path[4:] + "/assignment", body)[0] == 404
+        status, updated = request(server, path + "/assignment", body)
+        assert status == 200 and updated["assignments"]["reviewer"] == bot["id"]
+        assert request(server, path)[1]["assignments"] == updated["assignments"]

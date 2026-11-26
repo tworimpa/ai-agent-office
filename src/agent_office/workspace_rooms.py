@@ -8,7 +8,7 @@ import re
 import threading
 from hashlib import sha256
 
-from . import overnight_goals, role_skills
+from . import local_bots, overnight_goals, role_skills
 from . import workspace_coordination, work_profiles
 from . import meeting_store
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
@@ -190,6 +190,7 @@ class WorkspaceRooms:
             overnight_goals.ensure_schema(store.connection)
             workspace_coordination.ensure_schema(store.connection)
             work_profiles.schema(store.connection)
+            local_bots.ensure_schema(store.connection)
             store.connection.execute("""CREATE TABLE IF NOT EXISTS studio_room_settings(
                 workspace_id TEXT PRIMARY KEY, settings_json TEXT NOT NULL)""")
             store.connection.execute("CREATE INDEX IF NOT EXISTS studio_runs_workspace ON studio_runs(workspace_id)")
@@ -333,6 +334,10 @@ class WorkspaceRooms:
                 if prior:
                     return prior
                 settings = self._settings(store.connection, workspace_id)
+                bots = local_bots.resolve(store.connection, workspace_id)
+                for role in ROLES:
+                    if not bots[role]["builtin"]:
+                        settings[role]["name"] = bots[role]["name"]
                 saved_profile, bound_engines = work_profiles.stored(store.connection, workspace_id)
                 options = data.get("work_profile", {})
                 if not isinstance(options, dict):
@@ -378,7 +383,7 @@ class WorkspaceRooms:
                     choices = (specialist, verifier)
                     policy = policy_for_assignment(repo, revision, folders, specialist_engine=specialist,
                                                    verifier_engine=verifier)
-            assignment = {"roles": roles, "delegation": delegated,
+            assignment = {"roles": roles, "bots": local_bots.public_receipt(bots), "delegation": delegated,
                           "note": _assignment_note(settings, roles, allow_edits, delegated, choices)}
             effective = work_profiles.resolve(saved_profile, bound_engines, data.get("work_profile", {}), roles,
                                               self.models, engines, edits=allow_edits, goal=goal, reproduce=goal and reproduce,
@@ -402,6 +407,6 @@ class WorkspaceRooms:
                                      request_digest=digest, developer_engine=roles["developer"]["engine"],
                                      reviewer_engine=roles["reviewer"]["engine"], use_inbox=True,
                                      delegation=policy, role_skills={role: roles[role]["skills"] for role in ROLES},
-                                     room_assignment=assignment, room_revision=revision, room_choices=choices,
+                                     room_assignment=assignment, room_bots=bots, room_revision=revision, room_choices=choices,
                                      **({"coordination":coordination} if coordination is not None else {}),
                                      **({"external_origin":origin} if origin is not None else {}))

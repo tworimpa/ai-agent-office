@@ -100,7 +100,7 @@ def _owner(role, assignment):
     if role == "tester":
         return "테스트 실행기"
     if role == "coordinator":
-        return "조정자"
+        return assignment.get("bots", {}).get(role, {}).get("name", "조정자")
     return (assignment.get("roles",{}).get(role) or {}).get("name") or {"developer":"개발 담당","reviewer":"검토 담당"}.get(role,role)
 
 
@@ -266,7 +266,7 @@ def read(db, workspace):
             if len(questions)>1:
                 prompt += f" 외 {len(questions)-1}건"
             decisions.append(dict(run_id=rid,request_id=key,revision=row["revision"],kind="plan",role="coordinator",
-                                  owner="조정자",task=work[rid]["task"],prompt=prompt,created_at=row["created_at"],
+                                  owner=_owner("coordinator",assignments[rid]),task=work[rid]["task"],prompt=prompt,created_at=row["created_at"],
                                   impacts=impacts(rid,key,prompt,"plan")))
     user_waits = {d["run_id"] for d in decisions if d["kind"] in {"product","permission","plan"}}
     for rid,item in work.items():

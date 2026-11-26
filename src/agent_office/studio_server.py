@@ -1,6 +1,7 @@
 """Loopback HTTP entry point for the user-operated local studio."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 from http.server import ThreadingHTTPServer
 from importlib.resources import files
 import json
@@ -29,12 +30,13 @@ from .studio_catalog import StudioCatalog
 from .role_skills import RoleSkillRegistry
 from .studio_runner import LocalRunner
 from .away_ledger import return_report, revoke_policy
-from .studio_ssh import RemoteUnavailable, is_peer_route, remote_request
+from .studio_ssh import ROLE_BOT_RECEIPT_HEADER, RemoteUnavailable, is_peer_route, legacy_role_bot_reply, remote_request
 from . import worktree_storage
 from .workspace_rooms import WorkspaceRooms, room_route
 from . import room_bundle
 from . import github_studio
 from . import workspace_briefing, work_profile_views
+from . import local_bots
 from .github_connection import GitHubError
 from . import overnight_goals
 
@@ -53,6 +55,7 @@ ASSETS = {
     "/workspace-office.js": ("workspace-office.js", "text/javascript"),
     "/workspace-goal.js": ("workspace-goal.js", "text/javascript"),
     "/workspace-briefing.js": ("workspace-briefing.js", "text/javascript"),
+    "/workspace-bots.js": ("workspace-bots.js", "text/javascript"),
     "/workspace-profile.js": ("workspace-profile.js", "text/javascript"),
     "/workspace-character.js": ("workspace-character.js", "text/javascript"),
     "/workspace-github.js": ("workspace-github.js", "text/javascript"),
@@ -191,6 +194,9 @@ class StudioHandler(ObserverHandler):
     allowed_methods = "GET, HEAD, POST"
 
     def _reply(self, status, body, mime="application/json"):
+        if (getattr(self, "_peer_reply", False) and status < 300
+                and self.headers.get_all(ROLE_BOT_RECEIPT_HEADER) != ["1"]):
+            body = legacy_role_bot_reply(body)
         try:
             super()._reply(status, body, mime)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -309,6 +315,29 @@ class StudioHandler(ObserverHandler):
 
     def _local_api(self, path, data):
         write = data is not None
+        bots = re.fullmatch(r"/api/rooms/([0-9a-f]{32})/bots(/assignment)?", path)
+        if bots and not getattr(self, "_peer_reply", False) and (write or not bots[2]):
+            workspace = bots[1]
+            self.server.catalog.get(workspace)
+            with TaskStore(self.server.db_path, existing=True, readonly=not write) as store, (
+                    store._write() if write else nullcontext()):
+                db = store.connection
+                if write:
+                    local_bots.ensure_schema(db)
+                else:
+                    db.execute("BEGIN")
+                if write and bots[2]:
+                    if set(data) != {"id", "role"}:
+                        raise ValueError("배정할 역할과 봇 ID를 입력하세요.")
+                    local_bots.assign(db, workspace, data["role"], data["id"])
+                elif write:
+                    if set(data) != {"id", "name", "role", "instructions"}:
+                        raise ValueError("봇의 ID, 이름, 역할과 지침을 입력하세요.")
+                    local_bots.create(db, workspace, data["id"], data["name"], data["role"], data["instructions"])
+                result = {"bots": local_bots.list_bots(db, workspace),
+                          "assignments": {role: bot["id"] for role, bot in local_bots.resolve(db, workspace).items()}}
+            self._reply(200, result)
+            return
         bundle = room_bundle.route("POST" if write else "GET", path.removeprefix("/api"))
         if bundle:
             self._reply(200, room_bundle.read(self.server, *bundle))

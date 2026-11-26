@@ -235,6 +235,41 @@ def test_remote_assignment_lost_receipt_resolves_on_same_host(tmp_path, monkeypa
             assert launched == [assignment["id"]]
 
 
+def test_mixed_version_peer_receipts_preserve_existing_workspace_protocol(tmp_path, monkeypatch):
+    from agent_office.studio_ssh import ROLE_BOT_RECEIPT_HEADER, _request_bytes
+
+    web, _ = project(tmp_path)
+    with studio(tmp_path / "peer.db", accept_remote=True) as peer:
+        monkeypatch.setattr(peer.runner, "_launch", lambda *_: None)
+        monkeypatch.setattr(peer.engines, "snapshot", lambda: engine_snapshot("codex"))
+        workspace = register(peer, (web,))
+        room = f"/rooms/{workspace}"
+        prefix = f"/api/peer/{peer.journal_id}"
+        host = RemoteHost("fixture", peer.server_port, peer.journal_id)
+        header = {ROLE_BOT_RECEIPT_HEADER: "1"}
+        assert f"{ROLE_BOT_RECEIPT_HEADER}: 1\r\n".encode() in _request_bytes(host, "GET", room, None)
+
+        bot = {"id": "release-dev", "role": "developer", "name": "Release developer",
+               "instructions": "Summarize public changes."}
+        assert request(peer, "/api" + room + "/bots", bot)[0] == 200
+        assert request(peer, "/api" + room + "/bots/assignment", {"id": bot["id"], "role": bot["role"]})[0] == 200
+        run = uuid4().hex
+        task = {"id": run, "message": "Plan the release.", "allow_edits": False, "delegation": None}
+        status, legacy = request(peer, prefix + room + "/assignments", task)
+        assert status == 202 and "bots" not in legacy["run"]["assignment"]
+        status, modern = request(peer, prefix + room + "/assignments", task, **header)
+        assert status == 202 and modern["run"]["assignment"]["bots"]["developer"]["id"] == bot["id"]
+        assert request(peer, "/api/runs/" + run)[1]["run"]["assignment"] == modern["run"]["assignment"]
+
+        for headers, has_bots in [({}, False), (header, True)]:
+            _, page = request(peer, prefix + room, **headers)
+            _, detail = request(peer, prefix + "/runs/" + run, **headers)
+            _, bundle = request(peer, prefix + room + f"/bundle/{run}/briefing", **headers)
+            for row in (page["runs"][0], detail["run"], bundle["room"]["runs"][0], bundle["run"]["run"]):
+                assert ("bots" in row["assignment"]) is has_bots
+                assert row["assignment"]["roles"]["developer"]["name"] == bot["name"]
+
+
 def test_room_history_pages_keep_workspace_scope(tmp_path, monkeypatch):
     web, contracts = project(tmp_path)
     monkeypatch.setattr("agent_office.workspace_rooms.ROOM_LIMIT", 2)

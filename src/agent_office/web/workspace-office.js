@@ -9,6 +9,7 @@ import {mountGoals} from './workspace-goal.js';
 import {mountStorage} from './workspace-storage.js';
 import {mountGithub} from './workspace-github.js';
 import {mountBriefing} from './workspace-briefing.js';
+import {mountBots} from './workspace-bots.js';
 import {mountWorkProfiles} from './workspace-profile.js';
 import {mountCharacterRecords} from './workspace-character.js';
 
@@ -118,6 +119,9 @@ export function mountWorkspaceOffice(win = window) {
 
   const request = (path, body, timeoutMs) => requestJson(win, path, body, {timeoutMs});
   const api = (path, body, timeoutMs) => request(scope(hostId) + path, body, timeoutMs);
+  const bots = mountBots({get, make, api, context: () => ({
+    workspaceId, epoch, journal: room?.journal_id, local: hostId === 'local', writable: canWrite(),
+  })});
   const uuid = () => win.crypto.randomUUID().replaceAll('-', '');
   const profileContext = () => ({workspaceId, runId, identity: [hostId, room?.journal_id, workspaceId].join(':'),
     supported: room?.work_profiles_supported === true, assignment: selected()?.assignment, settings: room?.settings, writable: canWrite()});
@@ -556,6 +560,8 @@ export function mountWorkspaceOffice(win = window) {
     }
     seats.showRuns(cards, id => address(hostId, workspaceId, id));
     const coordinatorLine = selected()?.lines?.coordinator ?? summary()?.lines?.coordinator;
+    const coordinator = (selected() ?? activeRuns()[0])?.assignment?.bots?.coordinator;
+    seat('coordinator').querySelector('.seat-name').textContent = coordinator && !coordinator.builtin ? coordinator.name : '조정자';
     seat('coordinator').querySelector('.seat-line').textContent = firstTask ? '원하는 결과를 적어 주세요.' :
       coordinatorLine || '새 작업을 맡길 수 있습니다.';
     const run = selected(), selectedSummary = get('selected-summary'), summaryPanel = get('task-summary');
@@ -1983,6 +1989,7 @@ export function mountWorkspaceOffice(win = window) {
     say('settings-note', '');
     openDialog(get('room-settings'), get('room-delegation'));
     goals.settings();
+    bots.settings();
     profiles.settings();
     github.settings();
     storage.settings();

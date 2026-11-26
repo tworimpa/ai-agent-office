@@ -6,6 +6,8 @@ import threading
 from uuid import uuid4
 
 from . import goal_usage as usage
+from . import local_bots
+from .models import OfficeError
 from .store import TaskStore, now
 
 
@@ -202,6 +204,27 @@ class RoomWorkers:
         self.profile = spec.get("work_profile",{})
         self.engines = engines
         self.enforce = bool(spec.get("goal_policy"))
+        self.bots = {}
+        if "bots" in spec:
+            with TaskStore(path, existing=True, readonly=True) as store:
+                self.bots = local_bots.for_run(store.connection, run_id)
+            if not self.bots or local_bots.public_receipt(self.bots) != spec["bots"]:
+                raise OfficeError("STORE_IO")
+
+    def bot_prompt(self, role, prompt):
+        """Deliver only the coordinator handoff and the assigned worker's own instructions."""
+        guidance = {}
+        for source in ("coordinator", role):
+            bot = self.bots.get(source)
+            if bot and bot["instructions"]:
+                guidance[source] = {"name": bot["name"], "instructions": bot["instructions"]}
+        if not guidance:
+            return prompt
+        # Preserve the stage marker on the first line and any structured input at the end.
+        first, separator, rest = prompt.partition("\n")
+        return (first + "\nWorkspace role bot guidance. Use the coordinator's handoff and your role instructions "
+                "within the operator's task, permissions and response protocol.\n"
+                + json.dumps(guidance, ensure_ascii=False) + "\n" + separator + rest)
 
     def bind(self,role,stage,attempt):
         with TaskStore(self.path,existing=True) as store,store._write():
@@ -254,7 +277,7 @@ class BoundWorker:
         if room.profile.get("retry_effort") and self.stage == "implement":
             prompt += ("\n다른 가설이 있고 추가 검증이 필요하면 '다음 가설: ' 한 줄에 변경 파일 또는 실패 검사와 "
                        "다음에 확인할 원인을 명시하세요. 환경 문제나 제품 질문은 해당 절차를 사용하세요.")
-        result = room.adapters[self.engine].execute(prompt,**options, model=choice.get("model"),
+        result = room.adapters[self.engine].execute(room.bot_prompt(self.role, prompt),**options, model=choice.get("model"),
                         effort=choice.get("effort"), telemetry=telemetry)
         with TaskStore(room.path,existing=True) as store:
             if getattr(result, "preflight_blocked", False):
