@@ -54,6 +54,7 @@ def test_client_entry_points_and_packaged_assets(tmp_path):
         assert b"workspace-bootstrap.js" in request(server, "/workspace?workspace="+ws)[1]
         assert b"workspace-bootstrap.js" in request(server, "/?workspace="+ws+"&run="+"b"*32)[1]
         assert request(server, "/bots?workspace=invalid")[0] == 400
-        for path in ("figure-0.webp","figure-11.webp","walk-11.webp","study-seated-king.webp"):
+        for path in ("figure-0.webp", "figure-11.webp", "study-seated-king.webp",
+                     *(f"walk-{i}.webp" for i in range(12))):
             status, image = request(server, "/bot-art/" + path)
             assert status == 200 and image[8:12] == b"WEBP"

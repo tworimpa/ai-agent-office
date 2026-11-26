@@ -62,7 +62,8 @@ ASSETS = {
     **{"/" + name: (name, "text/javascript") for name in (
         "bot-client.js", "bot-client-ui.js", "bot-client-files.js", "bot-client-orders.js", "bot-room-scene.js")},
     **{"/bot-art/" + name: ("bot-art/" + name, "image/webp") for name in (
-        *(f"figure-{i}.webp" for i in range(12)), "walk-0.webp", "walk-11.webp", "study-seated-king.webp", "office.webp")},
+        *(f"{kind}-{i}.webp" for kind in ("figure", "walk") for i in range(12)),
+        "study-seated-king.webp", "office.webp")},
     "/workspace-profile.js": ("workspace-profile.js", "text/javascript"),
     "/workspace-character.js": ("workspace-character.js", "text/javascript"),
     "/workspace-github.js": ("workspace-github.js", "text/javascript"),
