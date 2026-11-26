@@ -62,6 +62,27 @@ def test_plain_json_and_stream_success_have_same_response():
         assert parsed.returncode==0 and parsed.session_id=="test-session"
 
 
+def test_empty_success_is_diagnosed_without_using_intermediate_text_as_review():
+    from agent_office.adapters import parse_antigravity
+    stream = [
+        {"event": "step_update", "step_update": {"step_type": "agent_response", "text_delta": "VERDICT: APPROVED"}},
+        {"event": "result", "result": result(response="")},
+    ]
+    parsed = parse_antigravity("\n".join(map(json.dumps, stream)))
+    assert parsed.returncode != 0
+    assert "empty response" in parsed.message
+    assert "APPROVED" not in parsed.message
+
+
+@pytest.mark.parametrize("response", ["", "VERDICT: APPROVED"])
+def test_success_with_a_denied_command_fails_even_without_step_error(response):
+    from agent_office.adapters import parse_antigravity
+    terminal = result(response=response, denied_actions=[{"action": "command", "display_name": "Bash"}])
+    parsed = parse_antigravity(json.dumps({"event": "result", "result": terminal}))
+    assert parsed.returncode != 0
+    assert "denied" in parsed.message
+
+
 def test_real_fake_subprocess_roundtrips_antigravity_unicode_stdin(tmp_path):
     class NativeFake(CLIAdapter):
         def command(self,prompt,*,allow_edits):

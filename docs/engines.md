@@ -28,6 +28,8 @@ The first two commands inspect metadata only. The run command calls the provider
 
 ## Antigravity transport
 
+Studio supplies its bounded Git diff, working-tree status and test output to the Antigravity reviewer. The reviewer can evaluate that evidence directly and use permitted file reads for extra context. A headless shell request can be denied even when `agy` exits zero with terminal status `SUCCESS`. Studio records a denied action, tool error or empty final response as a failed turn. A review verdict must come from the provider's final response.
+
 The adapter calls official `agy`, not the IDE executable. It sends a single stdin NDJSON user message and expects one final result. Both plan/accept-edits modes retain --sandbox and --disable-slash-commands. No skip-permissions flag, persistent settings edit, new login or credentials injection is used.
 
 The [official headless protocol](https://antigravity.google/docs/cli/headless/) defines status and response in the terminal result. The adapter fails closed for non-SUCCESS, malformed/missing/multiple results, empty/nonstring response, error fields or reported tool errors even if process exit is0. INTERRUPTED/timeout require recovery review. This deliberately rejects some recoverable tool-error runs instead of automatically accepting an incomplete review. It does not parse provider responses as human permission approval.
