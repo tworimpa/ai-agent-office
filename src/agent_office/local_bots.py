@@ -7,6 +7,7 @@ from hashlib import sha256
 import json
 import re
 
+from . import bot_spec
 from .models import OfficeError, validate_id
 from .role_skills import instruction_digest
 from .store import encode
@@ -32,8 +33,7 @@ def ensure_schema(db):
 
 
 def _valid_id(bot_id):
-    return (isinstance(bot_id, str) and 1 <= len(bot_id) <= 64
-            and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", bot_id) is not None)
+    return bot_spec.valid_id(bot_id)
 
 
 def _asset_name(name):
@@ -82,11 +82,45 @@ def _builtin(role):
     return _definition(f"office-{role}", _NAMES[role], role, "", builtin=True)
 
 
+def _portable(bot):
+    return bot_spec.validate({
+        "specVersion": bot_spec.VERSION, "id": bot["id"], "name": bot["name"], "role": bot["role"],
+        "files": {"SOUL.md": bot["instructions"], **bot.get("assets", {})},
+        "folders": bot.get("folders", []), "extensions": bot.get("extensions", {}),
+    })
+
+
+def _from_portable(document):
+    package = bot_spec.validate(document)
+    bot_id, name, role = (package[k] for k in ("id", "name", "role"))
+    assets = package["files"].copy()
+    instructions = assets.pop("SOUL.md")
+    if bot_id in _BUILTINS:
+        builtin = _builtin(_BUILTINS[bot_id])
+        if _portable(builtin) != package:
+            raise ValueError("기본 봇에 예약된 ID입니다.")
+        return builtin
+    instruction_digest(instructions)
+    if not package["folders"] and not package["extensions"]:
+        # Use the historical representation whenever possible, preserving old receipts.
+        try:
+            return _definition(bot_id, name, role, instructions, assets=assets)
+        except ValueError:
+            pass
+    definition = {"schema_version": 3, "id": bot_id, "name": name, "role": role, "builtin": False,
+                  "instructions": instructions, "assets": assets, "folders": package["folders"],
+                  "extensions": package["extensions"]}
+    return {**definition, "digest": sha256(encode(definition).encode("utf-8")).hexdigest()}
+
+
 def _checked(document, *, bot_id=None):
     """Verify stored content, including the expected ID when it comes from a catalog row."""
     try:
-        rebuilt = _definition(document["id"], document["name"], document["role"], document["instructions"],
-                              builtin=document["builtin"], assets=document.get("assets"))
+        if document["schema_version"] == 3:
+            rebuilt = _from_portable(_portable(document))
+        else:
+            rebuilt = _definition(document["id"], document["name"], document["role"], document["instructions"],
+                                  builtin=document["builtin"], assets=document.get("assets"))
         if (type(document["builtin"]) is not bool or type(document["schema_version"]) is not int
                 or document != rebuilt or bot_id is not None and (document["id"] != bot_id or document["builtin"])):
             raise ValueError
@@ -145,21 +179,82 @@ def asset_files(bot):
     return {"SOUL.md": bot["instructions"], "MEMORY.md": "", **bot.get("assets", {})}
 
 
-def save_asset(db, workspace_id, bot_id, filename, content, expected_digest):
+def manifest(db, workspace_id, bot_id):
+    return _portable(get(db, workspace_id, bot_id))
+
+
+def install(db, workspace_id, manifest):
+    validate_id(workspace_id)
+    bot = _from_portable(manifest)
+    if not bot["builtin"]:
+        db.execute("INSERT INTO studio_local_bots VALUES(?,?,?) ON CONFLICT(workspace_id,bot_id) DO NOTHING",
+                   (workspace_id, bot["id"], encode(bot)))
+        if get(db, workspace_id, bot["id"]) != bot:
+            raise OfficeError("REQUEST_CONFLICT")
+    return bot
+
+
+def tree(bot):
+    files = asset_files(bot)
+    # v1/v2 were flat, and accepted names that predate portable path restrictions.
+    folders = bot_spec.folders_for(files, bot["folders"]) if bot["schema_version"] == 3 else []
+    return {"id": bot["id"], "digest": bot["digest"], "files": files, "folders": folders,
+            "extensions": bot.get("extensions", {})}
+
+
+def _editable(db, workspace_id, bot_id, digest):
     bot = get(db, workspace_id, bot_id)
     if bot["builtin"]:
         raise ValueError("직접 만든 봇의 에셋을 선택하세요.")
-    _asset_name(filename)
-    if bot["digest"] != expected_digest:
+    if bot["digest"] != digest:
         raise OfficeError("REQUEST_CONFLICT")
+    return bot
+
+
+def _update(db, workspace_id, bot_id, updated):
+    db.execute("UPDATE studio_local_bots SET definition=? WHERE workspace_id=? AND bot_id=?",
+               (encode(updated), workspace_id, bot_id))
+    return updated
+
+
+def save_entry(db, workspace_id, bot_id, path, content, digest, *, kind="file", create=False):
+    bot = _editable(db, workspace_id, bot_id, digest)
+    bot_spec.check_path(path)
+    package = _portable(bot)
+    listing = tree(bot)
+    if create and (path in listing["files"] or path in listing["folders"]):
+        raise ValueError("이미 존재하는 파일 또는 폴더입니다.")
+    if kind == "file":
+        if not create and path not in listing["files"]:
+            raise ValueError("수정할 파일이 존재하지 않습니다.")
+        package["files"][path] = content
+    elif kind == "folder" and create and content in ("", None):
+        package["folders"].append(path)
+    else:
+        raise ValueError("파일 또는 빈 폴더를 선택하세요.")
+    return _update(db, workspace_id, bot_id, _from_portable(package))
+
+
+def set_extensions(db, workspace_id, bot_id, extensions, digest):
+    bot = _editable(db, workspace_id, bot_id, digest)
+    package = _portable(bot)
+    package["extensions"] = extensions
+    return _update(db, workspace_id, bot_id, _from_portable(package))
+
+
+def save_asset(db, workspace_id, bot_id, filename, content, expected_digest):
+    """Preserve the legacy flat Markdown/text upsert API, including legacy path names."""
+    bot = _editable(db, workspace_id, bot_id, expected_digest)
+    if bot["schema_version"] == 3:
+        return save_entry(db, workspace_id, bot_id, filename, content, expected_digest,
+                          create=filename not in asset_files(bot))
+    _asset_name(filename)
     files = dict(bot.get("assets", {}))
     if filename != "SOUL.md":
         files[filename] = content
     updated = _definition(bot_id, bot["name"], bot["role"], content if filename == "SOUL.md"
                           else bot["instructions"], assets=files)
-    db.execute("UPDATE studio_local_bots SET definition=? WHERE workspace_id=? AND bot_id=?",
-               (encode(updated), workspace_id, bot_id))
-    return updated
+    return _update(db, workspace_id, bot_id, updated)
 
 
 def assign(db, workspace_id, role, bot_id):

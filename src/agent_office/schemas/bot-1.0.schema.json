@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/tworimpa/ai-agent-office/main/src/agent_office/schemas/bot-1.0.schema.json",
+  "title": "Bot Definition 1.0",
+  "description": "A portable, self-contained UTF-8 role definition. Package-relative paths name virtual text resources. Apply the path, Unicode and byte-limit rules in docs/bot-spec-v1.md in addition to this structural schema.",
+  "type": "object",
+  "required": ["specVersion", "id", "name", "role", "files"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"const": "https://raw.githubusercontent.com/tworimpa/ai-agent-office/main/src/agent_office/schemas/bot-1.0.schema.json"},
+    "specVersion": {"const": "1.0"},
+    "id": {"type": "string", "maxLength": 64, "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"},
+    "name": {"$ref": "#/$defs/label", "maxLength": 40},
+    "role": {"$ref": "#/$defs/label", "maxLength": 60},
+    "files": {
+      "type": "object", "required": ["SOUL.md"], "maxProperties": 32,
+      "propertyNames": {"$ref": "#/$defs/path"},
+      "additionalProperties": {"type": "string", "maxLength": 8192, "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f]*$"}
+    },
+    "folders": {
+      "type": "array", "uniqueItems": true, "maxItems": 32, "default": [],
+      "description": "Explicit directories, including empty directories. Parent directories are implied by all paths.",
+      "items": {"$ref": "#/$defs/path"}
+    },
+    "extensions": {
+      "type": "object", "default": {}, "maxProperties": 16,
+      "propertyNames": {"type": "string", "maxLength": 128, "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$"},
+      "properties": {"io.github.tworimpa.agentoffice.appearance": {"$ref": "#/$defs/appearance"}},
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "label": {"type": "string", "minLength": 1, "pattern": "^[^\\s\\u0000-\\u001f\\u007f-\\u009f](?:[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]*[^\\s\\u0000-\\u001f\\u007f-\\u009f])?$"},
+    "path": {
+      "type": "string", "maxLength": 240,
+      "pattern": "^(?!.*(?:^|/)(?:\\.{1,2})(?:/|$))[^/\\\\<>:\"|?*\\u0000-\\u001f\\u007f]+(?:/[^/\\\\<>:\"|?*\\u0000-\\u001f\\u007f]+){0,7}$"
+    },
+    "appearance": {
+      "type": "object", "required": ["preset"], "additionalProperties": false,
+      "properties": {
+        "preset": {"type": "integer", "minimum": 0, "maximum": 11},
+        "image": {"type": "string", "maxLength": 131095, "pattern": "^data:image/webp;base64,[A-Za-z0-9+/]+={0,2}$"}
+      }
+    }
+  }
+}

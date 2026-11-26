@@ -1,0 +1,112 @@
+/* Scenery and hit targets share the same projected world coordinates. */
+#figures {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  isolation: isolate;
+  contain: strict;
+}
+.game-world {
+  position: absolute;
+  isolation: isolate;
+  overflow: hidden;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  box-shadow: 0 0 35px #17180d66;
+}
+.court-king,
+.game-actor {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
+  touch-action: manipulation;
+}
+.court-king {
+  z-index: 2490;
+}
+.game-name,
+.king-label,
+.royal-cue {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  border: 1px solid #977b4e;
+  color: #ffe8c4;
+  background: #261f16de;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font:
+    650 clamp(10px, 0.9vw, 13px) / 1.3 system-ui,
+    sans-serif;
+}
+.king-label {
+  bottom: calc(100% + 2px);
+  background: #4c2419ed;
+}
+.game-name {
+  top: 100%;
+  max-width: 11em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.game-actor {
+  aspect-ratio: 0.44;
+  overflow: visible;
+}
+.actor-body {
+  display: block;
+  position: absolute;
+  inset: 0 auto 0 -44.7%;
+  width: 189.4%;
+  pointer-events: none;
+  background-position: center bottom;
+  background-size: contain;
+  background-repeat: no-repeat;
+  filter: drop-shadow(1px 1px 1px #38261855);
+}
+.actor-body.atlas {
+  background-size: 300% 300%;
+}
+.actor-shadow {
+  position: absolute;
+  left: 16%;
+  right: 16%;
+  bottom: 0;
+  height: 5%;
+  border-radius: 50%;
+  background: #27190966;
+  filter: blur(2px);
+}
+.royal-cue {
+  bottom: 100%;
+  font-size: 11px;
+  background: #262c22ef;
+}
+.on-duty .royal-cue {
+  background: #384733;
+}
+.game-actor:focus-visible,
+.court-king:focus-visible {
+  outline: 2px solid #f3ca82;
+  outline-offset: 3px;
+}
+.game-actor:hover .game-name,
+.court-king:hover .king-label {
+  border-color: #ecc47e;
+  background: #4e3d24;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .on-duty .actor-body:not(.atlas) {
+    animation: royal-task 2.2s ease-in-out 4;
+    transform-origin: center bottom;
+  }
+  @keyframes royal-task {
+    50% {
+      transform: rotate(-1.8deg) translateY(-1px);
+    }
+  }
+}

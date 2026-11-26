@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>봇 회의실 · AI Agent Office</title>
+    <link rel="icon" type="image/webp" href="/bot-art/office.webp" />
+    <link rel="stylesheet" href="/bot-client.css" />
+    <link rel="stylesheet" href="/bot-room-scene.css" />
+    <script type="module" src="/bot-client.js"></script>
+  </head>
+  <body>
+    <header>
+      <b class="sigil" aria-hidden="true">房</b>
+      <strong>AI Agent Office</strong>
+      <span class="divider"></span>
+      <span id="workspaceName">봇 회의실</span>
+      <select id="workspaceSelect" aria-label="작업실 전환" hidden></select>
+      <a id="studio" href="/workspace">작업실 관리</a>
+      <button class="filesToggle" id="toggleFiles" aria-controls="filesPanel">
+        파일
+      </button>
+    </header>
+    <div id="notice" role="status" hidden></div>
+    <div class="shell">
+      <nav aria-label="작업실">
+        <button id="home" class="homeBtn">
+          <span>⌂</span>
+          회의실
+        </button>
+        <div class="sectionTitle">
+          <h2>봇 목록</h2>
+          <button
+            id="new"
+            aria-label="새 봇 만들기"
+            title="새 봇 만들기"
+            disabled
+          >
+            ＋
+          </button>
+        </div>
+        <div id="bots"></div>
+        <button id="importBot" class="manifest-action" type="button" disabled>
+          봇 정의 가져오기
+        </button>
+        <input
+          id="manifestFile"
+          type="file"
+          accept=".json,application/json"
+          aria-label="가져올 봇 정의 JSON"
+          hidden
+        />
+        <div class="sectionTitle historyTitle"><h2>작업 기록</h2></div>
+        <div id="history"></div>
+      </nav>
+      <main>
+        <div id="tabs" class="tabs" aria-label="열린 작업 탭"></div>
+        <section id="room">
+          <div class="scene">
+            <div class="scene-title">
+              <h1>회의실</h1>
+              <p id="members"></p>
+            </div>
+            <button id="walk-toggle" type="button">이동 일시정지</button>
+            <div id="figures"></div>
+            <div id="court-announcement" role="status" hidden></div>
+          </div>
+        </section>
+        <section id="chat" hidden>
+          <div class="contentTitle">
+            <div>
+              <small id="role"></small>
+              <h1 id="chatTitle"></h1>
+            </div>
+            <div class="bot-actions">
+              <a id="exportBot">정의 내보내기</a>
+              <button id="character">캐릭터 교체</button>
+            </div>
+          </div>
+          <div class="thread" id="thread"></div>
+          <form id="compose">
+            <label class="sr" for="msg">봇에게 메시지</label>
+            <textarea
+              required
+              rows="2"
+              id="msg"
+              placeholder="어떤 일을 맡길까요?"
+            ></textarea>
+            <div>
+              <div class="command-options">
+                <label>
+                  <input type="checkbox" id="edits" />
+                  파일 수정 허용
+                </label>
+                <label id="folderLabel" hidden>
+                  작업 폴더
+                  <select id="folder"></select>
+                </label>
+              </div>
+              <button id="send" class="accent">보내기 ↗</button>
+            </div>
+          </form>
+        </section>
+        <section id="editor" hidden>
+          <div class="contentTitle">
+            <div>
+              <small id="fileowner"></small>
+              <h1 id="filename"></h1>
+            </div>
+            <button id="save" class="accent" disabled>저장</button>
+          </div>
+          <label for="text" class="sr">파일 내용</label>
+          <textarea id="text" spellcheck="false"></textarea>
+          <div id="fileStatus" role="status"></div>
+          <button id="resolveFile" hidden>서버 내용과 비교</button>
+          <div id="comparison" hidden>
+            <label>
+              서버에 저장된 내용
+              <textarea id="serverText" rows="4" readonly></textarea>
+            </label>
+            <button type="button" id="useServer">서버 내용 사용</button>
+            <button type="button" id="rebaseDraft">
+              내 초안으로 계속 편집
+            </button>
+          </div>
+        </section>
+        <section id="task" hidden>
+          <div class="contentTitle">
+            <div>
+              <small id="taskOwner"></small>
+              <h1>작업 기록</h1>
+            </div>
+          </div>
+          <div id="taskBody"></div>
+        </section>
+      </main>
+      <aside id="filesPanel" aria-label="파일 탐색기">
+        <div class="sideHead">
+          <h2>파일 탐색기</h2>
+          <button id="hideFiles" aria-label="파일 패널 닫기">×</button>
+        </div>
+        <div id="explorer"></div>
+      </aside>
+    </div>
+    <dialog id="dialog" aria-labelledby="dialogTitle">
+      <form id="botForm">
+        <div class="dlghead">
+          <h2 id="dialogTitle">새 봇 만들기</h2>
+          <button id="cancel" type="button" aria-label="닫기">×</button>
+        </div>
+        <div class="dlgbody">
+          <div id="identity">
+            <label>
+              이름
+              <input
+                id="name"
+                required
+                autofocus
+                maxlength="40"
+                placeholder="예: 다온"
+              />
+            </label>
+            <label>
+              역할
+              <input
+                id="job"
+                required
+                maxlength="60"
+                placeholder="예: UX 리서처"
+              />
+            </label>
+            <label>
+              업무 지침
+              <textarea
+                id="soul"
+                required
+                rows="2"
+                placeholder="어떤 일을 맡을 봇인가요?"
+              ></textarea>
+            </label>
+          </div>
+          <fieldset class="charPicker">
+            <legend>캐릭터 선택</legend>
+            <div id="characterFilters" aria-label="캐릭터 종류"></div>
+            <div id="choices" aria-label="기본 캐릭터"></div>
+            <div id="customPreview" hidden></div>
+          </fieldset>
+          <label>
+            내 이미지로 교체
+            <input
+              id="upload"
+              type="file"
+              accept="image/png,image/webp,image/jpeg"
+            />
+          </label>
+          <div id="uploadStatus" role="status"></div>
+          <button id="submitBot" class="accent">봇 만들기</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="royal-dialog" aria-labelledby="royal-title">
+      <form id="royal-form">
+        <div class="dlghead">
+          <h2 id="royal-title">왕의 어명</h2>
+          <button type="button" id="royal-cancel" aria-label="어명 닫기">
+            ×
+          </button>
+        </div>
+        <div class="dlgbody">
+          <label>
+            회의실에 전할 말씀
+            <textarea
+              rows="3"
+              maxlength="800"
+              id="royal-command"
+              autofocus
+              placeholder="예: 새 작업실의 사용성을 살피고 안내 문구를 다듬어라."
+              required
+            ></textarea>
+          </label>
+          <div id="royal-assignments" hidden></div>
+          <div class="command-options">
+            <label>
+              <input type="checkbox" id="royal-edits" />
+              파일 수정 허용
+            </label>
+            <label id="royal-folderLabel" hidden>
+              작업 폴더
+              <select id="royal-folder"></select>
+            </label>
+          </div>
+          <label class="read-royal" id="voiceLabel" hidden>
+            <input type="checkbox" id="royal-voice" />
+            기기 음성으로 어명 낭독
+          </label>
+          <div id="royal-status" role="status"></div>
+          <button type="submit" id="royal-send" class="accent">
+            역할별 분담 보기
+          </button>
+          <button type="button" id="royal-new" hidden>기록에 두고 새 어명</button>
+          <div id="royal-history"></div>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="entryDialog" aria-labelledby="entryTitle">
+      <form id="entryForm">
+        <div class="dlghead">
+          <h2 id="entryTitle">새 파일</h2>
+          <button type="button" id="entryCancel" aria-label="닫기">×</button>
+        </div>
+        <div class="dlgbody">
+          <label>
+            만들 위치
+            <select id="entryParent"></select>
+          </label>
+          <label>
+            이름 또는 하위 경로
+            <input
+              id="entryName"
+              maxlength="480"
+              required
+              autofocus
+              autocomplete="off"
+              spellcheck="false"
+              aria-describedby="entryHint entryError"
+            />
+          </label>
+          <small id="entryHint">
+            예: skills/문안검토/SKILL.md · 중간 폴더도 함께 만듭니다.
+          </small>
+          <div id="entryError" role="alert"></div>
+          <button class="accent" type="submit">만들기</button>
+        </div>
+      </form>
+    </dialog>
+    <noscript>봇 회의실을 사용하려면 JavaScript를 켜세요.</noscript>
+  </body>
+</html>

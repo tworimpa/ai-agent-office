@@ -10,7 +10,6 @@ import {mountStorage} from './workspace-storage.js';
 import {mountGithub} from './workspace-github.js';
 import {mountBriefing} from './workspace-briefing.js';
 import {mountBots} from './workspace-bots.js';
-import {mountBotRoom} from './workspace-bot-room.js';
 import {mountWorkProfiles} from './workspace-profile.js';
 import {mountCharacterRecords} from './workspace-character.js';
 
@@ -124,9 +123,6 @@ export function mountWorkspaceOffice(win = window) {
     workspaceId, epoch, journal: room?.journal_id, local: hostId === 'local', writable: canWrite(),
   })});
   const uuid = () => win.crypto.randomUUID().replaceAll('-', '');
-  const botRoom = mountBotRoom({get, make, api, win, uuid, link: id => address(hostId, workspaceId, id),
-    context: () => ({workspaceId, journal: room?.journal_id, visible: hostId === 'local' && room?.bot_room_supported,
-      writable: canWrite(), folders: room?.workspace.folders ?? []})});
   const profileContext = () => ({workspaceId, runId, identity: [hostId, room?.journal_id, workspaceId].join(':'),
     supported: room?.work_profiles_supported === true, assignment: selected()?.assignment, settings: room?.settings, writable: canWrite()});
   const storage = mountStorage({get, api, doc, context: () => ({
@@ -501,7 +497,12 @@ export function mountWorkspaceOffice(win = window) {
   });
 
   function renderRoom() {
-    botRoom.sync();
+    const clientLink = get('bot-client-link');
+    clientLink.hidden = !room || hostId !== 'local';
+    if (!clientLink.hidden) {
+      clientLink.href = '/bots?workspace=' + workspaceId;
+      get('bot-settings-new').href = clientLink.href;
+    }
     const currentRun = selected();
     progress.select({id: currentRun?.id, active: roomOnline && activeStates.has(currentRun?.state),
       url: currentRun && hostId === 'local' && validId(room?.journal_id) ? '/api/runs/' + currentRun.id + '/stream?office_journal=' + room.journal_id : null,

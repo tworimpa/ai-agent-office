@@ -1,6 +1,6 @@
 # AI Agent Office
 
-Local-first orchestration of coding agent CLIs with a browser-based local studio, persistent task history and a separate read-only observer.
+AI Agent Office는 로컬 봇을 관리하는 클라이언트입니다. 봇의 이름·역할·지침·파일은 **Bot Definition 1.0**으로 교환하고, 실행 호스트가 CLI 프로세스와 승인·작업 기록을 소유합니다. 웹·데스크톱·CLI와 다른 구현에서 동일한 정의를 읽고 쓸 수 있습니다. [봇 정의 명세](docs/bot-spec-v1.md) · [클라이언트와 호스트 API](docs/bot-client.md)
 
 The selected local or SSH-connected host owns its folders, processes, requests and decision journal. The collaboration inbox supports operator decisions and opt-in, evidence-checked answers to selected technical questions.
 
@@ -16,7 +16,7 @@ Windows와 Ubuntu·Debian 계열 Linux에서 **AI Agent Office** 앱을 열어 �
 
 ## 조정자에게 작업 맡기기
 
-**봇 회의실 → 봇 만들기**에서 이름과 역할을 직접 입력하세요. UX 리서처, 콘텐츠 에디터처럼 만든 봇을 선택하면 명령을 맡기거나 오른쪽에서 지침과 참고 파일을 편집할 수 있습니다. 반복 작업을 맡길 봇은 작업실 설정에서 조정·개발·리뷰 자리에 배정할 수 있습니다. [봇 회의실 사용법](docs/local-role-bots.md)
+왼쪽 봇 목록의 **＋**에서 이름·역할·캐릭터를 선택하세요. 목록이나 회의실의 캐릭터를 누르면 봇의 홈 대화가 열립니다. 오른쪽에서 선택한 파일은 가운데 편집 탭에서 수정합니다. 왕을 누르면 분담안을 확인해 여러 봇에 일을 맡길 수 있습니다. 실행별 질문과 승인은 해당 작업 기록에서 처리합니다. [회의실과 파일 사용법](docs/bot-client.md)
 
 사무실의 **조정자 브리핑**에서 응답을 기다리는 질문과 영향을 받는 목표, 검토할 후보, 다음 작업을 확인할 수 있습니다. 제품 결정 하나를 여러 목표가 참조할 때 원래 질문에 한 번 답하면 됩니다. 권한 요청에는 각 실행에서 따로 응답합니다. [Workspace 브리핑과 단계별 선행 조건](docs/workspace-briefing.md)
 

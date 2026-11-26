@@ -65,45 +65,12 @@
             <h1 id="room-title"></h1>
           </div>
           <div class="room-actions">
+            <a id="bot-client-link" class="primary" href="/bots" hidden>봇 회의실</a>
             <button type="button" id="inbox" class="secondary" aria-haspopup="dialog" disabled>요청함 <span id="inbox-count" class="request-count" hidden></span></button>
             <button type="button" id="settings" class="secondary" aria-haspopup="dialog" disabled>작업실 설정</button>
           </div>
         </div>
 
-        <section id="bot-room" aria-labelledby="bot-room-title" hidden>
-          <header class="bot-room-head">
-            <div><h2 id="bot-room-title">봇 회의실</h2><span id="bot-count"></span></div>
-            <div><button type="button" class="secondary" id="bot-roster-refresh" aria-label="회의실 멤버 새로고침">↻</button>
-              <button type="button" id="bot-new" class="primary" aria-haspopup="dialog">＋ 봇 만들기</button></div>
-          </header>
-          <div class="bot-room-body">
-            <div class="bot-room-main">
-              <div id="bot-roster" aria-label="회의실 멤버"></div>
-              <p id="bot-empty">첫 봇을 만들고 이 회의실에서 일을 맡겨 보세요.</p>
-              <form id="bot-command" hidden>
-                <label for="bot-message" id="bot-command-label">선택한 봇에게 명령</label>
-                <textarea id="bot-message" rows="2" maxlength="8192" placeholder="어떤 일을 맡길까요?" required></textarea>
-                <label id="bot-folder-label" hidden>작업 폴더<select id="bot-folder"></select></label>
-                <div class="bot-form-actions"><label><input type="checkbox" id="bot-edits"> 파일 수정 허용</label>
-                  <button class="primary" id="bot-send">명령 보내기</button></div>
-              </form>
-              <p id="bot-room-note" role="status"></p>
-              <a id="bot-run-link" hidden>실행 기록 열기 →</a>
-            </div>
-            <aside id="bot-inspector" aria-labelledby="bot-files-title">
-              <h3 id="bot-files-title">봇 에셋</h3>
-              <p id="bot-files-owner">봇을 선택하면 파일이 표시됩니다.</p>
-              <div id="bot-file-list" aria-label="에셋 파일"></div>
-              <form id="bot-editor" hidden>
-                <label id="bot-filename" for="bot-text"></label><textarea id="bot-text" rows="6" spellcheck="false"></textarea>
-                <div class="bot-form-actions"><button type="button" class="secondary" id="bot-reload">다시 불러오기</button>
-                  <button class="primary" id="bot-save">저장</button></div>
-              </form>
-              <form id="bot-add-file" hidden><label for="bot-file-new">파일 추가</label><div><input id="bot-file-new" maxlength="72" placeholder="참고자료.md" required><button class="secondary">추가</button></div></form>
-              <p id="bot-file-note" role="status"></p>
-            </aside>
-          </div>
-        </section>
         <section id="workspace-briefing" class="briefing" aria-labelledby="brief-title" hidden>
           <header class="brief-heading">
             <h2 id="brief-title" tabindex="-1">조정자 브리핑</h2>
@@ -394,7 +361,7 @@
         <p id="bot-guidance" class="field-help"></p>
         <button type="submit" id="bot-assign" class="secondary" disabled>역할에 배정</button>
       </form>
-      <button type="button" id="bot-settings-new" class="secondary" aria-haspopup="dialog">＋ 봇 만들기</button>
+      <a id="bot-settings-new" class="secondary" href="/bots">봇 회의실 열기</a>
       <p id="bot-note" class="form-note" role="status"></p>
     </details>
     <details id="work-policy" hidden>
@@ -470,17 +437,6 @@
     </details>
   </dialog>
 
-  <dialog id="bot-create-dialog" class="dialog bot-create-dialog" aria-labelledby="bot-create-title">
-    <header class="dialog-header"><h2 id="bot-create-title">새 봇 만들기</h2><button type="button" class="close-button" id="bot-close" aria-label="봇 만들기 닫기">×</button></header>
-    <form id="bot-definition" class="bot-create-form">
-      <div class="bot-identity"><span id="bot-preview-avatar" class="bot-avatar portrait" aria-hidden="true"></span><div><strong id="bot-preview-name">새 멤버</strong><small id="bot-preview-role">역할 미입력</small></div></div>
-      <div class="bot-create-fields"><label>이름<input id="bot-name" required maxlength="40" placeholder="예: 소담"></label>
-        <label>역할<input id="bot-title" required maxlength="60" placeholder="예: UX 리서처"></label></div>
-      <label>업무 지침<textarea id="bot-instructions" required rows="4" placeholder="주로 맡을 일과 결과를 정리하는 방법을 적어 주세요."></textarea></label>
-      <details><summary>봇 ID 설정</summary><label>봇 ID<input id="bot-slug" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="비워 두면 자동 생성" spellcheck="false"></label></details>
-      <p id="bot-create-note" role="status"></p><button id="bot-create" class="primary">회의실에 추가</button>
-    </form>
-  </dialog>
   <dialog id="register-dialog" class="dialog" aria-labelledby="register-title">
     <header class="dialog-header">
       <h2 id="register-title">작업공간 등록</h2>

@@ -226,7 +226,7 @@ function registerActions() {
           owner.officeMode !== 'local' || connection?.mode !== 'local' || connection.bootId !== owner.officeBoot ||
           owner.webContents !== event.sender || !frame || frame !== owner.webContents.mainFrame) return false
       const page = new URL(frame.url)
-      return page.origin === connection.origin && page.pathname === '/' &&
+      return page.origin === connection.origin && ['/', '/workspace'].includes(page.pathname) &&
         page.searchParams.getAll('host').every(host => host === 'local')
     }
     if (!isCurrent() || pickerOpen) return []

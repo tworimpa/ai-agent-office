@@ -80,11 +80,11 @@ def await_renderer(app, events, shell):
 
 def trial(executable, name, profile, reopened, root, setup, backend, idle, stderr):
     nonce = uuid4().hex
-    page = "/"
+    page = "/workspace"
     if not reopened:
         profile.mkdir()
         conn = dict(origin=setup["origin"], journalId=setup["journalId"])
-        saved = {"connection": {**conn, "mode": "attached"}, "recent": {}, "remotes": []} if name == "electron" else {**conn, "page": page}
+        saved = {"connection": {**conn, "mode": "attached"}, "recent": {setup["journalId"]: page}, "remotes": []} if name == "electron" else {**conn, "page": page}
         save(profile / "connection.json", saved)
     observed = {k: setup.get(k) for k in ("active", "candidate", "question")}
     save(root / "trial.json", {**observed, "nonce": nonce, "reopened": reopened})

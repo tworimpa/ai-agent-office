@@ -31,7 +31,7 @@ export async function verifyQuota(electron,rust,evidence) {
     // Both fixtures already selected this exact journal. A Studio restart may assign a new port.
     const binding={origin:runtime.origin,journalId:runtime.journalId}
     await writeFile(join(directory,'connection.json'),JSON.stringify(kind==='rust' ? {...binding,page:route} :
-      {connection:{mode:'attached',...binding},recent:{[runtime.origin]:route},remotes:[]}))
+      {connection:{mode:'attached',...binding},recent:{[runtime.journalId]:route},remotes:[]}))
     page=await launch(kind,kind==='rust'?rust:electron,directory)
     await page.selectWindow(url=>url.startsWith(runtime.origin+'/'))
     if (await page.run(() => new URL(location.href).searchParams.get('workspace')) !== ws)
