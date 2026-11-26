@@ -3,7 +3,7 @@ import json
 
 from .engines import SUPPORTED_ENGINES
 from .events import snapshot_request
-from .meeting import validate_plan, validate_plan_scope
+from .meeting import validate_coordinator_tasks, validate_plan, validate_plan_scope
 from .models import ACTIVE, MAX_SQLITE_INT, OfficeError, validate_id
 from .store import encode, now
 
@@ -12,7 +12,9 @@ def ensure_schema(db):
     db.execute("""CREATE TABLE IF NOT EXISTS studio_meetings(
         run_id TEXT PRIMARY KEY REFERENCES studio_runs(id), review_plan INTEGER NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('planning','awaiting_review','approved','stopped','failed')),
-        revision INTEGER NOT NULL DEFAULT 0, error TEXT)""")
+        revision INTEGER NOT NULL DEFAULT 0, error TEXT, coordinator_plan INTEGER NOT NULL DEFAULT 0)""")
+    if "coordinator_plan" not in {row[1] for row in db.execute("PRAGMA table_info(studio_meetings)")}:
+        db.execute("ALTER TABLE studio_meetings ADD COLUMN coordinator_plan INTEGER NOT NULL DEFAULT 0")
     db.execute("""CREATE TABLE IF NOT EXISTS studio_meeting_contributions(
         run_id TEXT NOT NULL REFERENCES studio_meetings(run_id), revision INTEGER NOT NULL,
         role TEXT NOT NULL, engine TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL)""")
@@ -35,12 +37,13 @@ def ensure_schema(db):
         FOREIGN KEY(run_id,revision) REFERENCES studio_meeting_revisions(run_id,revision))""")
 
 
-def register(db, run_id, review_plan=False):
-    if type(review_plan) is not bool:
+def register(db, run_id, review_plan=False, *, coordinator_plan=False):
+    if type(review_plan) is not bool or type(coordinator_plan) is not bool or (coordinator_plan and not review_plan):
         raise ValueError("계획 확인 설정을 확인하세요.")
-    db.execute("INSERT OR IGNORE INTO studio_meetings(run_id,review_plan,status) VALUES (?,?,'planning')",
-               (validate_id(run_id), review_plan))
-    if _meeting(db, run_id)["review_plan"] != review_plan:
+    db.execute("INSERT OR IGNORE INTO studio_meetings(run_id,review_plan,coordinator_plan,status) VALUES (?,?,?,'planning')",
+               (validate_id(run_id), review_plan, coordinator_plan))
+    row = _meeting(db, run_id)
+    if row["review_plan"] != review_plan or row["coordinator_plan"] != coordinator_plan:
         raise OfficeError("REQUEST_CONFLICT")
 
 
@@ -96,8 +99,11 @@ def contribute(db, run_id, role, engine, text):
 
 
 def _validate_scope(db, run_id, plan):
-    scope = db.execute("SELECT folders FROM studio_runs WHERE id=?", (run_id,)).fetchone()
+    scope = db.execute("""SELECT s.folders,s.allow_edits,m.coordinator_plan FROM studio_runs s
+                       JOIN studio_meetings m ON s.id=m.run_id WHERE s.id=?""", (run_id,)).fetchone()
     validate_plan_scope(plan, json.loads(scope["folders"]))
+    if scope["coordinator_plan"]:
+        validate_coordinator_tasks(plan, scope["allow_edits"])
 
 
 def _add_revision(db, meeting, plan, source, reason, direction_id, answers, approved_by):
@@ -119,7 +125,8 @@ def propose(db, run_id, plan):
     validate_plan(plan)
     _validate_scope(db, run_id, plan)
     approved_by = None if meeting["review_plan"] or plan["questions"] else "coordinator"
-    _add_revision(db, meeting, plan, "coordinator", "회의 결과를 반영한 첫 계획", None, {}, approved_by)
+    reason = "조정자 봇이 제안한 첫 계획" if meeting["coordinator_plan"] else "회의 결과를 반영한 첫 계획"
+    _add_revision(db, meeting, plan, "coordinator", reason, None, {}, approved_by)
     return describe(db, run_id)
 
 
@@ -227,8 +234,9 @@ def fail(db, run_id, reason):
 
 
 def summary(db, run_id):
-    row = db.execute("SELECT status,revision,error FROM studio_meetings WHERE run_id=?", (validate_id(run_id),)).fetchone()
-    return dict(row) if row else None
+    row = db.execute("SELECT status,revision,error,coordinator_plan FROM studio_meetings WHERE run_id=?",
+                     (validate_id(run_id),)).fetchone()
+    return dict(row, coordinator_plan=bool(row["coordinator_plan"])) if row else None
 
 
 def record_work(db, run_id, revision, task_id, engine, result):
@@ -271,7 +279,8 @@ def _describe(db, run_id):
         WHERE run_id=? ORDER BY revision DESC LIMIT 1""", (run_id,)).fetchone()
     work = [dict(row) for row in db.execute("""SELECT revision,task_id,engine,result,created_at
         FROM studio_meeting_work WHERE run_id=? ORDER BY rowid""", (run_id,))]
-    return dict(meeting, review_plan=bool(meeting["review_plan"]), contributions=contributions, revisions=revisions, work=work,
+    return dict(meeting, review_plan=bool(meeting["review_plan"]), coordinator_plan=bool(meeting["coordinator_plan"]),
+                contributions=contributions, revisions=revisions, work=work,
                 plan=current["plan"] if current else None, choices=_choices(current["plan"]) if current else [],
                 answers=current["answers"] if current else {}, verification=current["verification"] if current else [],
                 decision=dict(decision) if decision else None)

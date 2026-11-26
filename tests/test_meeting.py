@@ -117,6 +117,20 @@ def test_invalid_review_preserves_only_prior_valid_opinion(repo, bad):
     assert record == [("developer", "codex", "초안")]
 
 
+def test_readonly_coordinator_plan_stays_with_selected_investigator(repo):
+    proposal = contribution("조사 순서")
+    proposal["plan"]["tasks"].pop()
+    coordinator = Worker(proposal)
+    context = {"allow_edits": False, "roles": {"developer": {"name": "조사자"}}, "test_files": []}
+    record = []
+    plan = meet(repo, coordinator, Worker(), record, coordinator_context=context)
+    assert record == [("coordinator", "codex", "조사 순서")]
+    assert json.loads(coordinator.prompts[0].splitlines()[-1])["assignment"] == context
+    assert [task["owner"] for task in plan["tasks"]] == ["developer"]
+    with pytest.raises(ValueError, match="coordinator"):
+        meet(repo, Worker(contribution("잘못된 배정")), Worker(), [], coordinator_context=context)
+
+
 def test_plan_rejects_invalid_dependency_options_and_execution_hints():
     plan = {**contribution("a")["plan"], "evidence": {"revision": "a" * 40, "paths": []}}
     assert validate_plan(plan) == plan

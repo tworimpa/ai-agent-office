@@ -142,7 +142,8 @@ def execute_run(args, store, run_id, *, prepared=False, folders=None, save_stage
         if room_meeting:
             from .meeting_runtime import RoomMeeting
             meeting = RoomMeeting(store.path, run_id, worktree.path, args.task, args.developer, args.reviewer,
-                                  folders or ["."], adapters, workers=workers)
+                                  folders or ["."], adapters, workers=workers,
+                                  assignment=room_assignment, allow_edits=args.allow_edits)
         stage_gate = review_current = None
         if goal:
             from .goal_stage_wait import enter

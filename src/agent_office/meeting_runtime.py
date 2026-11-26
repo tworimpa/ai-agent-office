@@ -20,7 +20,8 @@ class MeetingFailure(RuntimeError):
 
 
 class RoomMeeting:
-    def __init__(self, path, run_id, workspace, task, developer, reviewer, folders, adapters, *, workers=None):
+    def __init__(self, path, run_id, workspace, task, developer, reviewer, folders, adapters, *, workers=None,
+                 assignment=None, allow_edits=False):
         self.path = path
         self.run_id = run_id
         self.workspace = workspace
@@ -30,6 +31,8 @@ class RoomMeeting:
         self.folders = folders
         self.workers = workers
         self.adapters = adapters
+        self.assignment = assignment or {}
+        self.allow_edits = allow_edits
         self.applied_work = ""
 
     def write(self, operation, *args, **kwargs):
@@ -51,9 +54,14 @@ class RoomMeeting:
             time.sleep(0.25)
 
     def consult(self, request, record):
+        context = None
+        if self.snapshot()["coordinator_plan"]:
+            context = {"allow_edits": self.allow_edits, "roles": self.assignment["roles"],
+                       "test_files": self.assignment.get("test_files", [])}
         try:
             return conduct_meeting(request, self.workspace, self.developer, self.reviewer,
-                                   adapters=self.adapters, folders=self.folders, record=record, workers=self.workers)
+                                   adapters=self.adapters, folders=self.folders, record=record, workers=self.workers,
+                                   coordinator_context=context)
         except ValueError as exc:
             raise MeetingFailure(str(exc)) from exc
         except OSError as exc:

@@ -457,7 +457,7 @@ try {
     assert.deepEqual(final.meeting.verification.map(row => row.status), ['passed', 'not_verified'])
     assert.equal(final.meeting.revisions.length, 3)
     assert.equal(final.meeting.revisions[1].verification[0].status, 'not_verified')
-    assert.deepEqual(final.meeting.contributions.filter(row => row.revision === 3).map(row => row.role), ['developer', 'reviewer'])
+    assert.deepEqual(final.meeting.contributions.filter(row => row.revision === 3).map(row => row.role), ['coordinator'])
     assert.match(final.meeting.plan.tasks[0].description, /desktop verified/)
   }
   await window.screenshot({ path: join(root, 'window.png') })

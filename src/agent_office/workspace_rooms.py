@@ -265,11 +265,14 @@ class WorkspaceRooms:
                 if (run["assignment"] or {}).get("meeting"):
                     meeting = meeting_store.summary(db, row["id"])
                     run["meeting_status"] = meeting["status"]
-                    if meeting["status"] == "planning":
+                    if meeting["status"] in ("planning", "awaiting_review") and meeting["coordinator_plan"]:
+                        run["lines"].update(coordinator="조정자 봇이 담당 역할과 작업 순서, 완료 기준을 정하고 있습니다.",
+                                            developer="계획 확인을 기다리고 있습니다.", reviewer="계획 확인을 기다리고 있습니다.")
+                    elif meeting["status"] == "planning":
                         run["lines"].update(coordinator="스펙과 검증 계획을 조율하고 있습니다.",
                                             developer="구현 범위와 의존성을 검토하고 있습니다.",
                                             reviewer="완료 기준과 검증 방법을 검토하고 있습니다.")
-                    elif meeting["status"] == "awaiting_review":
+                    if meeting["status"] == "awaiting_review":
                         run["lines"]["coordinator"] = "계획에 대한 사용자 결정을 기다리고 있습니다."
                         run["pending_count"] += 1
                 runs.append(run)

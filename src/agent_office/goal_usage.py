@@ -177,8 +177,11 @@ def same_pool(a,b):
 def rate_rows(db,run_id,role=None,selection=None):
     clause, args = "run_id=?", [run_id]
     if role is not None:
-        clause, args = "run_id=? AND role=? AND engine=? AND account_alias IS ?", [
-            run_id,role,selection["engine"],selection.get("account_alias")]
+        # The planner and developer share one pinned CLI profile within this run.
+        roles = ("coordinator", "developer") if role in ("coordinator", "developer") else (role,)
+        slots = ",".join("?" for _ in roles)
+        clause, args = f"run_id=? AND role IN ({slots}) AND engine=? AND account_alias IS ?", [
+            run_id,*roles,selection["engine"],selection.get("account_alias")]
     # Select pools known to belong to this role or explicitly declared by the operator.
     alias = selection.get("account_alias") if selection else None
     shared = " OR (engine=? AND account_alias=?)" if alias else ""

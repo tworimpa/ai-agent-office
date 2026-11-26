@@ -175,6 +175,16 @@ def validate_plan_scope(plan, folders):
         raise ValueError("계획에 선택한 작업 폴더 밖의 경로가 포함되어 있습니다.")
 
 
+def validate_coordinator_tasks(plan, allow_edits):
+    """The graph performs developer work before its independent review."""
+    owners = [task["owner"] for task in plan["tasks"]]
+    if allow_edits:
+        if owners[0] != "developer" or owners[-1] != "reviewer" or owners != sorted(owners):
+            raise ValueError("수정 계획에는 개발 작업 다음에 독립 리뷰 작업을 배정하세요.")
+    elif "reviewer" in owners:
+        raise ValueError("읽기 전용 의뢰는 조사 작업을 개발 담당자에게 배정하세요.")
+
+
 _INSTRUCTIONS = """Write your own opinion and a complete actionable Korean plan for the requested outcome.
 Assess the provided project excerpts and tests at their stated revision. Identify assumptions or missing
 evidence explicitly. Scope the work, assign ordered tasks to developer/reviewer, and give observable
@@ -197,7 +207,8 @@ Each task ID is unique. Dependencies must refer to earlier task IDs. Use at most
 4 questions, 2 to 4 options per question, 1000 characters per text field."""
 
 
-def conduct_meeting(task, workspace, developer, reviewer, *, record, adapters, folders=(), workers=None):
+def conduct_meeting(task, workspace, developer, reviewer, *, record, adapters, folders=(), workers=None,
+                    coordinator_context=None):
     """Return a reviewed plan or fail closed, preserving each valid opinion as it arrives."""
     repo = Path(workspace).resolve()
     if any(engine not in SUPPORTED_ENGINES or engine not in adapters for engine in (developer, reviewer)):
@@ -210,16 +221,29 @@ def conduct_meeting(task, workspace, developer, reviewer, *, record, adapters, f
     # Use empty scratch repositories so neither CLI implicitly loads mutable
     # project instructions or reads beyond the selected source excerpts.
     prior = None
+    planners = (("coordinator", developer),) if coordinator_context is not None else (("developer", developer), ("reviewer", reviewer))
     for _ in range(2):
-        for role, engine in (("developer", developer), ("reviewer", reviewer)):
-            if role == "reviewer":
+        for role, engine in planners:
+            if role == "coordinator":
+                instruction = ("As the assigned coordinator, author the plan for the operator to confirm. "
+                               "Use your own bot instructions, the original request and the supplied evidence. "
+                               "For change requests schedule developer tasks first, followed by independent reviewer "
+                               "tasks with explicit dependencies. For read-only requests assign only developer "
+                               "investigation tasks. Respect the supplied role assignments and edit mode. "
+                               "Specify observable completion and verification "
+                               "criteria. Attach the relevant existing pytest paths to testable criteria. "
+                               "The host controls execution and permissions. Return JSON only, with no Markdown fence.")
+            elif role == "reviewer":
                 instruction = ("Independently review the draft, resolve the developer's issues, and "
                                "synthesize both opinions into the complete final plan.")
             else:
                 instruction = ("Propose a concrete initial implementation and verification plan."
                                if prior is None else "Revise your proposal to resolve the reviewer's technical issues.")
+            inputs = {"request": task, "evidence": material, "previous": prior}
+            if coordinator_context is not None:
+                inputs["assignment"] = coordinator_context
             prompt = (f"MEETING_{role.upper()}\n{instruction}\n{_INSTRUCTIONS}\n"
-                      + json.dumps({"request": task, "evidence": material, "previous": prior}, ensure_ascii=False))
+                      + json.dumps(inputs, ensure_ascii=False))
             actor = workers.bind(role, "meeting", 1) if workers else adapters[engine]
             if workers:
                 engine = actor.engine
@@ -243,6 +267,8 @@ def conduct_meeting(task, workspace, developer, reviewer, *, record, adapters, f
                 _fields(prior["plan"], _PLAN_FIELDS)
                 plan = validate_plan({**prior["plan"], "evidence": evidence})
                 validate_plan_scope(plan, material["folders"])
+                if coordinator_context is not None:
+                    validate_coordinator_tasks(plan, coordinator_context["allow_edits"])
             except (ValueError, TypeError, RecursionError) as exc:
                 raise ValueError(f"{role} ({engine}) 회의 응답을 확인할 수 없습니다.") from exc
             record(role, engine, prior["opinion"])
