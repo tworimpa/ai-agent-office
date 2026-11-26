@@ -58,6 +58,15 @@ async function open(kind) {
   const connected = await page.run(async () => (await fetch('/api/desktop-runtime')).json())
   assert.equal(connected.journal_id,runtime.journalId)
   assert.equal(connected.boot_id,runtime.bootId)
+  if (workspace) {
+    // A newly attached client opens the bot room. Enter the operations view to continue
+    // the existing execution and its approval gates in either native shell.
+    await until(() => page.run(() => Boolean(document.querySelector('#workspaceSelect, #office-main'))), 'Studio entry')
+    if (await page.run(() => Boolean(document.querySelector('#workspaceSelect')))) {
+      await page.activate('#studio')
+      await page.ready('#office-main')
+    }
+  }
   if (workspace && !(await page.run(() => new URL(location.href).searchParams.get('workspace')))) {
     await page.activate('#workspaces a[href*="' + workspace + '"]')
   }

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import uuid
 
 from . import role_skills as skills
-from . import local_bots, team_runs
+from . import bot_runtime, local_bots, team_runs
 from . import meeting_store, goal_recovery, goal_stage_wait, workspace_coordination
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .events import snapshot_request
@@ -254,7 +254,7 @@ class LocalRunner:
               task: str, allow_edits: bool, *, request_digest=None, developer_engine=DEFAULT_DEVELOPER,
               reviewer_engine=DEFAULT_REVIEWER, use_inbox=False, delegation=None, role_skills=None,
               indices=None, subtasks=None, room_assignment=None, room_revision=None, room_choices=None, external_origin=None,
-              coordination=None, room_bots=None):
+              coordination=None, room_bots=None, chat_bot=None, order_id=None):
         validate_id(run_id)
         team_runs.validate_task(task)
         if coordination is not None and (room_assignment is None or subtasks is not None):
@@ -338,6 +338,8 @@ class LocalRunner:
                             queued[child_id] = (prompt, guard)
                     else:
                         add_run(run_id, task, folders, developer_engine, reviewer_engine, digest)
+                        if chat_bot is not None:
+                            bot_runtime.register_turn(store.connection, workspace_id, chat_bot, run_id, order_id)
                         if room_assignment is not None:
                             store.connection.execute("INSERT INTO studio_room_assignments VALUES(?,?,?)",
                                                      (run_id, encode(room_assignment), room_revision))

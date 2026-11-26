@@ -1,7 +1,5 @@
 import {validId} from './studio-shared.js';
 
-const roles = {coordinator: '조정자', developer: '개발자', reviewer: '리뷰어'};
-
 export function mountBots({get, make, api, context}) {
   const panel = get('role-bots'), role = get('bot-role'), picker = get('bot-id');
   let catalog, owner, busy = false;
@@ -16,12 +14,12 @@ export function mountBots({get, make, api, context}) {
   function controls() {
     const enabled = available() && !!catalog && !busy;
     role.disabled = picker.disabled = !enabled;
-    get('bot-create').disabled = !enabled;
     get('bot-assign').disabled = !enabled || !picker.value || catalog?.assignments[role.value] === picker.value;
   }
 
   function render(preferred) {
-    const candidates = catalog.bots.filter(bot => bot.role === role.value);
+    const candidates = catalog.bots.filter(bot => bot.builtin ? bot.role === role.value :
+      !Object.entries(catalog.assignments).some(([slot, id]) => slot !== role.value && bot.id === id));
     const assigned = catalog.assignments[role.value];
     picker.replaceChildren(...candidates.map(bot => {
       const option = make('option', bot.name + ' (' + bot.id + ')');
@@ -30,7 +28,6 @@ export function mountBots({get, make, api, context}) {
     }));
     picker.value = preferred || assigned;
     get('bot-current').textContent = '현재 배정 · ' + (candidates.find(bot => bot.id === assigned)?.name || assigned);
-    get('bot-legend').textContent = '새 ' + roles[role.value] + ' 봇';
     showInstructions();
   }
 
@@ -52,10 +49,7 @@ export function mountBots({get, make, api, context}) {
       const next = await api(url, body);
       if (!current()) return;
       catalog = next;
-      if (body && !action) {
-        get('bot-definition').reset();
-        get('bot-note').textContent = '봇을 만들었습니다. 이 역할에 사용하려면 배정하세요.';
-      } else if (body) {
+      if (body) {
         get('bot-note').textContent = '새 작업에 사용할 봇을 배정했습니다.';
       }
       render(body?.id);
@@ -77,11 +71,6 @@ export function mountBots({get, make, api, context}) {
     event.preventDefault();
     if (!get('bot-assign').disabled) change('/assignment', {role: role.value, id: picker.value});
   });
-  get('bot-definition').addEventListener('submit', event => {
-    event.preventDefault();
-    change('', {role: role.value, id: get('bot-slug').value, name: get('bot-name').value,
-      instructions: get('bot-instructions').value});
-  });
 
   return {settings() {
     owner = context();
@@ -89,7 +78,6 @@ export function mountBots({get, make, api, context}) {
     catalog = null;
     panel.open = false;
     panel.hidden = !owner.local || !validId(owner.journal);
-    get('bot-definition').reset();
     get('bot-note').textContent = '';
     get('bot-guidance').textContent = get('bot-current').textContent = '';
     role.value = 'coordinator';

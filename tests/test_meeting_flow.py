@@ -204,6 +204,33 @@ def test_workspace_role_bots_pin_handoffs_and_each_workers_own_instructions(tmp_
         assert reopened.runner.detail(run_id)["assignment"] == receipt
 
 
+def test_command_from_meeting_room_runs_selected_bot_with_edited_assets(tmp_path, monkeypatch, setup):
+    folders, _ = setup
+    log = tmp_path / "bot-inputs.jsonl"
+    monkeypatch.setenv("OFFICE_TEST_BOT_PROMPTS", str(log))
+    with studio(tmp_path / "office.db") as server:
+        monkeypatch.setattr(server.engines, "snapshot", lambda: engine_snapshot("claude", "antigravity"))
+        workspace = register(server, folders)
+        path = f"/api/rooms/{workspace}/bots"
+        bot = {"id": "designer", "name": "다온", "role": "제품 설계자", "instructions": "사용성을 확인한다."}
+        assert request(server, path, bot)[0] == 200
+        assets = path + "/designer/assets"
+        original = request(server, assets)[1]
+        assert request(server, assets, {"filename": "관찰.md", "content": "설계 메모 XYZ",
+                                        "digest": original["digest"]})[0] == 200
+        run_id = uuid4().hex
+        body = {"id": run_id, "message": "설정 값 변경", "allow_edits": True, "delegation": False,
+                "test_files": ["web/test_value.py"], "role_engines": {"developer": "claude"}}
+        status, receipt = request(server, path + "/designer/commands", body)
+        assert status == 202 and receipt["run"]["assignment"]["bots"]["developer"]["id"] == "designer"
+        assert request(server, path + "/designer/commands", body)[1]["run"]["id"] == run_id
+        wait_for(server, run_id, {"READY_FOR_HUMAN_REVIEW"})
+        inputs = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert len(inputs) == 2 and "설계 메모 XYZ" in inputs[0][1] and "제품 설계자" in inputs[0][1]
+        assert "설계 메모 XYZ" not in inputs[1][1]
+        assert request(server, path)[1]["assignments"]["developer"] == "office-developer"
+
+
 def test_remote_product_gate_applies_one_edited_plan_and_authenticates_receipt(tmp_path, monkeypatch, setup):
     folders, trace = setup
     with studio(tmp_path / "peer.db", accept_remote=True) as peer:

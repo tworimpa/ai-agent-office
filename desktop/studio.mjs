@@ -6,7 +6,7 @@ import { delimiter, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const ID = /^[a-f0-9]{32}$/
-const STUDIO_PAGES = new Set(['/', '/studio', '/office', '/improvements', '/versions'])
+const STUDIO_PAGES = new Set(['/', '/bots', '/workspace', '/studio', '/office', '/improvements', '/versions'])
 const MAX_RESPONSE_BYTES = 256 * 1024
 
 export function localStudioOrigin(address) {

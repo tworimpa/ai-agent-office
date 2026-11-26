@@ -497,6 +497,12 @@ export function mountWorkspaceOffice(win = window) {
   });
 
   function renderRoom() {
+    const clientLink = get('bot-client-link');
+    clientLink.hidden = !room || hostId !== 'local';
+    if (!clientLink.hidden) {
+      clientLink.href = '/bots?workspace=' + workspaceId;
+      get('bot-settings-new').href = clientLink.href;
+    }
     const currentRun = selected();
     progress.select({id: currentRun?.id, active: roomOnline && activeStates.has(currentRun?.state),
       url: currentRun && hostId === 'local' && validId(room?.journal_id) ? '/api/runs/' + currentRun.id + '/stream?office_journal=' + room.journal_id : null,

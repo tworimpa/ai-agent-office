@@ -15,6 +15,8 @@ test('Studio addresses stay on IPv4 loopback and page restoration stays within t
     assert.throws(() => localStudioOrigin(invalid), /Studio 주소/)
   }
   assert.equal(studioPage('/?workspace=' + journal, origin), '/?workspace=' + journal)
+  assert.equal(studioPage('/bots?workspace=' + journal, origin), '/bots?workspace=' + journal)
+  assert.equal(studioPage('/workspace', origin), '/workspace')
   assert.equal(studioPage(origin + '/api/runs', origin), null)
   assert.equal(studioPage('http://127.0.0.1:9080/', origin), null)
   assert.equal(studioPage('//example.org/', origin), null)

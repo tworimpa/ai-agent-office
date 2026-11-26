@@ -65,6 +65,7 @@
             <h1 id="room-title"></h1>
           </div>
           <div class="room-actions">
+            <a id="bot-client-link" class="primary" href="/bots" hidden>봇 회의실</a>
             <button type="button" id="inbox" class="secondary" aria-haspopup="dialog" disabled>요청함 <span id="inbox-count" class="request-count" hidden></span></button>
             <button type="button" id="settings" class="secondary" aria-haspopup="dialog" disabled>작업실 설정</button>
           </div>
@@ -351,7 +352,7 @@
       <summary>역할 봇</summary>
       <p class="field-help">배정은 이 작업실에서 새로 시작하는 작업에 적용됩니다.</p>
       <form id="bot-assignment" class="settings-form">
-        <label for="bot-role">역할</label>
+        <label for="bot-role">실행 자리</label>
         <select id="bot-role">
           <option value="coordinator">조정자</option><option value="developer">개발자</option><option value="reviewer">리뷰어</option>
         </select>
@@ -360,15 +361,7 @@
         <p id="bot-guidance" class="field-help"></p>
         <button type="submit" id="bot-assign" class="secondary" disabled>역할에 배정</button>
       </form>
-      <form id="bot-definition" class="settings-form">
-        <fieldset>
-          <legend id="bot-legend">새 봇</legend>
-          <label for="bot-slug">봇 ID</label><input id="bot-slug" required maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="api-reviewer" spellcheck="false">
-          <label for="bot-name">이름</label><input id="bot-name" required maxlength="40">
-          <label for="bot-instructions">역할 지침</label><textarea id="bot-instructions" required rows="3"></textarea>
-        </fieldset>
-        <button type="submit" id="bot-create" class="secondary" disabled>봇 만들기</button>
-      </form>
+      <a id="bot-settings-new" class="secondary" href="/bots">봇 회의실 열기</a>
       <p id="bot-note" class="form-note" role="status"></p>
     </details>
     <details id="work-policy" hidden>

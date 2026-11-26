@@ -140,7 +140,15 @@ try {
     // Reuse both the listening port and the profile that was attached before uninstall.
     page = await launch(kind, kind === 'rust' ? rustPath : electron, join(root,kind+'-profile'))
     await room(first)
-    await page.ready('#workspaces a[href*="' + previous.workspace + '"]')
+    await until(() => page.run(id => {
+      const select = document.querySelector('#workspaceSelect')
+      if (select) {
+        return select.value === id && new URL(location.href).searchParams.get('workspace') === id &&
+          Array.from(select.options).some(option => option.value === id && option.textContent === '설치 확인')
+      }
+      return Array.from(document.querySelectorAll('#workspaces a')).some(link =>
+        new URL(link.href).searchParams.get('workspace') === id && link.textContent === '설치 확인')
+    },previous.workspace),'saved workspace in the surviving client')
     await page.screenshot(join(evidence,kind+'-after-remove.png'))
     const proof = {original:first.id,workspace:previous.workspace}
     if (process.env.OFFICE_HANDOFF_RECEIPT) {

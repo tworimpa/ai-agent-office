@@ -1,7 +1,6 @@
 """Loopback HTTP entry point for the user-operated local studio."""
 from __future__ import annotations
 
-from contextlib import nullcontext
 from http.server import ThreadingHTTPServer
 from importlib.resources import files
 import json
@@ -36,7 +35,7 @@ from .workspace_rooms import WorkspaceRooms, room_route
 from . import room_bundle
 from . import github_studio
 from . import workspace_briefing, work_profile_views
-from . import local_bots
+from . import web_bot_api
 from .github_connection import GitHubError
 from . import overnight_goals
 
@@ -56,6 +55,14 @@ ASSETS = {
     "/workspace-goal.js": ("workspace-goal.js", "text/javascript"),
     "/workspace-briefing.js": ("workspace-briefing.js", "text/javascript"),
     "/workspace-bots.js": ("workspace-bots.js", "text/javascript"),
+    "/workspace": ("workspace-office.html", "text/html"),
+    "/bots": ("bot-client.html", "text/html"),
+    "/bot-client.css": ("bot-client.css", "text/css"),
+    "/bot-room-scene.css": ("bot-room-scene.css", "text/css"),
+    **{"/" + name: (name, "text/javascript") for name in (
+        "bot-client.js", "bot-client-ui.js", "bot-client-files.js", "bot-client-orders.js", "bot-room-scene.js")},
+    **{"/bot-art/" + name: ("bot-art/" + name, "image/webp") for name in (
+        *(f"figure-{i}.webp" for i in range(12)), "walk-0.webp", "walk-11.webp", "study-seated-king.webp", "office.webp")},
     "/workspace-profile.js": ("workspace-profile.js", "text/javascript"),
     "/workspace-character.js": ("workspace-character.js", "text/javascript"),
     "/workspace-github.js": ("workspace-github.js", "text/javascript"),
@@ -94,12 +101,20 @@ def _journal_id(store):
 
 
 def _valid_page_query(path, query):
-    keys = {"host", "run", "workspace"} if path == "/" else {"host", "run"}
+    keys = {"host", "run", "workspace"} if path in ("/", "/workspace") else {"host", "run"}
     pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True, max_num_fields=len(keys))
     params = dict(pairs)
     return (len(pairs) == len(params) and params.keys() <= keys
             and all(re.fullmatch(r"[a-f0-9]{32}", value) or (key == "host" and value == "local")
                     for key, value in pairs))
+
+
+def _bot_page_query(query):
+    pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True, max_num_fields=3)
+    params = dict(pairs)
+    return (len(pairs) == len(params) and params.keys() <= {"workspace", "bot", "run"}
+            and all(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value) and len(value) <= 64 if key == "bot"
+                    else re.fullmatch(r"[a-f0-9]{32}", value) for key, value in pairs))
 
 
 def _improvements_query(query):
@@ -208,18 +223,22 @@ class StudioHandler(ObserverHandler):
             self.send_header("X-Agent-Office-Journal", self.server.journal_id)
         super().end_headers()
 
-    def _json_body(self):
+    def _json_body(self, limit=MAX_BODY, *, unique=False):
         size = self.headers.get_all("Content-Length", [])
         if (self.headers.get_all("Transfer-Encoding")
                 or self.headers.get_all("Content-Type") != ["application/json"]
                 or len(size) != 1 or not re.fullmatch(r"[0-9]{1,6}", size[0])
-                or not 0 < int(size[0]) <= MAX_BODY):
+                or not 0 < int(size[0]) <= limit):
             raise ValueError("요청 형식 또는 크기를 확인하세요.")
         body = self.rfile.read(int(size[0]))
         if len(body) != int(size[0]):
             raise ValueError("요청을 전부 받지 못했습니다.")
         try:
-            data = json.loads(body.decode("utf-8"))
+            if unique:
+                from .bot_spec import unique_object
+                data = json.loads(body.decode("utf-8"), object_pairs_hook=unique_object)
+            else:
+                data = json.loads(body.decode("utf-8"))
         except (ValueError, RecursionError):
             raise ValueError("JSON 입력을 확인하세요.") from None
         if not isinstance(data, dict):
@@ -241,7 +260,8 @@ class StudioHandler(ObserverHandler):
                 return
         # Closing with unread body bytes can reset the connection and discard
         # the rejection response on Windows. Read once after the origin checks.
-        payload = self._json_body() if write else None
+        manifest_import = bool(re.fullmatch(r"/api/rooms/[0-9a-f]{32}/bots/import", parsed.path))
+        payload = self._json_body(512 * 1024 if manifest_import else MAX_BODY, unique=manifest_import) if write else None
         expected = self.headers.get_all("X-Agent-Office-Expected-Journal")
         if expected is not None and expected != [self.server.journal_id]:
             self._reply(409, {"error": {"code": "JOURNAL_MISMATCH", "message": "선택한 작업실과 다른 저널입니다."}})
@@ -255,13 +275,16 @@ class StudioHandler(ObserverHandler):
                 return
             parsed = parsed._replace(query="")
         if parsed.query:
-            studio_page = parsed.path in ("/", "/studio") and _valid_page_query(parsed.path, parsed.query)
+            studio_page = parsed.path in ("/", "/workspace", "/studio") and _valid_page_query(parsed.path, parsed.query)
             office_page = parsed.path in ("/office", "/versions") and re.fullmatch(r"host=(?:local|[a-f0-9]{32})", parsed.query)
             improvements_page = parsed.path == "/improvements" and _improvements_query(parsed.query)
-            if write or not (studio_page or office_page or improvements_page):
+            bot_page = parsed.path == "/bots" and _bot_page_query(parsed.query)
+            if write or not (studio_page or office_page or improvements_page or bot_page):
                 raise ValueError("요청 주소를 확인하세요.")
         if not write and parsed.path in ASSETS:
-            name, mime = ASSETS[parsed.path]
+            # Keep existing execution links and the first-time Workspace registration flow.
+            page = "/bots" if parsed.path == "/" and not parsed.query and self.server.catalog.list() else parsed.path
+            name, mime = ASSETS[page]
             self._reply(200, files("agent_office").joinpath("web", name).read_bytes(), mime)
             return
         if not os.path.samestat(self.server.db_path.stat(), self.server.identity):
@@ -315,29 +338,11 @@ class StudioHandler(ObserverHandler):
 
     def _local_api(self, path, data):
         write = data is not None
-        bots = re.fullmatch(r"/api/rooms/([0-9a-f]{32})/bots(/assignment)?", path)
-        if bots and not getattr(self, "_peer_reply", False) and (write or not bots[2]):
-            workspace = bots[1]
-            self.server.catalog.get(workspace)
-            with TaskStore(self.server.db_path, existing=True, readonly=not write) as store, (
-                    store._write() if write else nullcontext()):
-                db = store.connection
-                if write:
-                    local_bots.ensure_schema(db)
-                else:
-                    db.execute("BEGIN")
-                if write and bots[2]:
-                    if set(data) != {"id", "role"}:
-                        raise ValueError("배정할 역할과 봇 ID를 입력하세요.")
-                    local_bots.assign(db, workspace, data["role"], data["id"])
-                elif write:
-                    if set(data) != {"id", "name", "role", "instructions"}:
-                        raise ValueError("봇의 ID, 이름, 역할과 지침을 입력하세요.")
-                    local_bots.create(db, workspace, data["id"], data["name"], data["role"], data["instructions"])
-                result = {"bots": local_bots.list_bots(db, workspace),
-                          "assignments": {role: bot["id"] for role, bot in local_bots.resolve(db, workspace).items()}}
-            self._reply(200, result)
-            return
+        if not getattr(self, "_peer_reply", False):
+            response = web_bot_api.handle(self.server, path, data)
+            if response is not None:
+                self._reply(*response)
+                return
         bundle = room_bundle.route("POST" if write else "GET", path.removeprefix("/api"))
         if bundle:
             self._reply(200, room_bundle.read(self.server, *bundle))

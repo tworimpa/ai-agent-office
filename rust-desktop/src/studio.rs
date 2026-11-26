@@ -49,7 +49,7 @@ pub fn page(url: &Url, origin: &str) -> Option<String> {
         || url.as_str().len() > 4096
         || !matches!(
             url.path(),
-            "/" | "/studio" | "/office" | "/versions" | "/improvements"
+            "/" | "/bots" | "/workspace" | "/studio" | "/office" | "/versions" | "/improvements"
         )
     {
         return None;

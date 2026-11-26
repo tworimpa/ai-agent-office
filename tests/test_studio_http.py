@@ -203,15 +203,22 @@ def test_local_role_bots_create_bind_and_reject_peer_routes(tmp_path):
         assert status == 200
         assert catalog["assignments"]["reviewer"] == "office-reviewer"
         assert len(catalog["assignments"]) == 3
-        bot = {"id": "api-review", "role": "reviewer", "name": "API 리뷰어", "instructions": "Review API changes."}
+        bot = {"id": "api-review", "role": "API 설계자", "name": "API 리뷰어", "instructions": "Review API changes."}
         assert request(server, path, bot, Origin="https://elsewhere.invalid")[0] == 403
         assert request(server, path, {**bot, "engine": "codex"})[0] == 400
         status, created = request(server, path, bot)
         assert status == 200 and bot["id"] in {row["id"] for row in created["bots"]}
         assert created["assignments"]["reviewer"] == "office-reviewer"
         body = {"id": bot["id"], "role": "reviewer"}
-        assert request(server, path + "/assignment", {**body, "role": "developer"})[0] == 400
+        assert request(server, path + "/assignment", {**body, "role": "unknown-slot"})[0] == 400
         assert request(server, "/api/peer/" + server.journal_id + path[4:] + "/assignment", body)[0] == 404
         status, updated = request(server, path + "/assignment", body)
         assert status == 200 and updated["assignments"]["reviewer"] == bot["id"]
         assert request(server, path)[1]["assignments"] == updated["assignments"]
+        assets = path + "/api-review/assets"
+        stored = request(server, assets)[1]
+        assert stored["files"]["SOUL.md"] == bot["instructions"]
+        edit = {"digest": stored["digest"], "filename": "MEMORY.md", "content": "메모"}
+        assert request(server, assets, edit)[1]["files"]["MEMORY.md"] == "메모"
+        assert request(server, assets, edit)[0] == 409
+        assert request(server, "/api/peer/" + server.journal_id + assets[4:])[0] == 404
