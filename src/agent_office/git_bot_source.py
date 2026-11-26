@@ -6,8 +6,8 @@ import os
 from pathlib import Path
 import re
 import signal
-import socket
 import subprocess
+import sys
 from tempfile import TemporaryDirectory, TemporaryFile
 from threading import BoundedSemaphore
 import time
@@ -25,6 +25,10 @@ _TAG = re.compile(r"[^\x00-\x20\x7f~^:?*\[\\]{1,180}")
 _FETCH_LIMIT = 64 * 1024 * 1024
 _FETCH_SLOTS = BoundedSemaphore(2)
 _TIME_LIMIT = 30
+_DNS_LOOKUP = (
+    "import socket, sys; "
+    "print(*{row[4][0] for row in socket.getaddrinfo(sys.argv[1], 443, 0, socket.SOCK_STREAM)}, sep='\\n')"
+)
 
 
 @dataclass(frozen=True)
@@ -78,11 +82,10 @@ class Fetched:
     package: bot_package.Package
 
 
-def _network_options(host):
+def _network_options(host, resolved):
     try:
-        answers = socket.getaddrinfo(host, 443, 0, socket.SOCK_STREAM)
-        addresses = {ipaddress.ip_address(answer[4][0]) for answer in answers}
-    except (OSError, ValueError):
+        addresses = {ipaddress.ip_address(address) for address in resolved}
+    except ValueError:
         raise ValueError("Git 저장소 주소를 확인할 수 없습니다.") from None
     if not addresses or any(
         not address.is_global or address.is_multicast or address.is_reserved
@@ -116,8 +119,16 @@ class _Repository:
             GIT_NO_REPLACE_OBJECTS="1", GIT_NO_LAZY_FETCH="1",
         )
 
+    def resolve(self, host):
+        result = self._run([sys.executable, "-I", "-c", _DNS_LOOKUP, host],
+                           message="Git 저장소 주소를 확인할 수 없습니다.", limit=8192)
+        return result.decode("ascii").splitlines()
+
     def run(self, *args, message, limit=128 * 1024, transfer=False):
         argv = [self.git, "-C", str(self.root), "-c", "core.hooksPath=" + os.devnull, *args]
+        return self._run(argv, message=message, limit=limit, transfer=transfer)
+
+    def _run(self, argv, *, message, limit, transfer=False):
         with ExitStack() as stack:
             output = stack.enter_context(TemporaryFile())
             if os.name == "nt":
@@ -237,7 +248,7 @@ def _fetch(source, root):
     if not numbers or tuple(map(int, numbers.groups())) < (2, 39):
         raise ValueError("공개 Git 패키지 설치에는 Git 2.39 이상이 필요합니다.")
     options = [
-        *_network_options(source.host), "-c", "http.followRedirects=false",
+        *_network_options(source.host, repo.resolve(source.host)), "-c", "http.followRedirects=false",
         "-c", "http.sslVerify=true", "-c", "http.proxy=", "-c", "credential.helper=",
         "-c", "fetch.unpackLimit=1", "-c", "fetch.fsckObjects=true",
         "-c", "http.lowSpeedLimit=1024", "-c", "http.lowSpeedTime=8",

@@ -55,3 +55,19 @@ def test_git_package_preview_install_and_provenance_are_workspace_local(tmp_path
         bots = request(restarted, base)[1]["bots"]
         shared = next(bot for bot in bots if bot["id"] == "shared-research")
         assert shared["package"] == preview["source"]
+
+
+def test_sharing_cannot_create_a_git_source_for_a_builtin_bot(tmp_path, monkeypatch):
+    with studio(tmp_path / "studio.db") as server:
+        workspace = server.catalog.create("recipient", [str(tmp_path)])["id"]
+        base = f"/api/rooms/{workspace}/bots"
+        builtin = request(server, base + "/office-developer/manifest")[1]
+        commit = "a" * 40
+        monkeypatch.setattr(git_bot_source, "fetch", lambda _source: git_bot_source.Fetched(
+            commit, bot_package.Package("office-developer", None, builtin),
+        ))
+        assert request(server, base + "/office-developer/package")[0] == 400
+        source = {"url": "https://example.org/bots.git", "version": "v1"}
+        assert request(server, base + "/package-preview", source)[0] == 400
+        assert request(server, base + "/package-install", {**source, "commit": commit, "digest": "b" * 64})[0] == 400
+        assert not any("package" in bot for bot in request(server, base)[1]["bots"])

@@ -41,7 +41,7 @@ def _git_package(server, workspace, action, data):
     fetched = git_bot_source.fetch(source)
     package = fetched.package
     document = package.definition
-    digest = local_bots.manifest_digest(document)
+    digest = local_bots.shareable_digest(document)
     receipt = source.receipt(fetched.commit, digest)
     if expected is None:
         return 200, {"source": receipt, "digest": digest, "package_name": package.name,
@@ -127,7 +127,9 @@ def handle(server, path, data):
         if action == "manifest" and not write:
             return 200, local_bots.manifest(db, workspace, bot_id)
         if action == "package" and not write:
-            return 200, bot_package.export_zip(local_bots.manifest(db, workspace, bot_id)), "application/zip"
+            document = local_bots.manifest(db, workspace, bot_id)
+            local_bots.shareable_digest(document)
+            return 200, bot_package.export_zip(document), "application/zip"
         if action == "assets" and write:
             if (not {"filename", "digest"} <= data.keys()
                     or data.keys() - {"filename", "content", "digest", "kind", "create"}

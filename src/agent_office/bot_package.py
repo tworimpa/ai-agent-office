@@ -82,7 +82,7 @@ def read(plugin_bytes, definition_bytes, skills):
     except UnicodeError:
         raise ValueError("bot.json은 UTF-8로 저장하세요.") from None
     files = definition["files"]
-    if any(_memory(path) for path in (*files, *definition["folders"])):
+    if any(_memory(path) for path in (*files, *skills, *definition["folders"])):
         raise ValueError("공유 패키지에서 MEMORY.md를 빼고 다시 설치하세요.")
     for path, data in skills.items():
         if path in files:

@@ -1,6 +1,7 @@
 from io import BytesIO
 import json
 import subprocess
+import time
 from zipfile import ZipFile
 
 import pytest
@@ -47,6 +48,8 @@ def test_handwritten_packages_reject_memos_and_duplicate_skill_paths():
         bot_package.read(plugin, json.dumps(definition()).encode(), {})
     with pytest.raises(ValueError, match="중복"):
         bot_package.read(plugin, payload, {"skills/summarize/SKILL.md": b"# duplicate"})
+    with pytest.raises(ValueError, match="MEMORY.md"):
+        bot_package.read(plugin, payload, {"skills/MEMORY.md/SKILL.md": b"# incompatible path"})
     package = bot_package.read(plugin, payload, {"skills/outline/SKILL.md": b"# outline"})
     assert package.definition["files"]["skills/outline/SKILL.md"] == "# outline"
 
@@ -71,18 +74,20 @@ def test_git_source_rejects_non_public_https_url_forms(url):
         git_bot_source.Source.parse({"url": url, "version": "v1"})
 
 
-def test_git_network_options_pin_dns_and_reject_nonpublic_addresses(monkeypatch):
-    def resolve(*args):
-        return [(2, 1, 6, "", ("93.184.215.14", 443))]
-    monkeypatch.setattr(git_bot_source.socket, "getaddrinfo", resolve)
-    assert git_bot_source._network_options("example.org") == [
+def test_git_network_options_pin_dns_and_reject_nonpublic_addresses():
+    assert git_bot_source._network_options("example.org", ["93.184.215.14"]) == [
         "-c", "http.curloptResolve=example.org:443:93.184.215.14"
     ]
-    def mixed(*args):
-        return [*resolve(), (2, 1, 6, "", ("127.0.0.1", 443))]
-    monkeypatch.setattr(git_bot_source.socket, "getaddrinfo", mixed)
     with pytest.raises(ValueError):
-        git_bot_source._network_options("example.org")
+        git_bot_source._network_options("example.org", ["93.184.215.14", "127.0.0.1"])
+
+
+def test_dns_lookup_is_owned_by_the_package_deadline(tmp_path, monkeypatch):
+    repository = git_bot_source._Repository(tmp_path)
+    monkeypatch.setattr(git_bot_source, "_DNS_LOOKUP", "import time; time.sleep(10)")
+    repository.deadline = time.monotonic() + 0.25
+    with pytest.raises(ValueError, match="시간이 초과"):
+        repository.resolve("example.org")
 
 
 def test_git_reads_only_regular_objects_at_selected_commit(tmp_path):
