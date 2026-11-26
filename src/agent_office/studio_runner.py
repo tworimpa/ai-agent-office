@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import uuid
 
 from . import role_skills as skills
-from . import team_runs
+from . import local_bots, team_runs
 from . import meeting_store, goal_recovery, goal_stage_wait, workspace_coordination
 from .engines import DEFAULT_DEVELOPER, DEFAULT_REVIEWER, SUPPORTED_ENGINES
 from .events import snapshot_request
@@ -254,7 +254,7 @@ class LocalRunner:
               task: str, allow_edits: bool, *, request_digest=None, developer_engine=DEFAULT_DEVELOPER,
               reviewer_engine=DEFAULT_REVIEWER, use_inbox=False, delegation=None, role_skills=None,
               indices=None, subtasks=None, room_assignment=None, room_revision=None, room_choices=None, external_origin=None,
-              coordination=None):
+              coordination=None, room_bots=None):
         validate_id(run_id)
         team_runs.validate_task(task)
         if coordination is not None and (room_assignment is None or subtasks is not None):
@@ -341,6 +341,8 @@ class LocalRunner:
                         if room_assignment is not None:
                             store.connection.execute("INSERT INTO studio_room_assignments VALUES(?,?,?)",
                                                      (run_id, encode(room_assignment), room_revision))
+                            if room_bots is not None:
+                                local_bots.pin(store.connection, run_id, room_bots)
                             if "goal_policy" in room_assignment:
                                 from .overnight_goals import register
                                 register(store.connection, run_id, workspace_id, task, room_revision, folders, room_assignment)

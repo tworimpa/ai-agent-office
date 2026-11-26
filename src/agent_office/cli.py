@@ -34,7 +34,9 @@ def make_parser() -> argparse.ArgumentParser:
     parser = OfficeParser(prog="agent-office")
     parser.add_argument("--db", type=Path, help="Local task database; use a separate candidate path")
     sub = parser.add_subparsers(dest="command", required=True)
+    from .bot_cli import add_commands as add_bot_commands
     from .improvement_cli import add_commands
+    add_bot_commands(sub)
     add_commands(sub)
     sub.add_parser("engines", help="Inspect the initial engine profile without model calls")
     verify = sub.add_parser("verify-engine", help="Call a provider on a disposable fixture and record the result")
@@ -245,6 +247,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "events" and not 0 <= args.after_seq <= MAX_SQLITE_INT:
             raise ValueError("Invalid cursor")
         db_path = resolve_db_path(args.db)
+        if args.command == "bots":
+            from .bot_cli import run_command
+            return run_command(args, db_path)
         if args.command == "peer-check":
             from .goal_peer import prepare
             argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv

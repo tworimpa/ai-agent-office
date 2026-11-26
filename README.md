@@ -16,6 +16,8 @@ Windows와 Ubuntu·Debian 계열 Linux에서 **AI Agent Office** 앱을 열어 �
 
 ## 조정자에게 작업 맡기기
 
+조정자·개발자·리뷰어에 내 봇을 배정할 수 있습니다. 예를 들어 Windows·Linux 호환성 리뷰어를 만들고, 해당 Workspace의 다음 의뢰부터 경로 처리 회귀를 확인하도록 지정할 수 있습니다. [로컬 역할 봇 만들기와 배정](docs/local-role-bots.md)
+
 사무실의 **조정자 브리핑**에서 응답을 기다리는 질문과 영향을 받는 목표, 검토할 후보, 다음 작업을 확인할 수 있습니다. 제품 결정 하나를 여러 목표가 참조할 때 원래 질문에 한 번 답하면 됩니다. 권한 요청에는 각 실행에서 따로 응답합니다. [Workspace 브리핑과 단계별 선행 조건](docs/workspace-briefing.md)
 
 GitHub Issue에서 작업을 맡기려면 실행 호스트에 GitHub 연결을 등록한 뒤 **작업실 설정 → GitHub**에서 저장소·브랜치·폴더와 허용할 사용자를 선택하세요. `office:ready` 라벨을 붙인 열린 Issue가 목표로 연결됩니다. 작업실에서 **지금 가져오기**로 확인하거나 Studio가 다음 동기화 때 처리하도록 둘 수 있습니다. 결과는 같은 Issue의 상태 댓글에서 확인합니다. [GitHub App·Enterprise 연결](docs/github-connections.md) · [이벤트 처리와 게시 복구](docs/github-issue-sync.md)

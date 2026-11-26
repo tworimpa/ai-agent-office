@@ -14,6 +14,8 @@ AI Agent Office는 Windows와 Linux에서 기존 코딩 CLI를 운영하는 작�
 
 기본 엔진 조합은 개발 Codex와 리뷰 Antigravity다. 역할 지정과 해당 호스트의 실제 기능 검증은 별도로 기록한다. 공급자가 알려 주지 않은 계정 한도나 사용량은 미확인으로 표시한다. [엔진](engines.md) · [작업 프로필](work-profiles.md) · [장시간 목표](overnight-goals.md)
 
+Workspace는 조정자·개발자·리뷰어 자리마다 로컬 봇 정의를 배정한다. 작업을 접수할 때 해당 정의를 고정한다. 조정자 지침은 각 담당자의 업무 인계에 쓰이고, 개발·리뷰 봇은 해당 역할에 선택된 CLI로 실행된다. [로컬 역할 봇과 공유 패키지 설계](local-role-bots.md)
+
 ## 호스트와 외부 연동
 
 로컬 Studio는 선택된 원격 Studio에 SSH를 통해 요청을 전달하며 응답의 저널 ID를 확인한다. 원격 검증은 호스트, 소스 커밋, 레시피, 실제 결과를 함께 기록한다. GitHub 및 Enterprise 연결은 등록한 저장소와 라벨, 허용된 사용자 범위에서 이슈를 목표로 접수하고 상태를 동기화한다. [원격 검증](goal-peer-checks.md) · [GitHub 연결](github-connections.md) · [이슈 동기화](github-issue-sync.md)

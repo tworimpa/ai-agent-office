@@ -347,6 +347,30 @@
       <p id="settings-note" class="form-note" role="status"></p>
       <button type="submit" id="save-settings" class="primary">설정 저장</button>
     </form>
+    <details id="role-bots" hidden>
+      <summary>역할 봇</summary>
+      <p class="field-help">배정은 이 작업실에서 새로 시작하는 작업에 적용됩니다.</p>
+      <form id="bot-assignment" class="settings-form">
+        <label for="bot-role">역할</label>
+        <select id="bot-role">
+          <option value="coordinator">조정자</option><option value="developer">개발자</option><option value="reviewer">리뷰어</option>
+        </select>
+        <label for="bot-id">배정할 봇</label><select id="bot-id"></select>
+        <p id="bot-current" class="field-help"></p>
+        <p id="bot-guidance" class="field-help"></p>
+        <button type="submit" id="bot-assign" class="secondary" disabled>역할에 배정</button>
+      </form>
+      <form id="bot-definition" class="settings-form">
+        <fieldset>
+          <legend id="bot-legend">새 봇</legend>
+          <label for="bot-slug">봇 ID</label><input id="bot-slug" required maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="api-reviewer" spellcheck="false">
+          <label for="bot-name">이름</label><input id="bot-name" required maxlength="40">
+          <label for="bot-instructions">역할 지침</label><textarea id="bot-instructions" required rows="3"></textarea>
+        </fieldset>
+        <button type="submit" id="bot-create" class="secondary" disabled>봇 만들기</button>
+      </form>
+      <p id="bot-note" class="form-note" role="status"></p>
+    </details>
     <details id="work-policy" hidden>
       <summary>작업 프로필 기본값</summary>
       <form id="work-policy-form" class="settings-form">
