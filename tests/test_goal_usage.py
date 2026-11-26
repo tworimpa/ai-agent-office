@@ -54,6 +54,14 @@ def test_only_typed_provider_usage_counts_once_and_unknown_is_visible(goal):
     assert workers.budget(db,run_id,{"token_budget":30})[0] == "TOKEN_BUDGET_EXHAUSTED"
 
 
+def test_coordinator_and_developer_share_the_pinned_profile_quota(goal):
+    _, store, run_id, _ = goal
+    db = store.connection
+    usage.record_rates(db, run_id, "coordinator", "codex", None, "plan", rate(None, 100, False), "provider_event")
+    assert usage.blockers(db, run_id, "developer", {"engine": "codex"})
+    assert not usage.blockers(db, run_id, "reviewer", {"engine": "codex"})
+
+
 def test_shared_quota_never_sums_host_snapshots_or_guesses_identity(goal):
     _,store,run_id,_ = goal
     db = store.connection

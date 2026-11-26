@@ -21,7 +21,11 @@ def assignment(db, run_id):
     row = db.execute("""SELECT r.assignment_json,t.developer_engine,t.reviewer_engine FROM studio_room_assignments r
         JOIN runs s ON s.run_id=r.run_id JOIN tasks t ON t.task_id=s.task_id WHERE r.run_id=?""", (run_id,)).fetchone()
     if row:
-        return json.loads(row[0]), {"developer":row[1], "reviewer":row[2]}
+        spec = json.loads(row[0])
+        if spec.get("review_plan"):
+            planner = db.execute("SELECT coordinator_plan FROM studio_meetings WHERE run_id=?", (run_id,)).fetchone()
+            spec["coordinator_plan"] = bool(planner and planner[0])
+        return spec, {"developer":row[1], "reviewer":row[2]}
     return {}, {}
 
 
@@ -43,6 +47,9 @@ def budget(db,run_id,profile):
 
 
 def choices(profile, engines, role):
+    # Planning has its own bot and usage record, with the run's pinned developer CLI profile.
+    if role == "coordinator":
+        role = "developer"
     first = dict(profile.get("roles",{}).get(role,{}),engine=engines[role])
     return [first,*profile.get("fallbacks",{}).get(role,[])]
 
@@ -59,6 +66,8 @@ def select(db,run_id,role,profile,engines):
 
 
 def stage_roles(stage, spec):
+    if stage == "start" and spec.get("coordinator_plan"):
+        return ("coordinator",)
     if stage == "start" and spec.get("meeting"):
         return ("developer","reviewer")
     if stage == "implement" or stage == "reproduce" and spec.get("reproduce_required"):
@@ -141,14 +150,15 @@ def admission(db,run_id,stage,attempt,*,record=False):
         if selected is not None:
             continue
         reason = reason_for(blocked)
-        alias = choices(profile,engines,role)[0].get("account_alias")
+        primary = choices(profile,engines,role)[0]
+        alias = primary.get("account_alias")
         if profile.get("on_limit") == "stop":
             reason = "운영자 설정에 따라 중단했습니다. " + reason.split(" · ")[0]
             if record:
                 hold(db,run_id,role,stage,attempt,"quota_stop",reason)
             return "stop",("PROVIDER_LIMIT_STOPPED",reason)
         if record:
-            hold(db,run_id,role,stage,attempt,"quota_wait",reason,engines[role],alias)
+            hold(db,run_id,role,stage,attempt,"quota_wait",reason,primary["engine"],alias)
         return "wait",reason
     if record:
         release(db,run_id)

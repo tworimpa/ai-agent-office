@@ -357,7 +357,9 @@ class LocalRunner:
                                     store.connection.execute("INSERT INTO studio_readonly_queue_redactions VALUES(?)", (run_id,))
                             register_choices(store.connection, run_id, room_revision, room_choices)
                             if room_assignment.get("meeting"):
-                                meeting_store.register(store.connection, run_id, review_plan=room_assignment["review_plan"])
+                                review_plan = room_assignment["review_plan"]
+                                meeting_store.register(store.connection, run_id, review_plan=review_plan,
+                                                       coordinator_plan=review_plan and room_bots is not None)
                 # Pending entries take ownership only after the entire team registration commits.
                 guards.pop_all()
 

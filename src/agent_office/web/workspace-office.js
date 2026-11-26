@@ -778,7 +778,8 @@ export function mountWorkspaceOffice(win = window) {
       const body = doc.createDocumentFragment();
       if (meeting.error) body.append(make('p', meeting.error));
       for (const [index, entry] of meeting.contributions.entries()) {
-        const name = run.assignment?.roles?.[entry.role]?.name ?? meetingRoles[entry.role] ?? entry.role;
+        const name = run.assignment?.roles?.[entry.role]?.name ?? run.assignment?.bots?.[entry.role]?.name
+          ?? meetingRoles[entry.role] ?? entry.role;
         const label = [name, engines[entry.engine] ?? entry.engine, entry.revision && '계획 ' + entry.revision + '판', stamp(entry.created_at)].filter(Boolean).join(' · ');
         const row = make('article', '', 'contribution');
         row.append(make('small', label), renderMarkdown(doc, entry.text, {key: run.id + '-contribution-' + index}));

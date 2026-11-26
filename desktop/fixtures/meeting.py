@@ -4,7 +4,7 @@ import json
 
 def meeting_result(prompt):
     stage = prompt.splitlines()[0]
-    assert stage in ("MEETING_DEVELOPER", "MEETING_REVIEWER")
+    assert stage in ("MEETING_COORDINATOR", "MEETING_DEVELOPER", "MEETING_REVIEWER")
     material = json.loads(prompt.splitlines()[-1])
     assert "tests/test_local.py" in material["evidence"]["excerpts"]
     if stage == "MEETING_REVIEWER":

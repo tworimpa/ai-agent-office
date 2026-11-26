@@ -3,6 +3,7 @@ from copy import deepcopy
 from io import BytesIO
 import json
 import os
+from pathlib import Path
 import shlex
 import sys
 import time
@@ -31,7 +32,7 @@ stage = prompt.splitlines()[0]
 if trace_path := os.environ.get("OFFICE_TEST_BOT_PROMPTS"):
     with open(trace_path, "a", encoding="utf-8") as log:
         log.write(json.dumps([engine, prompt]) + "\n")
-if stage in ("MEETING_DEVELOPER", "MEETING_REVIEWER"):
+if stage in ("MEETING_DEVELOPER", "MEETING_REVIEWER", "MEETING_COORDINATOR"):
     material = json.loads(prompt.splitlines()[-1])
     assert "web/test_value.py" in material["evidence"]["excerpts"]
     if stage == "MEETING_REVIEWER":
@@ -173,6 +174,14 @@ def test_workspace_role_bots_pin_handoffs_and_each_workers_own_instructions(tmp_
             pytest.fail("Timed out waiting for the role bot workflow")
 
         meeting = wait_until(lambda run: run["meeting"]["status"] == "awaiting_review")["meeting"]
+        assert meeting["coordinator_plan"] and meeting["revisions"][0]["approved_by"] is None
+        assert [item["role"] for item in meeting["contributions"]] == ["coordinator"]
+        waiting = server.runner.detail(run_id)
+        assert not waiting["developer_output"] and not waiting["review_output"]
+        assert (Path(waiting["workspace"]) / "web/value.txt").read_text() == "old"
+        calls_before_approval = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert len(calls_before_approval) == 1
+        assert calls_before_approval[0][1].startswith("MEETING_COORDINATOR\n")
         for role in roles:
             assert main(["--db", str(db), "bots", "assign", "--workspace-id", workspace,
                          "--role", role, "--id", f"office-{role}"]) == 0
@@ -182,12 +191,15 @@ def test_workspace_role_bots_pin_handoffs_and_each_workers_own_instructions(tmp_
         final = wait_until(lambda run: run["state"] == "READY_FOR_HUMAN_REVIEW")
         assert final["assignment"] == receipt
         assert final["meeting"]["verification"][0]["status"] == "passed"
+        assert final["meeting"]["revisions"][0]["approved_by"] == "operator"
         calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-        assert [engine for engine, _ in calls] == ["claude", "agy", "claude", "agy"]
-        for engine, prompt in calls:
+        assert [engine for engine, _ in calls] == ["claude", "claude", "agy"]
+        for index, (engine, prompt) in enumerate(calls):
             assert "role-message-coordinator" in prompt
-            assert ("role-message-developer" in prompt) == (engine == "claude")
+            assert ("role-message-developer" in prompt) == (index == 1)
             assert ("role-message-reviewer" in prompt) == (engine == "agy")
+            if index:
+                assert "설정 값 변경" in prompt and '"depends_on": ["A"]' in prompt
     with StudioServer(db, port=0) as reopened:
         assert reopened.runner.detail(run_id)["assignment"] == receipt
 

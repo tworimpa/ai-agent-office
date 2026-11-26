@@ -25,14 +25,14 @@ def plan(question=False):
             "evidence": {"revision": "a" * 40, "paths": ["src/store.py"]}}
 
 
-def setup_meeting(path, review_plan=False):
+def setup_meeting(path, review_plan=False, *, coordinator_plan=False):
     with seeded(path) as store, store._write():
         db = store.connection
         db.execute(SCHEMA)
         db.execute("""INSERT INTO studio_runs(id,workspace_id,folders,allow_edits,request_hash)
             VALUES (?,'workspace','["src"]',1,'hash')""", (RUN,))
         meetings.ensure_schema(db)
-        meetings.register(db, RUN, review_plan)
+        meetings.register(db, RUN, review_plan, coordinator_plan=coordinator_plan)
 
 
 @contextmanager
@@ -123,7 +123,8 @@ def test_decision_concurrency_and_restarted_reader(tmp_path):
     with ThreadPoolExecutor(2) as pool:
         assert sorted(pool.map(submit, ["1"*32, "2"*32])) == ["REQUEST_CLOSED", "approved"]
     with TaskStore(path, readonly=True) as store:
-        assert meetings.summary(store.connection, RUN) == {"status": "approved", "revision": 1, "error": None}
+        assert meetings.summary(store.connection, RUN) == {"status": "approved", "revision": 1, "error": None,
+                                                          "coordinator_plan": False}
         assert meetings.describe(store.connection, "b"*32) is None
 
 
@@ -164,7 +165,8 @@ def test_decision_failure_rolls_back_and_scope_is_bound_to_original_run(tmp_path
         assert (detail["status"], detail["revision"], detail["decision"]) == ("awaiting_review", 1, None)
         meetings.fail(db, RUN, "TOKEN=private 회의 중단")
         meetings.stop(db, RUN)
-        assert meetings.summary(db, RUN) == {"status": "failed", "revision": 1, "error": "TOKEN=[redacted] 회의 중단"}
+        assert meetings.summary(db, RUN) == {"status": "failed", "revision": 1, "error": "TOKEN=[redacted] 회의 중단",
+                                             "coordinator_plan": False}
 
 
 def test_unreviewed_plan_does_not_imply_human_approval_or_verification(tmp_path):
@@ -175,3 +177,26 @@ def test_unreviewed_plan_does_not_imply_human_approval_or_verification(tmp_path)
         assert result["status"] == "approved" and result["decision"] is None
         assert result["revisions"][0]["approved_by"] == "coordinator"
         assert result["verification"][0]["status"] == "not_verified"
+
+
+def test_operator_cannot_remove_independent_review_from_edit_plan(tmp_path):
+    path = tmp_path / "db"
+    setup_meeting(path, True, coordinator_plan=True)
+    with write(path) as db:
+        proposal = plan()
+        proposal["tasks"].append({"id": "review", "description": "변경 확인", "owner": "reviewer",
+                                  "depends_on": ["save"]})
+        assert meetings.propose(db, RUN, proposal)["status"] == "awaiting_review"
+        with pytest.raises(ValueError, match="독립 리뷰"):
+            meetings.decide(db, RUN, decision(plan()))
+        assert meetings.describe(db, RUN)["decision"] is None
+
+
+def test_migration_preserves_old_plan_authoring_mode(tmp_path):
+    path = tmp_path / "db"
+    setup_meeting(path, True)
+    with write(path) as db:
+        db.execute("ALTER TABLE studio_meetings DROP COLUMN coordinator_plan")
+        meetings.ensure_schema(db)
+        assert meetings.describe(db, RUN)["coordinator_plan"] is False
+        assert meetings.propose(db, RUN, plan())["status"] == "awaiting_review"
