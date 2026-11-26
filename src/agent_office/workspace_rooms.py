@@ -282,7 +282,7 @@ class WorkspaceRooms:
             if cursor is None:
                 page.update(workspace=workspace, settings=self._settings(db, workspace_id), engines=engines,
                             bundle_supported=True, briefing_bundle_supported=True, storage_supported=True, meeting_supported=True, goal_supported=True, github_supported=True, briefing_supported=True,
-                            work_profiles_supported=True, shared_visits_supported=True, quick_dispatch_supported=True, journal_id=self.journal_id,
+                            bot_room_supported=True, work_profiles_supported=True, shared_visits_supported=True, quick_dispatch_supported=True, journal_id=self.journal_id,
                             goal_default=db.execute("SELECT 1 FROM studio_goal_policies WHERE workspace_id=?",
                                                     (workspace_id,)).fetchone() is not None)
         return page
@@ -291,7 +291,7 @@ class WorkspaceRooms:
         self._workspace(workspace_id)
         return self.runner.inbox.pending(workspace_id=workspace_id)
 
-    def assign(self, workspace_id, data, *, pinned_revision=None, origin=None):
+    def assign(self, workspace_id, data, *, pinned_revision=None, origin=None, target_bot=None):
         required = {"id", "message", "allow_edits", "delegation"}
         if not required <= data.keys() or data.keys() - required - {"indices", "test_files", "meeting", "review_plan",
                                                                     "role_engines", "goal", "goal_criteria", "reproduce_required", "coordination", "work_profile"}:
@@ -327,6 +327,8 @@ class WorkspaceRooms:
         if test_files and not allow_edits:
             raise ValueError("테스트 파일 지정은 파일 수정을 허용한 작업에 적용됩니다.")
         digest_parts = [workspace_id, data]
+        if target_bot is not None:
+            digest_parts.append({"target_bot": target_bot})
         if origin is not None:
             digest_parts.extend([origin, pinned_revision])
         digest = "room:" + sha256(encode(digest_parts).encode("utf-8")).hexdigest()
@@ -338,6 +340,16 @@ class WorkspaceRooms:
                     return prior
                 settings = self._settings(store.connection, workspace_id)
                 bots = local_bots.resolve(store.connection, workspace_id)
+                if target_bot is not None:
+                    chosen = local_bots.get(store.connection, workspace_id, target_bot)
+                    if chosen["builtin"]:
+                        raise ValueError("회의실에서 직접 만든 봇을 선택하세요.")
+                    if allow_edits and bots["reviewer"]["id"] == target_bot:
+                        raise ValueError("이 봇이 독립 리뷰를 맡고 있습니다. 파일 수정을 맡기려면 작업실 설정에서 다른 리뷰 봇을 배정하세요.")
+                    for slot in ("coordinator", "reviewer"):
+                        if bots[slot]["id"] == target_bot:
+                            bots[slot] = local_bots.get(store.connection, workspace_id, "office-" + slot)
+                    bots["developer"] = chosen
                 for role in ROLES:
                     if not bots[role]["builtin"]:
                         settings[role]["name"] = bots[role]["name"]

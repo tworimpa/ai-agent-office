@@ -227,7 +227,9 @@ class RoomWorkers:
         for source in ("coordinator", role):
             bot = self.bots.get(source)
             if bot and bot["instructions"]:
-                guidance[source] = {"name": bot["name"], "instructions": bot["instructions"]}
+                guidance[source] = {"name": bot["name"], "role": bot["role"], "instructions": bot["instructions"]}
+                if source == role and bot.get("assets"):
+                    guidance[source]["files"] = bot["assets"]
         if not guidance:
             return prompt
         # Preserve the stage marker on the first line and any structured input at the end.

@@ -56,6 +56,7 @@ ASSETS = {
     "/workspace-goal.js": ("workspace-goal.js", "text/javascript"),
     "/workspace-briefing.js": ("workspace-briefing.js", "text/javascript"),
     "/workspace-bots.js": ("workspace-bots.js", "text/javascript"),
+    "/workspace-bot-room.js": ("workspace-bot-room.js", "text/javascript"),
     "/workspace-profile.js": ("workspace-profile.js", "text/javascript"),
     "/workspace-character.js": ("workspace-character.js", "text/javascript"),
     "/workspace-github.js": ("workspace-github.js", "text/javascript"),
@@ -315,6 +316,27 @@ class StudioHandler(ObserverHandler):
 
     def _local_api(self, path, data):
         write = data is not None
+        member = re.fullmatch(r"/api/rooms/([0-9a-f]{32})/bots/([a-z0-9-]{1,64})/(assets|commands)", path)
+        if member and not getattr(self, "_peer_reply", False):
+            workspace, bot_id, action = member.groups()
+            self.server.catalog.get(workspace)
+            if action == "commands" and write:
+                run = self.server.rooms.assign(workspace, data, target_bot=bot_id)
+                self._reply(202, {"run": run})
+                return
+            if action == "assets":
+                with TaskStore(self.server.db_path, existing=True, readonly=not write) as store, (
+                        store._write() if write else nullcontext()):
+                    if write:
+                        if set(data) != {"filename", "content", "digest"}:
+                            raise ValueError("파일 이름과 내용, 편집을 시작한 버전을 확인하세요.")
+                        bot = local_bots.save_asset(store.connection, workspace, bot_id, data["filename"],
+                                                    data["content"], data["digest"])
+                    else:
+                        bot = local_bots.get(store.connection, workspace, bot_id)
+                    result = {"id": bot_id, "digest": bot["digest"], "files": local_bots.asset_files(bot)}
+                self._reply(200, result)
+                return
         bots = re.fullmatch(r"/api/rooms/([0-9a-f]{32})/bots(/assignment)?", path)
         if bots and not getattr(self, "_peer_reply", False) and (write or not bots[2]):
             workspace = bots[1]
@@ -334,7 +356,8 @@ class StudioHandler(ObserverHandler):
                     if set(data) != {"id", "name", "role", "instructions"}:
                         raise ValueError("봇의 ID, 이름, 역할과 지침을 입력하세요.")
                     local_bots.create(db, workspace, data["id"], data["name"], data["role"], data["instructions"])
-                result = {"bots": local_bots.list_bots(db, workspace),
+                result = {"bots": [{k: v for k, v in bot.items() if k != "assets"}
+                                   for bot in local_bots.list_bots(db, workspace)],
                           "assignments": {role: bot["id"] for role, bot in local_bots.resolve(db, workspace).items()}}
             self._reply(200, result)
             return

@@ -36,15 +36,23 @@ def _valid_id(bot_id):
             and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", bot_id) is not None)
 
 
-def _definition(bot_id, name, role, instructions, *, builtin=False):
+def _asset_name(name):
+    if (not isinstance(name, str) or len(name) > 72 or not re.fullmatch(r"[\w-][\w .-]*\.(?:md|txt)", name)
+            or ".." in name):
+        raise ValueError("에셋은 경로 없이 .md 또는 .txt 파일 이름을 입력하세요.")
+    return name
+
+
+def _definition(bot_id, name, role, instructions, *, builtin=False, assets=None):
     if not _valid_id(bot_id):
         raise ValueError("봇 ID는 영문 소문자와 숫자를 사용하고 단어 사이에 하이픈을 넣어 64자 이내로 입력하세요.")
-    if role not in ROLES:
-        raise ValueError("봇 역할은 coordinator, developer, reviewer 중 하나를 선택하세요.")
+    if not _single_line(role) or len(role.strip()) > 60:
+        raise ValueError("역할은 60자 이내의 한 줄로 입력하세요.")
+    role = role.strip()
     if not _single_line(name) or len(name.strip()) > 40:
         raise ValueError("봇 이름은 40자 이내의 한 줄로 입력하세요.")
     if builtin:
-        if _BUILTINS.get(bot_id) != role or name != _NAMES[role] or instructions != "":
+        if _BUILTINS.get(bot_id) != role or name != _NAMES[role] or instructions != "" or assets:
             raise ValueError("기본 봇 정의를 확인하세요.")
     else:
         if bot_id in _BUILTINS:
@@ -52,6 +60,21 @@ def _definition(bot_id, name, role, instructions, *, builtin=False):
         instruction_digest(instructions)
     document = {"schema_version": 1, "id": bot_id, "name": name.strip(), "role": role,
                 "instructions": instructions, "builtin": builtin}
+    if assets is not None:
+        if not isinstance(assets, dict) or len(assets) > 15:
+            raise ValueError("봇에는 지침 외에 최대 15개 파일을 저장할 수 있습니다.")
+        names = {"soul.md"}
+        for filename, content in assets.items():
+            key = _asset_name(filename).casefold()
+            if key in names or (key == "memory.md" and filename != "MEMORY.md"):
+                raise ValueError("같은 이름의 에셋이 있습니다.")
+            names.add(key)
+            if content != "":
+                instruction_digest(content)
+        if sum(len(value.encode("utf-8")) for value in assets.values()) > 24576:
+            raise ValueError("추가 에셋의 합계는 UTF-8 24 KiB 이내로 저장하세요.")
+    if assets or role not in ROLES:
+        document.update(schema_version=2, assets=assets or {})
     return {**document, "digest": sha256(encode(document).encode("utf-8")).hexdigest()}
 
 
@@ -63,7 +86,7 @@ def _checked(document, *, bot_id=None):
     """Verify stored content, including the expected ID when it comes from a catalog row."""
     try:
         rebuilt = _definition(document["id"], document["name"], document["role"], document["instructions"],
-                              builtin=document["builtin"])
+                              builtin=document["builtin"], assets=document.get("assets"))
         if (type(document["builtin"]) is not bool or type(document["schema_version"]) is not int
                 or document != rebuilt or bot_id is not None and (document["id"] != bot_id or document["builtin"])):
             raise ValueError
@@ -118,13 +141,37 @@ def list_bots(db, workspace_id):
     return builtins + [_checked(_load(raw), bot_id=bot_id) for bot_id, raw in rows]
 
 
+def asset_files(bot):
+    return {"SOUL.md": bot["instructions"], "MEMORY.md": "", **bot.get("assets", {})}
+
+
+def save_asset(db, workspace_id, bot_id, filename, content, expected_digest):
+    bot = get(db, workspace_id, bot_id)
+    if bot["builtin"]:
+        raise ValueError("직접 만든 봇의 에셋을 선택하세요.")
+    _asset_name(filename)
+    if bot["digest"] != expected_digest:
+        raise OfficeError("REQUEST_CONFLICT")
+    files = dict(bot.get("assets", {}))
+    if filename != "SOUL.md":
+        files[filename] = content
+    updated = _definition(bot_id, bot["name"], bot["role"], content if filename == "SOUL.md"
+                          else bot["instructions"], assets=files)
+    db.execute("UPDATE studio_local_bots SET definition=? WHERE workspace_id=? AND bot_id=?",
+               (encode(updated), workspace_id, bot_id))
+    return updated
+
+
 def assign(db, workspace_id, role, bot_id):
     definition = get(db, workspace_id, bot_id)
-    if role != definition["role"]:
+    if role not in ROLES or (definition["builtin"] and role != definition["role"]):
         raise ValueError("선택한 봇이 담당하는 역할을 확인하세요.")
     if definition["builtin"]:
         db.execute("DELETE FROM studio_role_bot_bindings WHERE workspace_id=? AND role=?", (workspace_id, role))
     else:
+        if db.execute("SELECT 1 FROM studio_role_bot_bindings WHERE workspace_id=? AND role<>? AND bot_id=?",
+                      (workspace_id, role, bot_id)).fetchone():
+            raise ValueError("이 봇은 다른 실행 자리에 배정되어 있습니다. 먼저 기존 배정을 변경하세요.")
         db.execute("""INSERT INTO studio_role_bot_bindings VALUES(?,?,?) ON CONFLICT(workspace_id,role)
             DO UPDATE SET bot_id=excluded.bot_id""", (workspace_id, role, bot_id))
     return definition
@@ -139,14 +186,15 @@ def resolve(db, workspace_id):
         LEFT JOIN studio_local_bots c USING(workspace_id,bot_id) WHERE b.workspace_id=?""", (workspace_id,))
     for role, bot_id, raw in rows:
         definition = _checked(_load(raw), bot_id=bot_id)
-        if definition["role"] != role:
+        if role not in ROLES:
             raise OfficeError("STORE_IO")
         selected[role] = definition
     return selected
 
 
 def public_receipt(bots):
-    return {role: {key: bot[key] for key in _PUBLIC} for role, bot in bots.items()}
+    # Peers identify the workflow slot here. The pinned definition retains the author's role.
+    return {role: {**{key: bot[key] for key in _PUBLIC}, "role": role} for role, bot in bots.items()}
 
 
 def validate_receipt(receipt):

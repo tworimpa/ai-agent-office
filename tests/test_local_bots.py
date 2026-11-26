@@ -83,7 +83,7 @@ def test_concurrent_creation_retries_and_conflicting_definition(tmp_path):
     ("office-coordinator", "x", "coordinator", "a"), ("Bad.ID", "x", "reviewer", "a"),
     ("../dev", "x", "developer", "a"), ("a" * 65, "x", "reviewer", "a"),
     ("dev", "a\nb", "developer", "a"), ("dev", " ", "developer", "a"),
-    ("dev", "a" * 41, "developer", "a"), ("dev", "x", "unknown", "a"),
+    ("dev", "a" * 41, "developer", "a"), ("dev", "x", "   ", "a"),
     ("dev", "x", "developer", "가" * 2731), ("dev", "x", "developer", " \t"),
     ("dev", "x", "developer", "a\x00"), ("dev", "x", "developer", {}),
 ])
@@ -95,6 +95,28 @@ def test_rejects_invalid_definitions(tmp_path, bot_id, name, role, instructions)
         with pytest.raises(ValueError):
             bots.create(db, workspace, bot_id, name, role, instructions)
         assert all(bot["builtin"] for bot in bots.list_bots(db, workspace))
+
+
+def test_custom_role_assets_are_pinned_per_run_and_edits_check_the_version(tmp_path):
+    workspace, run = uuid4().hex, uuid4().hex
+    with TaskStore(tmp_path / "office.db") as store, store._write():
+        db = store.connection
+        bots.ensure_schema(db)
+        bot = bots.create(db, workspace, "research", "다온", "사용자 조사", "사용성 검토")
+        bot = bots.save_asset(db, workspace, bot["id"], "근거.md", "첫 버전", bot["digest"])
+        bots.assign(db, workspace, "developer", bot["id"])
+        selected = bots.resolve(db, workspace)
+        bots.pin(db, run, selected)
+        assert bots.validate_receipt(bots.public_receipt(selected))
+        updated = bots.save_asset(db, workspace, bot["id"], "근거.md", "둘째 버전", bot["digest"])
+        assert bots.asset_files(updated)["근거.md"] == "둘째 버전"
+        assert bots.for_run(db, run)["developer"]["assets"] == {"근거.md": "첫 버전"}
+        assert bots.for_run(db, run)["developer"]["role"] == "사용자 조사"
+        with pytest.raises(OfficeError, match="REQUEST_CONFLICT"):
+            bots.save_asset(db, workspace, bot["id"], "SOUL.md", "stale", bot["digest"])
+        for name in ("../outside.md", "/x.txt", "soul.md", "memory.md", "근거.py"):
+            with pytest.raises(ValueError):
+                bots.save_asset(db, workspace, bot["id"], name, "내용", updated["digest"])
 
 
 def test_corrupt_definitions_and_snapshots_fail_before_execution(tmp_path):

@@ -13,7 +13,7 @@ def add_commands(sub):
     bots = sub.add_parser("bots", help="Manage local role bots for Workspace assignments")
     actions = bots.add_subparsers(dest="bot_command", required=True)
     actions.add_parser("workspaces", help="List registered Workspace IDs and names")
-    create = actions.add_parser("create", help="Create an immutable bot definition")
+    create = actions.add_parser("create", help="Create a local bot with a custom role")
     assign = actions.add_parser("assign", help="Bind a bot to a role for future assignments")
     listing = actions.add_parser("list", help="List bot definitions and current role bindings")
     show = actions.add_parser("show", help="Read one bot definition and its instructions")
@@ -22,7 +22,7 @@ def add_commands(sub):
     for action in (create, assign, show):
         action.add_argument("--id", dest="bot_id", required=True, help="Local bot ID")
     for action in (create, assign):
-        action.add_argument("--role", required=True, choices=local_bots.ROLES)
+        action.add_argument("--role", required=True, choices=local_bots.ROLES if action is assign else None)
     create.add_argument("--name", required=True, help="Display name")
     create.add_argument("--instructions", required=True, help="Plain-text instructions for this role")
 
@@ -35,7 +35,7 @@ def _result(args, db, workspace_id):
     if args.bot_command == "show":
         return {"bot": local_bots.get(db, workspace_id, args.bot_id)}
     return {
-        "bots": [{key: value for key, value in bot.items() if key != "instructions"}
+        "bots": [{key: value for key, value in bot.items() if key not in ("instructions", "assets")}
                  for bot in local_bots.list_bots(db, workspace_id)],
         "bindings": {role: bot["id"] for role, bot in local_bots.resolve(db, workspace_id).items()},
     }
