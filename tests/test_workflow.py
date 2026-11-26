@@ -65,6 +65,20 @@ def test_windows_service_review_receives_coordinator_git_evidence(tmp_path, monk
     assert "Git evidence" not in developer.calls[0][0]
 
 
+def test_studio_antigravity_reviews_the_host_patch_and_test_result(tmp_path):
+    developer = MockAdapter([AgentResult(0, "implemented")])
+    reviewer = MockAdapter([AgentResult(0, "VERDICT: APPROVED")])
+    graph = build_graph({"claude": developer, "antigravity": reviewer},
+                        studio_preview=lambda: (" M labels.py", "-old\n+new"))
+    result = graph.invoke({**base_state(tmp_path), "reviewer": "antigravity"})
+    prompt, edits = reviewer.calls[0]
+    assert not edits
+    assert "-old\n+new" in prompt and "Test results:\nok" in prompt
+    assert "without calling tools" in prompt
+    assert result["review_output"] == "VERDICT: APPROVED"
+    assert result["status"] == "READY_FOR_HUMAN_REVIEW"
+
+
 def test_retry_after_review_changes(tmp_path):
     developer = MockAdapter([AgentResult(0, "first"), AgentResult(0, "fixed")])
     reviewer = MockAdapter([

@@ -213,8 +213,19 @@ def parse_antigravity(output: str) -> AgentResult:
     if status == "INTERRUPTED":
         return AgentResult(124, "Antigravity reported interruption.")
     response = result.get("response")
-    if status != "SUCCESS" or ("error" in result and result["error"] is not None) or tool_error or not isinstance(response, str) or not response.strip():
+    if status != "SUCCESS" or result.get("error") is not None:
         return invalid
+    denied = result.get("denied_actions", [])
+    if not isinstance(denied, list):
+        return invalid
+    if denied:
+        return AgentResult(1, "Antigravity reported a denied action; the turn is incomplete.")
+    if tool_error:
+        return AgentResult(1, "Antigravity reported a tool error; the turn is incomplete.")
+    if not isinstance(response, str):
+        return invalid
+    if not response.strip():
+        return AgentResult(1, "Antigravity returned SUCCESS with an empty response.")
     session = result.get("conversation_id")
     if session is not None and not isinstance(session, str):
         return invalid
