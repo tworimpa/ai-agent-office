@@ -183,6 +183,13 @@ def manifest(db, workspace_id, bot_id):
     return _portable(get(db, workspace_id, bot_id))
 
 
+def shareable_digest(document):
+    definition = _from_portable(document)
+    if definition["builtin"]:
+        raise ValueError("작업실에서 만든 봇만 공유 패키지로 설치하거나 내보낼 수 있습니다.")
+    return definition["digest"]
+
+
 def install(db, workspace_id, manifest):
     validate_id(workspace_id)
     bot = _from_portable(manifest)

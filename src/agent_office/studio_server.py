@@ -60,7 +60,8 @@ ASSETS = {
     "/bot-client.css": ("bot-client.css", "text/css"),
     "/bot-room-scene.css": ("bot-room-scene.css", "text/css"),
     **{"/" + name: (name, "text/javascript") for name in (
-        "bot-client.js", "bot-client-ui.js", "bot-client-files.js", "bot-client-orders.js", "bot-room-scene.js")},
+        "bot-client.js", "bot-client-ui.js", "bot-client-files.js", "bot-client-orders.js",
+        "bot-client-packages.js", "bot-room-scene.js")},
     **{"/bot-art/" + name: ("bot-art/" + name, "image/webp") for name in (
         *(f"{kind}-{i}.webp" for kind in ("figure", "walk") for i in range(12)),
         "study-seated-king.webp", "office.webp")},

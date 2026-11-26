@@ -296,6 +296,49 @@ test('global explorer creates a nested file on the server and opens it in the ow
   assert.equal(get('entryDialog').open, false);
 });
 
+test('Git package requires a preview and installs only its pinned commit in the current workspace', async (t) => {
+  const source = {
+    url: 'https://example.org/bots.git', version: 'v1', path: 'sample',
+    commit: '7'.repeat(40), digest: '8'.repeat(64),
+  };
+  const { get, input, submit, calls } = await fixture(t, {
+    respond: ({ path, body, reply, models }) => {
+      if (path === '/bots/package-preview') {
+        if (body.version !== 'v1') return reply({ error: { message: '태그가 없습니다.' } }, 400);
+        return reply({ name: '공유 봇', role: '조사', source, digest: source.digest, files: ['SOUL.md'] });
+      }
+      if (path === '/bots/package-install') {
+        assert.deepEqual(body, source);
+        models.bots.push({ id: 'shared', name: '공유 봇', role: '조사', digest: source.digest, package: source });
+        return reply({ id: 'shared', source });
+      }
+    },
+  });
+  get('packageImport').click();
+  assert.equal(get('packageInstall').disabled, true);
+  input('packageUrl', source.url);
+  input('packageVersion', 'no-such-tag');
+  await submit('packageForm');
+  assert.match(get('packageStatus').textContent, /태그가 없습니다/);
+  input('packageVersion', 'v1');
+  input('packagePath', 'sample');
+  await submit('packageForm');
+  assert.match(get('packagePreview').textContent, new RegExp(source.commit));
+  input('packagePath', 'other');
+  assert.equal(get('packageInstall').disabled, true);
+  input('packagePath', 'sample');
+  await submit('packageForm');
+  get('packageInstall').click();
+  get('packageInstall').click();
+  await turn();
+  assert.equal(calls.filter((call) => call.path === '/bots/package-install').length, 1);
+  assert.equal(get('packageDialog').open, false);
+  assert.match(get('chatTitle').textContent, /공유 봇/);
+  assert.match(get('packageSource').textContent, new RegExp(source.commit));
+  assert.equal(get('packageExport').download, 'shared.bot-package.zip');
+  assert.equal(get('exportBot').download, 'shared.bot.json');
+});
+
 test('import preserves original bytes for server validation and export downloads the journal-bound manifest', async (t) => {
   let original;
   const { get, handlers, win } = await fixture(t, {

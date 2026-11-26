@@ -51,6 +51,8 @@ def test_client_entry_points_and_packaged_assets(tmp_path):
         ws = server.catalog.create("registered", [str(tmp_path)])["id"]
         assert b"bot-client.js" in request(server, "/")[1]
         assert b"bot-client.js" in request(server, "/bots?workspace="+ws+"&bot=research")[1]
+        status, module = request(server, "/bot-client-packages.js")
+        assert status == 200 and b"mountBotPackages" in module
         assert b"workspace-bootstrap.js" in request(server, "/workspace?workspace="+ws)[1]
         assert b"workspace-bootstrap.js" in request(server, "/?workspace="+ws+"&run="+"b"*32)[1]
         assert request(server, "/bots?workspace=invalid")[0] == 400

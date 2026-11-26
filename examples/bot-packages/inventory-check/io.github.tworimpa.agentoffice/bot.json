@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tworimpa/ai-agent-office/main/src/agent_office/schemas/bot-1.0.schema.json",
+  "extensions": {},
+  "files": {
+    "SOUL.md": "For inventory tasks, read stock.txt in the project and references/sample.md in your provided bot files. Multiply the project stock by the reference multiplier. Return the exact line OFFICE_PACKAGE_RESULT=<result> and do not edit any files.",
+    "references/sample.md": "The package multiplier is 17. This is synthetic example data."
+  },
+  "folders": [],
+  "id": "package-inventory-check",
+  "name": "Inventory checker",
+  "role": "Inventory researcher",
+  "specVersion": "1.0"
+}
