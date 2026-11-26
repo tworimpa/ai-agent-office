@@ -43,6 +43,9 @@
         <button id="importBot" class="manifest-action" type="button" disabled>
           봇 정의 가져오기
         </button>
+        <button id="packageImport" class="manifest-action" type="button" disabled>
+          Git에서 봇 설치
+        </button>
         <input
           id="manifestFile"
           type="file"
@@ -74,9 +77,14 @@
             </div>
             <div class="bot-actions">
               <a id="exportBot">정의 내보내기</a>
+              <a id="packageExport" title="개인 메모를 제외한 ZIP 다운로드">공유 패키지 내보내기</a>
               <button id="character">캐릭터 교체</button>
             </div>
           </div>
+          <details id="packageSourceDetails" class="package-info" hidden>
+            <summary>Git 설치 출처</summary>
+            <div id="packageSource"></div>
+          </details>
           <div class="thread" id="thread"></div>
           <form id="compose">
             <label class="sr" for="msg">봇에게 메시지</label>
@@ -142,6 +150,30 @@
         <div id="explorer"></div>
       </aside>
     </div>
+    <dialog id="packageDialog" aria-labelledby="packageTitle">
+      <div class="dlghead"><h2 id="packageTitle">Git에서 봇 설치</h2></div>
+      <form class="dlgbody" id="packageForm">
+        <fieldset id="packageFields" class="package-fields">
+          <legend>공개 Git 패키지</legend>
+          <label>HTTPS 저장소 URL
+            <input id="packageUrl" type="url" placeholder="https://example.org/team/bots.git" maxlength="500" autofocus required />
+          </label>
+          <label>Git 태그 또는 전체 커밋 SHA
+            <input id="packageVersion" type="text" maxlength="180" required />
+          </label>
+          <label>패키지 하위 폴더 (선택)
+            <input id="packagePath" type="text" placeholder="예: bots/research" maxlength="240" />
+          </label>
+        </fieldset>
+        <div id="packagePreview" class="package-info" hidden></div>
+        <div id="packageStatus" role="status"></div>
+        <div class="dialogActions">
+          <button id="packageCancel" type="button">닫기</button>
+          <button id="packageCheck" type="submit">패키지 확인</button>
+          <button id="packageInstall" type="button" class="accent" disabled>설치</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="dialog" aria-labelledby="dialogTitle">
       <form id="botForm">
         <div class="dlghead">

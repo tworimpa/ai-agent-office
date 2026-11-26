@@ -4,7 +4,7 @@ from contextlib import nullcontext
 from importlib.resources import files
 import re
 
-from . import bot_runtime, bot_spec, local_bots
+from . import bot_package, bot_runtime, bot_spec, git_bot_source, local_bots
 from .models import OfficeError
 from .store import TaskStore
 
@@ -17,14 +17,46 @@ EXAMPLE = "/api/bot-spec/1.0/example"
 
 def catalog_view(db, workspace, journal):
     result = []
+    sources = bot_package.installed_sources(db, workspace)
     for bot in local_bots.list_bots(db, workspace):
         public = {k: bot[k] for k in ("id", "name", "role", "instructions", "digest", "builtin", "schema_version")}
         appearance = local_bots.tree(bot)["extensions"].get(APPEARANCE, {})
         public["appearance"] = {"preset": appearance.get("preset", 0)}
         if appearance.get("image"):
             public["appearance"]["image"] = f"/api/rooms/{workspace}/bots/{bot['id']}/portrait?office_journal={journal}"
+        if bot["id"] in sources:
+            public["package"] = sources[bot["id"]]
         result.append(public)
     return {"bots": result, "assignments": {slot: b["id"] for slot, b in local_bots.resolve(db, workspace).items()}}
+
+
+def _git_package(server, workspace, action, data):
+    request = data.copy()
+    expected = None
+    if action == "package-install":
+        expected = (request.pop("commit", None), request.pop("digest", None))
+        if not all(isinstance(value, str) for value in expected):
+            raise ValueError("먼저 설치할 패키지를 확인하세요.")
+    source = git_bot_source.Source.parse(request)
+    fetched = git_bot_source.fetch(source)
+    package = fetched.package
+    document = package.definition
+    digest = local_bots.manifest_digest(document)
+    receipt = source.receipt(fetched.commit, digest)
+    if expected is None:
+        return 200, {"source": receipt, "digest": digest, "package_name": package.name,
+                     "package_version": package.version, "name": document["name"], "role": document["role"],
+                     "files": sorted(document["files"])}
+    if expected != (fetched.commit, digest):
+        raise OfficeError("REQUEST_CONFLICT")
+    bot_id = document["id"]
+    with TaskStore(server.db_path, existing=True) as store, store._write():
+        db = store.connection
+        local_bots.ensure_schema(db)
+        previous = bot_package.record_source(db, workspace, bot_id, receipt)
+        if previous is None:
+            local_bots.install(db, workspace, document)
+        return 200, {"id": bot_id, "source": previous or receipt}
 
 
 def handle(server, path, data):
@@ -47,13 +79,15 @@ def handle(server, path, data):
         return 202, bot_runtime.submit_order(server.rooms, workspace, data)
     if not path.startswith("/api/rooms/") or "/bots" not in path:
         return None
-    catalog = re.fullmatch(ROOM + r"/bots(?:/(assignment|import))?", path)
-    member = re.fullmatch(ROOM + "/bots/" + BOT + r"/(assets|appearance|portrait|manifest|chat|commands)", path)
+    catalog = re.fullmatch(ROOM + r"/bots(?:/(assignment|import|package-preview|package-install))?", path)
+    member = re.fullmatch(ROOM + "/bots/" + BOT + r"/(assets|appearance|portrait|manifest|package|chat|commands)", path)
     if not (catalog or member):
         return None
     workspace = (catalog or member)[1]
     server.catalog.get(workspace)
     write = data is not None
+    if catalog and catalog[2] in {"package-preview", "package-install"}:
+        return _git_package(server, workspace, catalog[2], data) if write else None
     if member:
         bot_id, action = member[2], member[3]
         if action == "commands" and write:
@@ -92,6 +126,8 @@ def handle(server, path, data):
             return 200, catalog_view(db, workspace, server.journal_id)
         if action == "manifest" and not write:
             return 200, local_bots.manifest(db, workspace, bot_id)
+        if action == "package" and not write:
+            return 200, bot_package.export_zip(local_bots.manifest(db, workspace, bot_id)), "application/zip"
         if action == "assets" and write:
             if (not {"filename", "digest"} <= data.keys()
                     or data.keys() - {"filename", "content", "digest", "kind", "create"}

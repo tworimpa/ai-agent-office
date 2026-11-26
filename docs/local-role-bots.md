@@ -71,21 +71,24 @@ Agent Office 사용자는 자기 PC에 이름과 업무 지침을 가진 봇을 
 | 스킬 패키지 업로드 경로를 재사용하고 별도 봇 공유 링크로 버전을 가리킨다. 링크가 갱신돼도 기존 사본은 유지된다. [공유 클라이언트](https://github.com/stablyai/orca/blob/47980a48d1977c26dd8f7a075be95349255b88ef/src/main/bots/sharing/bot-share-client.ts#L142) · [사본의 업데이트](https://github.com/stablyai/orca/blob/47980a48d1977c26dd8f7a075be95349255b88ef/src/renderer/src/components/bots/sharing/BotShareFooter.tsx#L63) | 후속 공유 기능에서 카탈로그·공유 링크는 배포본을 찾는 용도로 쓰고, 설치 버전과 실행 중인 작업은 커밋·내용 해시로 고정한다. |
 | 가져온 일정은 일시 중지 상태로 만들고, 적용 실패 시 부분 생성된 봇의 삭제를 시도한다. [패키지 적용](https://github.com/stablyai/orca/blob/47980a48d1977c26dd8f7a075be95349255b88ef/src/main/bots/bot-package-apply.ts#L47) | 향후 설치를 완료한 뒤 사용자가 이 PC의 연결과 일정을 선택한다. 중간 실패 시 이전 배정과 실행은 계속 사용할 수 있어야 한다. |
 
-## Git 저장소에서 공유하는 다음 단계
+## 공개 Git 저장소에서 공유하기
 
-작성자는 패키지 하나를 Git 저장소에 올린다. 사용자는 저장소 URL·하위 경로·버전을 선택해 자기 PC에 설치하고 원하는 Workspace와 역할에 연결한다. 카탈로그 없이도 설치할 수 있도록 설계하며 CODE-Skills는 패키지 검색·버전 알림·포함 스킬 탐색에 활용할 수 있다. 이 절차는 후속 구현 범위다.
+1. 작성자는 봇 회의실에서 봇을 선택하고 **공유 패키지 내보내기**를 누른다. 내려받은 ZIP을 풀어서 공개 Git 저장소의 루트나 원하는 하위 폴더에 두고 커밋한다. 공유할 버전에는 Git 태그를 붙이거나 전체 커밋 SHA를 알려 준다.
+2. 받는 사람은 대상 Workspace의 봇 회의실에서 **Git에서 봇 설치**를 누른다. 공개 HTTPS 저장소 URL과 Git 태그 또는 전체 커밋 SHA를 입력한다. 패키지가 하위 폴더에 있으면 저장소 기준 경로도 입력한다. 브랜치 이름 대신 커밋을 공유할 수 있다.
+3. **패키지 확인**에서 봇 이름, 역할, 실제 커밋, 정의 해시와 파일 목록을 확인하고 **설치**를 누른다. 새 봇을 열면 **Git 설치 출처**에서 저장소와 커밋을 다시 볼 수 있다. 역할에 배정하려면 기존 Workspace 설정을 사용한다.
 
-| 제안하는 공개 패키지 경로 | 작성 내용 |
+공유 패키지는 `MEMORY.md`를 제외한다. 설치한 사람은 빈 메모로 시작한다. 작성자가 공유할 참고 자료는 `references/` 같은 별도 경로에 담을 수 있다. 설치 시에는 로컬 저널에 정의를 저장하며, 각 실행에는 시작 시점의 봇 정의와 해시가 남는다. 이미 설치한 같은 버전을 다시 적용하면 기존 봇을 돌려준다. 같은 ID에 다른 정의나 설치 출처를 적용하면 충돌을 표시한다.
+
+| 패키지 경로 | 작성 내용 |
 | --- | --- |
-| `plugin.json` | Agent Plugins 1.0.0 매니페스트의 이름·설명·버전과 `extensions`의 Office 네임스페이스 |
-| `io.github.tworimpa.agentoffice/bot.json` | Office 확장의 규격 버전·역할·표시 이름·업무 지침 위치·입출력·필요 기능. 후속 버전에 보고서·변경 후보·독립 리뷰 같은 결과 계약을 정의한다. |
-| `io.github.tworimpa.agentoffice/instructions.md` | 엔진 간 공유할 UTF-8 업무 지침과 완료 기준 |
-| `skills/<name>/SKILL.md` | 선택적으로 묶는 재사용 절차. 현재 Office에서 쓰는 역할 스킬은 버전을 고정한 텍스트 지침이다. |
+| `plugin.json` | Agent Plugins 1.0.0 매니페스트. `extensions.io.github.tworimpa.agentoffice`에 `{"packageVersion":"1.0"}`을 선언한다. |
+| `io.github.tworimpa.agentoffice/bot.json` | [Bot Definition 1.0](bot-spec-v1.md). `files.SOUL.md`에 봇 지침을, `files`의 다른 상대 경로에 참고 자료와 텍스트 스킬을 담는다. |
+| `skills/<name>/SKILL.md` | 선택적 텍스트 스킬. 가져올 때 같은 상대 경로에 추가한다. 한 경로의 스킬은 한 곳에서 정의한다. |
 
-Agent Plugins의 공개 규격은 스킬·MCP 같은 공통 구성요소와 클라이언트 소유 확장 자리를 정의한다. 위 네임스페이스와 역할·배정의 의미는 **Agent Office가 제안하는 확장**이다. Claude Code의 Markdown 하위 에이전트, Codex의 TOML 하위 에이전트는 각각 고유한 모델·도구 선택 방법을 가진다. Office는 어댑터가 엔진 차이를 처리하므로 봇 작성자가 두 정의를 중복 작성할 필요가 없다. Microsoft의 APM 예제는 한 저장소에 디자인 리뷰 담당 에이전트와 스타일 검사 스킬을 함께 배포하는 사례다. [Agent Plugins 규격](https://agent-plugins.org/specification) · [확장 규칙](https://agent-plugins.org/plugin-authors/client-extensions) · [Agent Skills](https://agentskills.io/specification) · [Claude Code 하위 에이전트](https://code.claude.com/docs/en/sub-agents) · [Codex 하위 에이전트](https://developers.openai.com/codex/subagents/) · [APM 예제 프로젝트](https://github.com/microsoft/apm-sample-package)
+실행 호스트에 Git 2.39 이상이 필요하다. 표준 HTTPS 포트의 공개 저장소에 직접 접속해 지정한 Git 커밋을 확인한다. 저장소가 리디렉션을 반환하면 대상 URL을 직접 입력한다. Studio의 기존 역할별 엔진과 실행 권한을 사용하며, 패키지 설치 자체는 CLI 작업을 시작하지 않는다. [예제 패키지](../examples/bot-packages/inventory-check) · [Agent Plugins 확장 규칙](https://agent-plugins.org/plugin-authors/client-extensions)
 
 | 단계 | 완료를 판단할 동작 |
 | --- | --- |
 | 1. 로컬 생성·배정·실행 | 같은 PC에서 세 봇을 만들고 Studio에 의뢰한다. 한 역할의 배정을 바꾼 뒤 기존 실행과 다음 실행의 정의가 구분되고, 개발·리뷰 호출에 해당 지침이 적용된다. 모의 엔진은 이 경로를 시험한다. 인증된 실제 CLI 수행 여부는 엔진과 OS별로 별도 기록한다. |
-| 2. 작성·검증·설치 | JSON Schema·예제·템플릿으로 제3자가 패키지를 만든다. 깨끗한 PC에서 URL로 설치하고 커밋과 내용 해시를 확인한다. 필수 기능을 제공하지 않는 엔진은 실행 전에 원인을 표시한다. 같은 업무를 Windows·Linux의 Codex·Claude Code에서 실제로 검증한다. |
+| 2. 작성·검증·설치 | Studio에서 공유 패키지를 만들고 다른 Workspace에서 URL과 버전으로 설치한다. 설치 커밋과 정의 해시를 확인한다. Windows와 WSL Ubuntu의 Codex에서 같은 패키지로 읽기 전용 의뢰를 검증한다. |
 | 3. 공유·갱신·관리 | 설치자가 업데이트 내용을 보고 적용하거나 직전 버전을 선택한다. 개인 메모·권한·과거 실행은 보존한다. Studio에서 설치된 사본, Workspace 배정, 진행 중인 워커를 각각 조회·관리한다. Orca 가져오기, 카탈로그와 자동화 연결은 이 단계에서 검토한다. |

@@ -2,6 +2,7 @@ import { requestJson, validId, visiblePoller } from './studio-shared.js';
 import { controls, mountCharacterPicker, pagedHistory } from './bot-client-ui.js';
 import { mountFiles } from './bot-client-files.js';
 import { mountOrders } from './bot-client-orders.js';
+import { mountBotPackages } from './bot-client-packages.js';
 
 export async function mountBotClient(win, makeScene) {
   const ui = controls(win),
@@ -30,7 +31,7 @@ export async function mountBotClient(win, makeScene) {
   const current = () => members.find((bot) => bot.id === selected);
   const uuid = () => win.crypto.randomUUID().replaceAll('-', '');
   const base = () => '/api/rooms/' + workspace;
-  const api = (path, body) => requestJson(win, base() + path + '?office_journal=' + journal, body);
+  const api = (path, body, options) => requestJson(win, base() + path + '?office_journal=' + journal, body, options);
   const storageKey = () => 'office-bot-room/v1/' + journal + '/' + workspace;
   function note(message) {
     get('notice').textContent = message;
@@ -89,6 +90,17 @@ export async function mountBotClient(win, makeScene) {
     changed: () => refresh(true),
   });
   const picker = mountCharacterPicker(ui, { api, uuid, changed: () => refresh(true) });
+  const packages = mountBotPackages(ui, {
+    api,
+    installed: async (id) => {
+      await refresh(true);
+      const bot = members.find((member) => member.id === id);
+      if (bot) {
+        goBot(bot);
+        note(bot.name + ' 봇을 설치했습니다.');
+      }
+    },
+  });
   const poller = visiblePoller(
     win,
     () => refresh(),
@@ -357,6 +369,14 @@ export async function mountBotClient(win, makeScene) {
     const download = get('exportBot');
     download.href = base() + '/bots/' + encodeURIComponent(bot.id) + '/manifest?office_journal=' + journal;
     download.download = bot.id + '.bot.json';
+    const packageDownload = get('packageExport');
+    packageDownload.href = base() + '/bots/' + encodeURIComponent(bot.id) + '/package?office_journal=' + journal;
+    packageDownload.download = bot.id + '.bot-package.zip';
+    const source = bot.package;
+    get('packageSourceDetails').hidden = !source;
+    get('packageSource').textContent = source
+      ? [source.url, source.path, source.version, '커밋 ' + source.commit, '정의 해시 ' + source.digest].filter(Boolean).join('\n')
+      : '';
     if (get('msg').value !== v.message) get('msg').value = v.message;
     get('edits').checked = !!v.edits;
     folderChoices('', room.workspace.folders, v.index ?? 0);
@@ -366,7 +386,7 @@ export async function mountBotClient(win, makeScene) {
   function setRoster(data) {
     const old = new Map(members.map((bot) => [bot.id, bot.digest]));
     const custom = data.bots.filter((bot) => !bot.builtin);
-    const signature = JSON.stringify(custom.map((bot) => [bot.id, bot.name, bot.role, bot.digest]));
+    const signature = JSON.stringify(custom.map((bot) => [bot.id, bot.name, bot.role, bot.digest, bot.package]));
     if (signature === rosterStamp) return false;
     rosterStamp = signature;
     members = custom.map((bot) => ({
@@ -578,7 +598,7 @@ export async function mountBotClient(win, makeScene) {
         id = params.get('run');
       selected = members.find((b) => b.id === requested)?.id || null;
       ready = true;
-      get('new').disabled = get('importBot').disabled = false;
+      get('new').disabled = get('importBot').disabled = get('packageImport').disabled = false;
       if (validId(id)) {
         const owner = room.runs.find((r) => r.id === id)?.assignment?.bots?.developer?.id;
         await openRun(id, current() || members.find((b) => b.id === owner));
@@ -597,6 +617,7 @@ export async function mountBotClient(win, makeScene) {
       disposed = true;
       chatSequence++;
       poller.dispose();
+      packages.dispose();
       if (scene.dispose) scene.dispose();
       else scene.pause();
     },

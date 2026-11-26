@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "extensions": {
+    "io.github.tworimpa.agentoffice": {
+      "packageVersion": "1.0"
+    }
+  },
+  "name": "package-inventory-check"
+}

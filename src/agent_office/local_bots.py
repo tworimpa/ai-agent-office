@@ -183,6 +183,10 @@ def manifest(db, workspace_id, bot_id):
     return _portable(get(db, workspace_id, bot_id))
 
 
+def manifest_digest(document):
+    return _from_portable(document)["digest"]
+
+
 def install(db, workspace_id, manifest):
     validate_id(workspace_id)
     bot = _from_portable(manifest)
