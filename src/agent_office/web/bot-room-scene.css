@@ -54,11 +54,15 @@
   text-overflow: ellipsis;
 }
 .game-actor {
+  left: 0;
+  top: 0;
+  transform-origin: center bottom;
   aspect-ratio: 0.44;
   overflow: visible;
 }
 .actor-body {
   display: block;
+  transform-origin: center bottom;
   position: absolute;
   inset: 0 auto 0 -44.7%;
   width: 189.4%;
@@ -98,15 +102,4 @@
 .court-king:hover .king-label {
   border-color: #ecc47e;
   background: #4e3d24;
-}
-@media (prefers-reduced-motion: no-preference) {
-  .on-duty .actor-body:not(.atlas) {
-    animation: royal-task 2.2s ease-in-out 4;
-    transform-origin: center bottom;
-  }
-  @keyframes royal-task {
-    50% {
-      transform: rotate(-1.8deg) translateY(-1px);
-    }
-  }
 }
