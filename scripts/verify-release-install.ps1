@@ -60,6 +60,7 @@ if ($Scenario -eq 'clean') {
     Invoke-DesktopCheck @('desktop/verify-install.mjs', $installed)
 } else {
     $receipt = Get-Content -LiteralPath (Join-Path $baseline 'baseline.json') -Raw | ConvertFrom-Json
+    if ($receipt.version -notin @('0.8.1','0.9.0')) { throw "Unexpected upgrade baseline version $($receipt.version)" }
     $old = Join-Path $baseline $receipt.historical_artifact.installer
     $configHome = if ($IsWindows) { $env:APPDATA } elseif ($env:XDG_CONFIG_HOME) {
         $env:XDG_CONFIG_HOME
@@ -69,7 +70,8 @@ if ($Scenario -eq 'clean') {
         throw "The disposable runner already has a desktop profile at $env:OFFICE_VERIFY_DEFAULT_PROFILE"
     }
     $installed = Install-Desktop $old
-    $env:OFFICE_VERIFY_VERSION = '0.8.1'
+    $env:OFFICE_VERIFY_VERSION = $receipt.version
+    $env:OFFICE_VERIFY_BASELINE_VERSION = $receipt.version
     Invoke-DesktopCheck @('desktop/verify-install.mjs', $installed)
     # Keep the installation and its profile. The journey has stopped its local Studio.
     $upgraded = Install-Desktop $candidate

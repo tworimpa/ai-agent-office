@@ -5,6 +5,8 @@ import { delimiter, dirname, join } from 'node:path'
 import { _electron as electron } from 'playwright'
 import { LocalStudio } from './studio.mjs'
 import { closeDesktop, finishVerification } from './verify-lifecycle.mjs'
+import { verifyPublicCatalog } from './verify-public-catalog.mjs'
+import { verifiesPublicCatalog, verifyUpgradeSeedVersion } from './verify-versions.mjs'
 
 const [target, directory, version] = process.argv.slice(2)
 if (!target || !directory || !version) throw Error('Usage: node verify-upgrade.mjs INSTALLED_EXECUTABLE SEED_DIRECTORY NEW_VERSION')
@@ -15,7 +17,7 @@ const exe = await realpath(target)
 const seed = JSON.parse(await readFile(join(directory, 'result.json'), 'utf8'))
 assert.equal(seed.exe, exe, 'In-place upgrade must retain the installed application path')
 assert.equal(seed.provider, 'fixture')
-assert.equal(seed.installedVersion, '0.8.1')
+verifyUpgradeSeedVersion(seed.installedVersion, process.env.OFFICE_VERIFY_BASELINE_VERSION)
 assert.equal(seed.state, 'READY_FOR_HUMAN_REVIEW')
 assert.ok(seed.workspaceId && seed.task && seed.runId && seed.simpleId && seed.persistedDirection)
 assert.equal(seed.profileMode, 'default')
@@ -61,14 +63,17 @@ try {
   const {directions} = await read('/api/runs/' + seed.runId + '/directions')
   assert.equal(directions.find(direction => direction.id === seed.persistedDirection)?.delivery, 'delivered')
   await page.screenshot({path: join(directory, 'upgrade-reopened.png')})
+  const catalog = verifiesPublicCatalog(observed.version, process.env.OFFICE_VERIFY_RELEASE_BOT_CATALOG)
+    ? await verifyPublicCatalog(page, active, seed.workspaceId)
+    : undefined
   await writeFile(join(directory, 'upgrade.json'), JSON.stringify({
     version: observed.version, installedExecutable: exe, journalId: active.journalId,
     previousDefaultProfile: seed.observedProfile, upgradedDefaultProfile: upgradedProfile,
     previousVersion: seed.installedVersion, previousBoot: seed.lastBootId, upgradedBoot: active.bootId, workspaceId: seed.workspaceId,
     runIds: [seed.simpleId, seed.runId], revisions: run.meeting.revisions.length,
-    persistedDirection: seed.persistedDirection, state: run.state, provider: seed.provider,
+    persistedDirection: seed.persistedDirection, state: run.state, provider: seed.provider, catalog,
   }, null, 2))
-  console.log('Reopened the installed 0.8.1 workspace and verified both original tasks in version', observed.version)
+  console.log(`Reopened the installed ${seed.installedVersion} workspace and verified both original tasks in version ${observed.version}`)
 } catch (error) {
   failure = error
   if (page) console.error('Upgrade verification failed on page:', page.url())

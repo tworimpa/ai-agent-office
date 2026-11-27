@@ -24,6 +24,11 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
         scenario: [clean, upgrade]
+        include:
+          - os: windows-latest
+            scenario: upgrade-0.9.0
+          - os: ubuntu-latest
+            scenario: upgrade-0.9.0
     defaults:
       run:
         shell: pwsh
@@ -78,12 +83,20 @@ jobs:
           npm ci --prefix baseline-source/desktop
           npm run package --prefix baseline-source/desktop
           python scripts/desktop_upgrade_baseline.py --platform $env:RUNNER_OS --out (Join-Path $env:RUNNER_TEMP office-baseline) --rebuilt baseline-source
+      - name: Download the fixed public 0.9.0 baseline
+        if: matrix.scenario == 'upgrade-0.9.0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/desktop_upgrade_baseline.py --version 0.9.0 --platform $env:RUNNER_OS --out (Join-Path $env:RUNNER_TEMP office-baseline)
       - run: npm ci --prefix desktop
       - name: Exercise installed desktop with fixture workers
         env:
           TAG: ${{ inputs.tag }}
           SCENARIO: ${{ matrix.scenario }}
-        run: ./scripts/verify-release-install.ps1 -Scenario $env:SCENARIO -Version $env:TAG.Substring(1) -ReleaseDirectory (Join-Path $env:RUNNER_TEMP office-release)
+          OFFICE_VERIFY_RELEASE_BOT_CATALOG: '1'
+        run: |
+          $scenario = if ($env:SCENARIO -eq 'clean') { 'clean' } else { 'upgrade' }
+          ./scripts/verify-release-install.ps1 -Scenario $scenario -Version $env:TAG.Substring(1) -ReleaseDirectory (Join-Path $env:RUNNER_TEMP office-release)
       - name: Keep native installation evidence
         if: always()
         uses: actions/upload-artifact@v4

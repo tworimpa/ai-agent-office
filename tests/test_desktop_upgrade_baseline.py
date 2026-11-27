@@ -72,3 +72,51 @@ def test_only_missing_artifacts_permit_a_source_rebuild(baseline, monkeypatch, t
         with pytest.raises(RuntimeError, match="API request failed"):
             baseline.main()
         assert not output.exists()
+
+
+def test_public_upgrade_baseline_verifies_the_released_assets(baseline, monkeypatch, tmp_path):
+    from desktop_release import CHECKSUMS, checksum_bytes, installer_names
+
+    names = installer_names("0.9.0")
+    files = {names["Windows"]: b"windows fixture", names["Linux"]: b"linux fixture"}
+    hashes = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
+    files[CHECKSUMS] = checksum_bytes(hashes)
+    hashes[CHECKSUMS] = hashlib.sha256(files[CHECKSUMS]).hexdigest()
+    monkeypatch.setattr(baseline, "PUBLIC_HASHES", hashes)
+    ids = {name: n for n, name in enumerate(files, 10)}
+    monkeypatch.setattr(baseline, "PUBLIC_ASSET_IDS", ids)
+
+    class Fixture:
+        def get(self, route):
+            assert route == "releases/tags/v0.9.0"
+            return {"tag_name": "v0.9.0", "draft": False, "prerelease": False,
+                    "target_commitish": baseline.PUBLIC_COMMIT, "id": baseline.PUBLIC_RELEASE_ID}
+
+        def items(self, route):
+            if route == "git/matching-refs/tags/v0.9.0":
+                return [{"ref": "refs/tags/v0.9.0", "object": {"type": "commit", "sha": baseline.PUBLIC_COMMIT}}]
+            assert route == f"releases/{baseline.PUBLIC_RELEASE_ID}/assets?per_page=100"
+            return [{"id": ids[n], "name": n, "state": "uploaded", "digest": f"sha256:{digest}"}
+                    for n, digest in hashes.items()]
+
+        def download(self, route, target):
+            asset = int(route.rsplit("/", 1)[-1])
+            name = next(name for name, value in ids.items() if value == asset)
+            target.write_bytes(files[name])
+
+    path = tmp_path / "valid"
+    path.mkdir()
+    receipt = baseline.published_baseline(Fixture(), "Windows", path)
+    assert receipt["version"] == "0.9.0"
+    assert receipt["source"] == "published-release"
+    assert receipt["commit"] == baseline.PUBLIC_COMMIT
+    assert receipt["historical_artifact"]["installer"] == names["Windows"]
+    assert receipt["installed_sha256"] == hashes[names["Windows"]]
+    assert (path / names["Windows"]).read_bytes() == files[names["Windows"]]
+
+    path = tmp_path / "modified"
+    path.mkdir()
+    files[names["Linux"]] = b"not the released package"
+    with pytest.raises(ValueError, match="Published installer checksum mismatch"):
+        baseline.published_baseline(Fixture(), "Linux", path)
+    assert not (path / names["Linux"]).exists()
