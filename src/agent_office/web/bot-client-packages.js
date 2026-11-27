@@ -124,7 +124,8 @@ export function mountBotPackageChange({ get, element }, { api, refresh, changed 
     updateButton = get('packageUpdate'),
     rollbackButton = get('packageRollback');
   const controllers = new Set();
-  const options = { timeoutMs: 45000, controllers };
+  // An edited legacy install can need both its original commit and the candidate.
+  const requestOptions = (action) => ({ timeoutMs: action === 'update' ? 75000 : 15000, controllers });
   let selected, session;
 
   function supports(action) {
@@ -221,7 +222,7 @@ export function mountBotPackageChange({ get, element }, { api, refresh, changed 
     status.textContent = updating ? '공개 Git 저장소에서 후보 버전을 확인하는 중입니다.' : '직전 버전을 확인하는 중입니다.';
     const stillChecking = () => dialog.open && session === active && active.request === body;
     try {
-      const result = await api(active.path + '-preview', body, options);
+      const result = await api(active.path + '-preview', body, requestOptions(active.action));
       if (!stillChecking()) return;
       showPreview(result, active.action);
       if (!result.unchanged && !result.conflicts.length && typeof result.token === 'string' && result.token)
@@ -264,7 +265,7 @@ export function mountBotPackageChange({ get, element }, { api, refresh, changed 
     syncControls();
     status.textContent = '확인한 변경을 적용하는 중입니다.';
     try {
-      const receipt = await api(active.path, reviewed, options);
+      const receipt = await api(active.path, reviewed, requestOptions(active.action));
       if (session !== active) return;
       if (receipt.id !== active.id || !receipt.source) throw Error('패키지 변경 결과를 확인할 수 없습니다.');
       close();
@@ -278,7 +279,10 @@ export function mountBotPackageChange({ get, element }, { api, refresh, changed 
         close();
       } else {
         active.stamp = installedStamp(selected);
-        cancelPreview(error.message);
+        const message = error.code === 'REQUEST_CONFLICT'
+          ? '미리보기 이후 적용 조건이 바뀌었습니다. 변경을 다시 확인하세요.'
+          : error.message;
+        cancelPreview(message);
       }
     }
   };

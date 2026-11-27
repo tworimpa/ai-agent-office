@@ -399,6 +399,12 @@ test('Git package update and rollback require confirmation, refresh files and do
       }
     },
   });
+  const requestedTimeouts = [];
+  const originalSetTimeout = win.setTimeout.bind(win);
+  win.setTimeout = (callback, delay, ...args) => {
+    requestedTimeouts.push(delay);
+    return originalSetTimeout(callback, delay, ...args);
+  };
   handlers.choose(second);
   assert.ok(get('packageSourceDetails').hidden);
   assert.ok(get('packageUpdate').hidden);
@@ -456,6 +462,7 @@ test('Git package update and rollback require confirmation, refresh files and do
     '/bots/research/package-rollback',
   ]);
   assert.ok(writes.every((call) => new URLSearchParams(call.query).get('office_journal') === 'd'.repeat(32)));
+  assert.equal(requestedTimeouts.filter((timeout) => timeout === 75000).length, 3);
 });
 
 test('Git package conflicts and stale approvals keep the entire update or rollback from applying', async (t) => {
@@ -470,7 +477,9 @@ test('Git package conflicts and stale approvals keep the entire update or rollba
       if (path === '/bots/research/package-update') {
         models.bots[0] = { ...installed, digest: '편집 후 해시' };
         models.files = { ...models.files, digest: '편집 후 해시', files: { 'SOUL.md': '다른 창의 편집' } };
-        return reply({ error: { message: '편집이 먼저 저장되었습니다. 다시 확인하세요.' } }, 409);
+        return reply({
+          error: { code: 'REQUEST_CONFLICT', message: '같은 ID에 다른 요청 또는 결정이 이미 기록되어 있습니다.' },
+        }, 409);
       }
       if (!path.endsWith('-preview') || !body) return;
       const rollback = path.endsWith('/package-rollback-preview');
