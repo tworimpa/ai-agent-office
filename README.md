@@ -10,7 +10,7 @@ The selected local or SSH-connected host owns its folders, processes, requests a
 
 조정자에게 일을 맡기면 작업 방식과 역할별 배정이 실행에 저장됩니다. 사용한 모델·effort, 토큰과 계정 한도, 지난 방문 이후의 결정과 캐릭터별 근거를 같은 작업에서 확인할 수 있습니다. [작업 방식·한도·육각형 사용법](docs/work-profiles.md)
 
-기존 Studio에 연결하는 **AI Agent Office (Rust 비교판)**도 Windows와 Ubuntu x64에 별도로 설치할 수 있습니다. 같은 Workspace와 실행을 두 앱에서 이어 보는 방법은 [Rust 비교판 사용 및 검증 안내](docs/rust-comparison.md)에 있습니다.
+Rust 비교판은 비교를 마치고 보관했습니다. Electron 설치판이 기본 앱이며, 측정 결과와 이전 사용 안내는 [Rust 비교판 기록](docs/rust-comparison.md)에 있습니다.
 
 Windows와 Ubuntu·Debian 계열 Linux에서 **AI Agent Office** 앱을 열어 실행 중인 Studio에 연결하거나 새 로컬 작업실을 시작할 수 있습니다. 앱 창을 닫고 다시 열어도 실행 중인 작업은 같은 화면에서 확인할 수 있습니다. [빌드·설치·제거 안내](docs/desktop.md)
 
@@ -240,7 +240,7 @@ Tasks are transferred to CLI subprocesses through standard input rather than she
 
 ## Roadmap
 
-제품의 목표, 사용자 흐름과 단계별 완료 기준은 [AI Agent Office 제품 구상](docs/product-vision.md)에 정리했습니다.
+제품의 목표, 사용자 흐름과 단계별 완료 기준은 [AI Agent Office 제품 구상](docs/product-vision.md)에 정리했습니다. 2026-11-27의 제품 분석과 소유자 결정, 그에 따른 작업 순서는 [제품 분석 리포트](docs/product-analysis-2026-11-27.md)와 [결정 기록](docs/decisions.md)에 있습니다. 아래 AO-000~AO-004는 구현을 마친 초기 단계입니다.
 
 - AO-000: LangGraph + Claude/Codex adapters + separate worktree + tests + human-reviewed result.
 - AO-001: persistent task/run/event database, read-only queries and explicit recovery marking.

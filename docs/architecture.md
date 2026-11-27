@@ -10,7 +10,7 @@ AI Agent Office는 Windows와 Linux에서 기존 코딩 CLI를 운영하는 작�
 
 | 구성 요소 | 책임 |
 | --- | --- |
-| Studio와 설치형 앱 | Studio가 작업실 화면과 HTTP API를 제공한다. Electron 설치판은 로컬 실행 환경을 제공하며 Rust 비교판은 Studio에 연결한다. |
+| Studio와 설치형 앱 | Studio가 작업실 화면과 HTTP API를 제공한다. Electron 설치판은 로컬 실행 환경을 제공한다. Studio에 연결만 하는 Rust 비교판은 보관했다. |
 | Workspace와 조정자 | 저장소와 선택 폴더, 엔진·스킬·검증 기본값을 관리한다. 빠른 확인은 담당자에게 직접 배정한다. 회의가 필요한 의뢰는 계획과 검증 범위를 같은 실행에 기록한다. |
 | 실행기와 LangGraph | 감독 프로세스가 실행의 소유권·중지·복구를 관리한다. LangGraph가 개발 → 검증 → 리뷰와 재작업 한도를 조정한다. Codex, Antigravity, Claude, Gemini, Cline의 내부 작업 루프는 각 CLI가 수행한다. |
 | 실행과 장시간 목표 | 각 시도는 기준 커밋과 별도 Git worktree를 갖는다. 장시간 목표는 최초 실패, 시도별 변경과 결과, 후보 및 체크포인트를 연결한다. |
