@@ -16,7 +16,9 @@ FLAGS = {
     "codex": {"--json", "--sandbox"},
     "antigravity": {"--input-format", "--output-format", "--mode", "--sandbox",
                     "--disable-slash-commands", "--print-timeout"},
-    "claude": {"--print", "--output-format", "--permission-mode", "--max-turns"},
+    # Claude can omit its documented --max-turns option from help.
+    # The adapter always supplies the turn limit when it runs Claude.
+    "claude": {"--print", "--output-format", "--permission-mode"},
     "gemini": {"--acp", "--approval-mode"},
     "cline": {"--acp", "--auto-approve"},
 }

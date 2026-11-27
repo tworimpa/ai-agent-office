@@ -48,6 +48,37 @@ def test_missing_tools_do_not_probe_auth_or_mark_ready(monkeypatch):
         assert item['probe_status']=='missing' and not item['headless_support']
 
 
+@pytest.mark.parametrize(
+    ("help_text", "supported"),
+    [
+        ("-p, --print\n--output-format <format>\n--permission-mode <mode>", True),
+        ("-p, --print\n--output-format <format>\n--permission-mode <mode>\n--max-turns <count>", True),
+        ("-p, --print\n--output-format <format>\n--max-turns <count>", False),
+    ],
+)
+def test_claude_headless_probe_accepts_help_that_omits_the_turn_limit(monkeypatch, help_text, supported):
+    from agent_office import engine_status
+
+    calls = []
+
+    def metadata(argv, timeout):
+        calls.append(argv)
+        if argv == ["claude", "--version"]:
+            return subprocess.CompletedProcess(argv, 0, "2.1.332 (Claude Code)", ""), "ok"
+        assert argv == ["claude", "--help"]
+        return subprocess.CompletedProcess(argv, 0, help_text, ""), "ok"
+
+    monkeypatch.setattr(engine_status, "_probe", metadata)
+    entry = engine_status.probe_engine("claude", "claude")
+
+    assert entry["version"] == "2.1.332"
+    assert entry["headless_support"] is supported
+    assert entry["probe_status"] == ("ok" if supported else "unsupported")
+    assert entry["auth_status"] == "unknown"
+    assert entry["execution_status"] == "not_checked"
+    assert calls == [["claude", "--version"], ["claude", "--help"]]
+
+
 @pytest.mark.parametrize('failure',['timeout','error','unsupported'])
 def test_probe_failures_are_not_success(monkeypatch,failure):
     from agent_office.engine_status import collect_engine_status

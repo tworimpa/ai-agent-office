@@ -10,6 +10,7 @@ def test_claude_command_read_only():
     assert command[:2] == ["claude", "-p"]
     assert "inspect" not in command
     assert command[command.index("--permission-mode") + 1] == "plan"
+    assert command[command.index("--max-turns") + 1] == "16"
 
 
 def test_codex_command_read_only():
