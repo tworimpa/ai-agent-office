@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell } from 'electron'
-import { checkStudio, LocalStudio, readTools, studioPage, validateRemotes } from './studio.mjs'
+import { checkStudio, LocalStudio, readTools, studioCatalogLink, studioPage, validateRemotes } from './studio.mjs'
 
 const setupFile = fileURLToPath(new URL('./setup.html', import.meta.url))
 const setupURL = pathToFileURL(setupFile).href
@@ -102,9 +102,17 @@ async function startLocal(remotes) {
   return choose(runtime, 'local')
 }
 
-function secureContents(window, allowed) {
+function secureContents(window, allowed, catalogOrigin) {
   const contents = window.webContents
-  contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  contents.setWindowOpenHandler(({ url, postBody }) => {
+    if (!postBody && officeWindow === window && selected?.origin === catalogOrigin) {
+      const link = studioCatalogLink(url, catalogOrigin)
+      if (link) {
+        void shell.openExternal(link).catch(() => console.error('기본 브라우저에서 카탈로그 링크를 열 수 없습니다.'))
+      }
+    }
+    return { action: 'deny' }
+  })
   contents.on('will-attach-webview', event => event.preventDefault())
   contents.on('will-navigate', (event, url) => { if (!allowed(url)) event.preventDefault() })
   contents.on('will-redirect', (event, url) => { if (!allowed(url)) event.preventDefault() })
@@ -166,7 +174,7 @@ async function showOffice() {
       saveProfile()
     }
   }
-  secureContents(window, allowed)
+  secureContents(window, allowed, connection.origin)
   // Chromium can reject loadURL before Electron finishes destroying a closing window.
   let closing = false
   window.once('close', () => { closing = true })

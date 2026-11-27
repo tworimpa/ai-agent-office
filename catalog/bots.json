@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "id": "office-inventory-example",
+      "botId": "package-inventory-check",
+      "publisher": "AI Agent Office",
+      "name": "재고 확인 예제 봇",
+      "role": "재고 조사",
+      "description": "시험용 재고 수량을 읽고 참고 자료의 배수를 적용하는 읽기 전용 예제입니다.",
+      "tags": ["재고", "예제", "inventory"],
+      "package": {
+        "url": "https://github.com/tworimpa/ai-agent-office.git",
+        "path": "examples/bot-packages/inventory-check",
+        "commit": "72ee94272d827bf5ce877275466b30af9c1bccee",
+        "version": "카탈로그 예제"
+      },
+      "skills": [
+        {
+          "name": "재고 점검",
+          "path": "skills/inventory-check/SKILL.md"
+        }
+      ]
+    }
+  ]
+}

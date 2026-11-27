@@ -40,6 +40,9 @@
           </button>
         </div>
         <div id="bots"></div>
+        <button id="botCatalogOpen" class="manifest-action" type="button" disabled>
+          봇 카탈로그
+        </button>
         <button id="importBot" class="manifest-action" type="button" disabled>
           봇 정의 가져오기
         </button>
@@ -158,6 +161,28 @@
         <div id="explorer"></div>
       </aside>
     </div>
+    <dialog id="botCatalogDialog" aria-labelledby="botCatalogTitle">
+      <div class="dlghead"><h2 id="botCatalogTitle">봇 카탈로그</h2></div>
+      <div class="dlgbody">
+        <div class="catalog-controls">
+          <label for="botCatalogSearch">이름, 역할, 태그 검색
+            <input id="botCatalogSearch" type="search" autofocus />
+          </label>
+          <button id="botCatalogRefresh" type="button">새로고침</button>
+          <button id="botCatalogClose" type="button">닫기</button>
+        </div>
+        <div id="botCatalogStatus" role="status"></div>
+        <div class="catalog-panels">
+          <ul id="botCatalogResults" aria-label="검색 결과"></ul>
+          <section id="botCatalogDetails" aria-labelledby="botCatalogSelection" hidden>
+            <h3 id="botCatalogSelection"></h3>
+            <div id="botCatalogInfo"></div>
+            <button id="botCatalogAction" class="accent" type="button"></button>
+          </section>
+        </div>
+      </div>
+    </dialog>
+
     <dialog id="packageDialog" aria-labelledby="packageTitle">
       <div class="dlghead"><h2 id="packageTitle">Git에서 봇 설치</h2></div>
       <form class="dlgbody" id="packageForm">

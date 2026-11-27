@@ -82,6 +82,49 @@ fn only_loopback_http_and_studio_pages() {
 }
 
 #[test]
+fn only_exact_catalog_aliases_from_the_attached_studio_open_externally() {
+    let origin = "http://127.0.0.1:8766";
+    let path = format!("/bot-catalog/links/example-1/{ID}");
+    let alias = format!("{origin}{path}");
+    let url = Url::parse(&alias).unwrap();
+    assert_eq!(catalog_link(&url, origin), Some(alias.as_str()));
+    assert_eq!(page(&url, origin), None);
+    let longest = alias.replace("example-1", &"a".repeat(64));
+    assert_eq!(
+        catalog_link(&Url::parse(&longest).unwrap(), origin),
+        Some(longest.as_str())
+    );
+    for invalid in [
+        format!("https://127.0.0.1:8766{path}"),
+        format!("http://127.0.0.1:8767{path}"),
+        format!("http://localhost:8766{path}"),
+        format!("http://example.org{path}"),
+        format!("http://user:pw@127.0.0.1:8766{path}"),
+        format!("{origin}/api/hosts"),
+        format!("{origin}/prefix{path}"),
+        format!("{alias}?"),
+        format!("{alias}?workspace=local"),
+        format!("{alias}#"),
+        format!("{alias}#run"),
+        format!("{alias}/"),
+        alias[..alias.len() - 1].into(),
+        format!("{alias}f"),
+        alias.replace("example-1", "Example-1"),
+        alias.replace("example-1", "%65xample-1"),
+        alias.replace("example-1", "example--1"),
+        alias.replace("example-1", "example-"),
+        alias.replace("example-1", &"a".repeat(65)),
+        alias.replace("abcdef", "ABCDEF"),
+    ] {
+        assert_eq!(
+            catalog_link(&Url::parse(&invalid).unwrap(), origin),
+            None,
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
 fn identity_probe_requires_both_local_host_and_matching_id() {
     for (expected, ok) in [
         (None, true),

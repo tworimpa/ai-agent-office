@@ -35,7 +35,7 @@ from .workspace_rooms import WorkspaceRooms, room_route
 from . import room_bundle
 from . import github_studio
 from . import workspace_briefing, work_profile_views
-from . import web_bot_api
+from . import shared_bot_catalog, web_bot_api
 from .github_connection import GitHubError
 from . import overnight_goals
 
@@ -176,6 +176,7 @@ class StudioServer(ThreadingHTTPServer):
                 raise ValueError("이 컴퓨터의 저널 ID를 원격 호스트로 등록할 수 없습니다.")
             self.identity = self.db_path.stat()
             self.catalog = StudioCatalog(self.db_path)
+            self.shared_bot_catalog = shared_bot_catalog.Catalog()
             self.skills = RoleSkillRegistry(self.db_path)
             self.engines = StudioEngineCatalog(self.db_path)
             self.runner = LocalRunner(self.db_path)
@@ -283,6 +284,15 @@ class StudioHandler(ObserverHandler):
             bot_page = parsed.path == "/bots" and _bot_page_query(parsed.query)
             if write or not (studio_page or office_page or improvements_page or bot_page):
                 raise ValueError("요청 주소를 확인하세요.")
+        if not write and (skill_link := shared_bot_catalog.LINK_ROUTE.fullmatch(parsed.path)):
+            target = self.server.shared_bot_catalog.link(*skill_link.groups())
+            self.send_response(303)
+            self.send_header("Location", target)
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if not write and parsed.path in ASSETS:
             # Keep existing execution links and the first-time Workspace registration flow.
             page = "/bots" if parsed.path == "/" and not parsed.query and self.server.catalog.list() else parsed.path

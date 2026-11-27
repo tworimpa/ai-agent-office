@@ -35,11 +35,27 @@ pub fn origin(address: &str) -> Result<String, String> {
     Ok(url.origin().ascii_serialization())
 }
 
-fn valid_journal(id: &str) -> bool {
+fn valid_hex_id(id: &str) -> bool {
     id.len() == 32
         && id
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub fn catalog_link<'a>(url: &'a Url, origin: &str) -> Option<&'a str> {
+    let alias = url.as_str();
+    let (entry_id, link_id) = alias
+        .strip_prefix(origin)?
+        .strip_prefix("/bot-catalog/links/")?
+        .split_once('/')?;
+    let valid_entry = entry_id.len() <= 64
+        && entry_id.split('-').all(|word| {
+            !word.is_empty()
+                && word
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        });
+    (valid_entry && valid_hex_id(link_id)).then_some(alias)
 }
 
 pub fn page(url: &Url, origin: &str) -> Option<String> {
@@ -145,7 +161,7 @@ pub fn probe(
     };
     let journal = identity["journal_id"]
         .as_str()
-        .filter(|s| valid_journal(s))
+        .filter(|s| valid_hex_id(s))
         .ok_or(INVALID_STUDIO)?;
     if expected.is_some_and(|id| journal != id) {
         return Err(MISMATCH.into());
@@ -173,7 +189,7 @@ impl Connection {
         let url =
             Url::parse(&format!("{}{}", self.origin, self.page)).map_err(|_| INVALID_STUDIO)?;
         if origin(&self.origin)? != self.origin
-            || !valid_journal(&self.journal_id)
+            || !valid_hex_id(&self.journal_id)
             || page(&url, &self.origin).as_ref() != Some(&self.page)
         {
             return Err(INVALID_STUDIO.into());

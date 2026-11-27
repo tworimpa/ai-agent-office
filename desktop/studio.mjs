@@ -30,6 +30,13 @@ export function studioPage(address, origin) {
   }
 }
 
+export function studioCatalogLink(address, origin) {
+  const prefix = origin + '/bot-catalog/links/'
+  if (!origin || !address.startsWith(prefix)) return null
+  const match = /^([a-z0-9]+(?:-[a-z0-9]+)*)\/[a-f0-9]{32}$/.exec(address.slice(prefix.length))
+  return match && match[1].length <= 64 ? address : null
+}
+
 async function readJson(response) {
   if (!response.headers.get('content-type')?.startsWith('application/json') || !response.body) {
     throw new Error('Studio의 JSON 응답을 확인할 수 없습니다.')

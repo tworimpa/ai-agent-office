@@ -47,7 +47,7 @@ def _git_package(server, workspace, action, data):
     digest = local_bots.shareable_digest(document)
     receipt = source.receipt(fetched.commit, digest)
     if expected is None:
-        return 200, {"source": receipt, "digest": digest, "package_name": package.name,
+        return 200, {"source": receipt, "digest": digest, "bot_id": document["id"], "package_name": package.name,
                      "package_version": package.version, "name": document["name"], "role": document["role"],
                      "files": sorted(document["files"])}
     if expected != (fetched.commit, digest):
@@ -71,6 +71,9 @@ def handle(server, path, data):
     if path == "/api/bot-spec" and data is None:
         return 200, {"specVersion": "1.0", "schema": SCHEMA, "example": EXAMPLE}
     if data is None:
+        if match := re.fullmatch(ROOM + "/bot-catalog", path):
+            server.catalog.get(match[1])
+            return 200, server.shared_bot_catalog.refresh()
         if match := re.fullmatch(ROOM + r"/bots/" + BOT + r"/chat/before/([0-9a-f]{32})", path):
             return 200, bot_runtime.chat(server.rooms, match[1], match[2], before=match[3])
         if match := re.fullmatch(ROOM + r"/bot-orders/before/([0-9a-f]{32})", path):
