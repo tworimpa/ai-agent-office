@@ -2,7 +2,7 @@ import { requestJson, validId, visiblePoller } from './studio-shared.js';
 import { controls, mountCharacterPicker, pagedHistory } from './bot-client-ui.js';
 import { mountFiles } from './bot-client-files.js';
 import { mountOrders } from './bot-client-orders.js';
-import { mountBotPackageChange, mountBotPackages } from './bot-client-packages.js';
+import { mountBotCatalog, mountBotPackageChange, mountBotPackages } from './bot-client-packages.js';
 
 export async function mountBotClient(win, makeScene) {
   const ui = controls(win),
@@ -28,7 +28,8 @@ export async function mountBotClient(win, makeScene) {
     loadingPages = new Set();
   const verifiedRuns = new Map();
   let navigation = 0;
-  const current = () => members.find((bot) => bot.id === selected);
+  const botById = (id) => members.find((bot) => bot.id === id);
+  const current = () => botById(selected);
   const uuid = () => win.crypto.randomUUID().replaceAll('-', '');
   const base = () => '/api/rooms/' + workspace;
   const api = (path, body, options) => requestJson(win, base() + path + '?office_journal=' + journal, body, options);
@@ -103,9 +104,11 @@ export async function mountBotClient(win, makeScene) {
   });
   const packageChange = mountBotPackageChange(ui, {
     api,
+    botById,
     refresh: () => refresh(true),
-    changed: (receipt, action) => {
-      const bot = current();
+    changed: (receipt, action, fromCatalog) => {
+      if (fromCatalog) goBot(receipt.id);
+      const bot = fromCatalog ? botById(receipt.id) : current();
       if (
         bot?.id === receipt.id &&
         bot.package?.commit === receipt.source.commit &&
@@ -114,6 +117,7 @@ export async function mountBotClient(win, makeScene) {
         note(bot.name + (action === 'update' ? ' 봇을 업데이트했습니다.' : ' 봇을 직전 버전으로 복원했습니다.'));
     },
   });
+  const catalog = mountBotCatalog(ui, { api, botById, workspaceName: () => room.workspace.name, packages, packageChange });
   const poller = visiblePoller(
     win,
     () => refresh(),
@@ -424,8 +428,10 @@ export async function mountBotClient(win, makeScene) {
     if (next.journal_id !== journal || next.workspace?.id !== workspace)
       throw Error('작업실 저널이 바뀌었습니다. 페이지를 다시 여세요.');
     const runsChanged = JSON.stringify(next.runs) !== JSON.stringify(room.runs);
+    const nameChanged = next.workspace.name !== room.workspace.name;
     room = next;
     const rosterChanged = setRoster(roster);
+    if (rosterChanged || nameChanged) catalog.render();
     orders.update(records);
     if (rosterChanged) render();
     else if (runsChanged) {
@@ -609,7 +615,7 @@ export async function mountBotClient(win, makeScene) {
         id = params.get('run');
       selected = members.find((b) => b.id === requested)?.id || null;
       ready = true;
-      get('new').disabled = get('importBot').disabled = get('packageImport').disabled = false;
+      for (const id of ['new', 'importBot', 'packageImport', 'botCatalogOpen']) get(id).disabled = false;
       if (validId(id)) {
         const owner = room.runs.find((r) => r.id === id)?.assignment?.bots?.developer?.id;
         await openRun(id, current() || members.find((b) => b.id === owner));
@@ -628,6 +634,7 @@ export async function mountBotClient(win, makeScene) {
       disposed = true;
       chatSequence++;
       poller.dispose();
+      catalog.dispose();
       packages.dispose();
       packageChange.dispose();
       if (scene.dispose) scene.dispose();

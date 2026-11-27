@@ -348,6 +348,203 @@ const originalPackage = {
 };
 const updatedPackage = { ...originalPackage, version: 'v2', commit: '9'.repeat(40), digest: 'a'.repeat(64) };
 
+const catalogLink = '/bot-catalog/links/team-research/' + 'c'.repeat(32);
+const catalogEntry = {
+  id: 'team-research',
+  botId: 'shared',
+  publisher: 'Research Team',
+  name: '공유 조사 봇',
+  role: 'Research Assistant',
+  description: '인터뷰를 정리합니다.',
+  tags: ['고객 인터뷰', 'UX'],
+  package: {
+    url: 'https://example.org/bots.git',
+    path: 'sample',
+    commit: '7'.repeat(40),
+    version: 'v1',
+  },
+  skills: [
+    { name: '인터뷰 정리', path: 'skills/interview/SKILL.md', href: catalogLink },
+    { name: '메모', path: 'skills/notes/SKILL.md', href: 'https://example.org/notes' },
+    {
+      name: '요약', path: 'skills/summary/SKILL.md',
+      href: '/bot-catalog/links/other-entry/' + 'd'.repeat(32),
+    },
+  ],
+};
+
+test('shared catalog fetches on open and refresh, supports Korean and English search and uses native skill links', async (t) => {
+  let reads = 0;
+  const { get, input, calls } = await fixture(t, {
+    respond: ({ path, reply }) => {
+      if (path !== '/bot-catalog') return;
+      reads++;
+      if (reads === 1) return reply({ error: { message: '목록을 읽을 수 없습니다.' } }, 502);
+      return reply({
+        schemaVersion: 1,
+        entries: reads === 2 ? [catalogEntry] : [{ ...catalogEntry, name: '새 조사 봇' }],
+      });
+    },
+  });
+  assert.equal(reads, 0);
+  assert.equal(get('botCatalogOpen')?.disabled, false);
+  get('botCatalogOpen').click();
+  await turn();
+  assert.match(get('botCatalogStatus').textContent, /목록/);
+  assert.equal(get('botCatalogRefresh').disabled, false);
+  get('botCatalogRefresh').click();
+  await turn();
+  const results = get('botCatalogResults');
+  input('botCatalogSearch', '없는 이름');
+  assert.equal(results.querySelectorAll('button').length, 0);
+  assert.match(get('botCatalogStatus').textContent, /결과/);
+  for (const query of ['조사 봇', 'RESEARCH', '고객 인터뷰', 'ux']) {
+    input('botCatalogSearch', query);
+    assert.equal(results.querySelectorAll('button').length, 1);
+  }
+  results.querySelector('button').click();
+  const detail = get('botCatalogDetails');
+  for (const expected of [
+    '테스트 작업실', 'Research Team', '인터뷰를 정리합니다.', 'skills/interview/SKILL.md',
+    'skills/notes/SKILL.md', 'https://example.org/bots.git', '7'.repeat(40),
+  ])
+    assert.ok(detail.textContent.includes(expected), expected);
+  const links = detail.querySelectorAll('a');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].getAttribute('href'), catalogLink);
+  assert.equal(links[0].target, '_blank');
+  assert.equal(links[0].rel, 'noopener noreferrer');
+  assert.equal(calls.some((call) => call.body), false);
+  get('botCatalogClose').click();
+  get('botCatalogOpen').click();
+  await turn();
+  assert.equal(reads, 3);
+  assert.match(results.textContent, /새 조사 봇/);
+  for (const call of calls.filter((row) => row.path === '/bot-catalog'))
+    assert.equal(call.query, '?office_journal=' + journal);
+});
+
+test('catalog install checks the preview bot ID, URL, path and commit before enabling install', async (t) => {
+  const source = { ...originalPackage, version: catalogEntry.package.commit };
+  const mismatches = [
+    { bot_id: 'other' },
+    { source: { ...source, url: 'https://example.org/other.git' } },
+    { source: { ...source, path: 'other' } },
+    { source: { ...source, commit: '1'.repeat(40) } },
+    {},
+  ];
+  const { get, input, submit, calls } = await fixture(t, {
+    respond: ({ path, body, reply, models }) => {
+      if (path === '/bot-catalog') return reply({ schemaVersion: 1, entries: [catalogEntry] });
+      if (path === '/bots/package-preview') {
+        assert.deepEqual(body, { url: source.url, path: source.path, version: source.commit });
+        return reply({
+          bot_id: 'shared', name: '공유 조사 봇', role: 'Research Assistant', source, digest: source.digest,
+          files: ['SOUL.md'], ...mismatches.shift(),
+        });
+      }
+      if (path === '/bots/package-install') {
+        assert.deepEqual(body, source);
+        models.bots.push({ id: 'shared', name: '공유 조사 봇', role: 'Research Assistant', package: source });
+        return reply({ id: 'shared', source });
+      }
+    },
+  });
+  assert.ok(get('botCatalogOpen'), '카탈로그 열기 버튼');
+  get('packageImport').click();
+  input('packageUrl', 'https://example.org/manual.git');
+  get('packageCancel').click();
+  get('botCatalogOpen').click();
+  await turn();
+  get('botCatalogResults').querySelector('button').click();
+  get('botCatalogAction').click();
+  assert.equal(get('botCatalogDialog').open, false);
+  assert.equal(get('packageDialog').open, true);
+  assert.equal(get('packageUrl').value, source.url);
+  assert.equal(get('packagePath').value, source.path);
+  assert.equal(get('packageVersion').value, source.commit);
+  assert.equal(get('packageVersion').readOnly, true);
+  assert.equal(calls.filter((row) => row.path === '/bots/package-preview').length, 0);
+  for (let index = 0; index < 4; index++) {
+    await submit('packageForm');
+    assert.equal(get('packageInstall').disabled, true);
+    assert.match(get('packageStatus').textContent, /카탈로그.*일치하지/);
+    get('packageInstall').click();
+  }
+  assert.equal(calls.filter((row) => row.path === '/bots/package-install').length, 0);
+  await submit('packageForm');
+  assert.equal(get('packageInstall').disabled, false);
+  get('packageInstall').click();
+  await turn();
+  assert.equal(calls.filter((row) => row.path === '/bots/package-install').length, 1);
+  get('packageImport').click();
+  assert.equal(get('packageUrl').value, 'https://example.org/manual.git');
+  assert.equal(get('packageVersion').readOnly, false);
+});
+
+test('catalog distinguishes existing commits and routes a new commit through the installed bot update', async (t) => {
+  let entries = [catalogEntry];
+  let installedSource = originalPackage;
+  let target = { ...updatedPackage, version: updatedPackage.commit, commit: '1'.repeat(40) };
+  const { get, submit, calls } = await fixture(t, {
+    respond: ({ path, body, reply }) => {
+      if (path === '/bot-catalog') return reply({ schemaVersion: 1, entries });
+      if (path === '/bots') return reply({ bots: [
+        { ...first, id: 'shared', package: installedSource },
+        { ...second, id: 'unrelated', package: { ...originalPackage, path: 'other' } },
+      ] });
+      if (path === '/bots/shared/package-update-preview') return reply({
+        current: originalPackage, target, token: '9'.repeat(64), changes: [], conflicts: [], unchanged: false,
+      });
+      if (path === '/bots/shared/package-update') {
+        assert.deepEqual(body, { version: updatedPackage.commit, token: '9'.repeat(64) });
+        installedSource = target;
+        return reply({ id: 'shared', source: target });
+      }
+    },
+  });
+  assert.ok(get('botCatalogOpen'), '카탈로그 열기 버튼');
+  get('botCatalogOpen').click();
+  await turn();
+  get('botCatalogResults').querySelector('button').click();
+  assert.match(get('botCatalogDetails').textContent, /설치됨/);
+  assert.ok(get('botCatalogAction').hidden || get('botCatalogAction').disabled);
+
+  entries = [
+    { ...catalogEntry, package: { ...catalogEntry.package, version: 'v2', commit: updatedPackage.commit } },
+    { ...catalogEntry, id: 'unrelated-source', botId: 'unrelated', name: '출처가 다른 봇' },
+  ];
+  get('botCatalogRefresh').click();
+  await turn();
+  const [update, unrelated] = get('botCatalogResults').querySelectorAll('button');
+  unrelated.click();
+  assert.doesNotMatch(get('botCatalogAction').textContent, /업데이트/);
+  assert.match(get('botCatalogDetails').textContent, /설치.*출처/);
+  update.click();
+  assert.match(get('botCatalogDetails').textContent, new RegExp(originalPackage.commit));
+  assert.match(get('botCatalogDetails').textContent, new RegExp(updatedPackage.commit));
+  get('botCatalogAction').click();
+  assert.equal(get('packageDialog').open, false);
+  assert.equal(get('packageChangeDialog').open, true);
+  assert.equal(get('packageChangeVersion').value, updatedPackage.commit);
+  await submit('packageChangeForm');
+  assert.ok(get('packageChangeApply').disabled);
+  target = { ...updatedPackage, version: updatedPackage.commit };
+  await submit('packageChangeForm');
+  assert.equal(get('packageChangeApply').disabled, false);
+  assert.deepEqual(calls.filter((row) => row.path.includes('package-update-preview')).map(({ body, query }) => ({
+    body, query,
+  })), Array(2).fill({ body: { version: updatedPackage.commit }, query: '?office_journal=' + journal }));
+  assert.equal(calls.some((row) => /package-install|package-update$/.test(row.path)), false);
+  get('packageChangeApply').click();
+  await turn();
+  assert.equal(get('packageChangeDialog').open, false);
+  assert.match(get('notice').textContent, /업데이트했습니다/);
+  assert.match(get('packageSource').textContent, new RegExp(updatedPackage.commit));
+  assert.equal(calls.filter((row) => row.path.endsWith('package-update')).length, 1);
+  assert.equal(calls.some((row) => /package-install|commands/.test(row.path)), false);
+});
+
 test('Git package update and rollback require confirmation, refresh files and do not submit a job', async (t) => {
   const publish = (models, source, rollback, text) => {
     models.files = { ...models.files, digest: text, files: { ...models.files.files, 'SOUL.md': text } };
