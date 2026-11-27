@@ -1,6 +1,6 @@
 # Rust 비교판
 
-> **보관됨 (2026-11-27).** 비교 결과에 따라 두 운영체제 모두 Electron 설치판을 기본 앱으로 유지한다. Rust 비교판에는 새 개발을 하지 않으며 설치 대상으로 안내하지 않는다. 아래 내용은 비교 당시의 사용·검증 기록이다. 릴리스와 배포 정책이 요구하는 비교판 검사는 별도 결정 전까지 유지된다. [결정 기록 ADR-009](decisions.md)
+> **보관됨 (2026-11-27).** 비교 결과에 따라 두 운영체제 모두 Electron 설치판을 기본 앱으로 유지한다. Rust 비교판에는 새 개발을 하지 않으며 설치 대상으로 안내하지 않는다. 아래 내용은 비교 당시의 사용·검증 기록이다. 2026-11-28 소유자 승인에 따라 비교판 빌드와 검사를 CI, 릴리스 게이트, 배포 신뢰 정책에서 뺐다. 소스(`rust-desktop/`, `desktop/comparison/`, `scripts/ci-rust-*`)는 저장소에 남아 있다. [결정 기록 ADR-009](decisions.md)
 
 Windows와 Ubuntu x64에서 기존 Electron 앱과 **AI Agent Office (Rust 비교판)**을 함께 설치할 수 있다. 두 앱은 같은 Studio에 접속해 같은 작업실 화면을 연다. 작업 실행과 저널은 그 Studio가 소유한다.
 
@@ -37,7 +37,7 @@ npx --yes --package=@tauri-apps/cli@2.12.6 tauri build --bundles nsis -- --locke
 npx --yes --package=@tauri-apps/cli@2.12.6 tauri build --bundles deb -- --locked
 ```
 
-기본 산출물 경로는 `rust-desktop/target/release/bundle/`이다. CI에서는 Electron 설치 파일을 같은 실행의 Rust 패키지 검증에 전달한다. 두 앱에서 연결을 저장하고, 같은 포트의 저널 교체를 시험한다. 이후 한쪽 앱을 제거한 다음 다른 앱의 저장된 프로필이 원래 저널·작업공간을 복원하는지 양방향으로 확인한다. 측정 환경과 재현 명령은 [비교 벤치마크 안내](../desktop/comparison/BENCHMARK.md)를 참조한다.
+기본 산출물 경로는 `rust-desktop/target/release/bundle/`이다. 보관 전의 CI는 Electron 설치 파일을 같은 실행의 Rust 패키지 검증에 전달했다. 두 앱에서 연결을 저장하고, 같은 포트의 저널 교체를 시험했다. 이후 한쪽 앱을 제거한 다음 다른 앱의 저장된 프로필이 원래 저널·작업공간을 복원하는지 양방향으로 확인했다. 이 검사는 2026-11-28부터 CI에서 실행하지 않으며, 검사 스크립트(`scripts/ci-rust-coexistence.ps1`, `scripts/ci-rust-coexistence.sh`, `scripts/ci-rust-user-session.ps1`)는 남아 있다. 측정 환경과 재현 명령은 [비교 벤치마크 안내](../desktop/comparison/BENCHMARK.md)를 참조한다.
 
 ## 실제 작업 인계
 

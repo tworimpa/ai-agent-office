@@ -161,6 +161,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  rust-comparison:
+  # Keep this call: it is how the deployment policy and the split-session bootstrap
+  # learn which merge commit this run tested. See tested-merge.yml.
+  tested-merge:
     needs: desktop
-    uses: ./.github/workflows/rust-comparison.yml
+    uses: ./.github/workflows/tested-merge.yml
