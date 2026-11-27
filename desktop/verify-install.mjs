@@ -10,6 +10,8 @@ import { _electron as electron } from 'playwright'
 import { LocalStudio } from './studio.mjs'
 import { verifyCatalogHandoff } from './verify-catalog-handoff.mjs'
 import { closeDesktop, finishVerification } from './verify-lifecycle.mjs'
+import { verifyPublicCatalog } from './verify-public-catalog.mjs'
+import { meetingRevisionRoles, verifiesCatalogHandoff, verifiesPublicCatalog } from './verify-versions.mjs'
 
 if (!process.argv[2]) throw new Error('Usage: node verify-install.mjs PATH_TO_PACKAGED_EXECUTABLE [--live]')
 const exe = await realpath(process.argv[2])
@@ -260,7 +262,7 @@ async function verifyPeerAndRecovery(local, runId) {
   window = await connected
   await window.locator('#empty-register').waitFor()
   assert.equal(new URL(window.url()).origin, peer.origin)
-  await verifyCatalogHandoff(app, window, peer.origin)
+  if (verifiesCatalogHandoff(installedVersion)) await verifyCatalogHandoff(app, window, peer.origin)
   await register(window, false)
   await close()
   assert.equal((await attached.running()).journalId, peer.journalId)
@@ -459,10 +461,14 @@ try {
     assert.deepEqual(final.meeting.verification.map(row => row.status), ['passed', 'not_verified'])
     assert.equal(final.meeting.revisions.length, 3)
     assert.equal(final.meeting.revisions[1].verification[0].status, 'not_verified')
-    assert.deepEqual(final.meeting.contributions.filter(row => row.revision === 3).map(row => row.role), ['coordinator'])
+    assert.deepEqual(final.meeting.contributions.filter(row => row.revision === 3).map(row => row.role),
+      meetingRevisionRoles(installedVersion))
     assert.match(final.meeting.plan.tasks[0].description, /desktop verified/)
   }
   await window.screenshot({ path: join(root, 'window.png') })
+  const catalog = !live && verifiesPublicCatalog(installedVersion, process.env.OFFICE_VERIFY_RELEASE_BOT_CATALOG)
+    ? await verifyPublicCatalog(window, local, final.workspace_id)
+    : undefined
   // Preserve the profile written by the old app for the actual installation upgrade.
   const peer = hostProfile ? null : await verifyPeerAndRecovery(local, run.id)
   const resumed = await standalone.running()
@@ -474,7 +480,7 @@ try {
     lastBootId: resumed.bootId, workspaceId: final.workspace_id,
     workspaceName: basename(repo), repository: repo, task: final.task,
     runId: run.id, simpleId, sameRouteAfterReopen: true, state: final.state, meeting: final.meeting,
-    persistedDirection: direction.id, test: final.test_output, review: final.review_output,
+    persistedDirection: direction.id, test: final.test_output, review: final.review_output, catalog,
   }, null, 2))
   console.log(`Desktop verification passed: ${resultFile}`)
 } catch (error) {

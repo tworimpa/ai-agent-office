@@ -30,6 +30,21 @@ END = "2026-11-01T15:05:00Z"
 CREATED = "2026-11-01T15:04:00Z"
 
 
+def test_010_release_notes_read_highlights_from_the_pinned_commit():
+    content = b"### Release highlights\r\n\r\n- Catalog and bot sharing\r\n"
+
+    class Source:
+        repo = "owner/project"
+
+        def get(self, path):
+            assert path == f"contents/docs/releases/0.10.0.md?ref={COMMIT}"
+            return {"content": b64encode(content).decode("ascii")}
+
+    notes = release.release_notes(Source(), "0.10.0", COMMIT, {"workflows": {}, "packages": {}})
+    assert "### Release highlights\n\n- Catalog and bot sharing\n\n### 빌드 검증" in notes
+    assert "AI-Agent-Office-Setup-0.10.0.exe" in notes
+
+
 def packed(files):
     result = BytesIO()
     with ZipFile(result, "w") as archive:

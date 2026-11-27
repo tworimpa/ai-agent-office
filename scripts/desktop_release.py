@@ -238,8 +238,13 @@ def release_notes(api, version, commit, evidence):
              "업데이트 전 앱 메뉴에서 로컬 작업실을 종료하세요.",
              "로컬 Studio용 Python은 설치 파일에 포함되어 있습니다. 작업을 실행할 호스트에는 Git과 "
              "사용할 AI CLI를 설치하고 각 공급자 계정에 로그인하세요.",
-             "", f"[설치·업데이트 안내]({url}/blob/{commit}/docs/desktop.md) · [소스 커밋]({url}/commit/{commit})",
-             "", "### 빌드 검증", ""]
+             "", f"[설치·업데이트 안내]({url}/blob/{commit}/docs/desktop.md) · [소스 커밋]({url}/commit/{commit})"]
+    if version == "0.10.0":
+        source = api.get(f"contents/docs/releases/0.10.0.md?ref={commit}")
+        highlights = b64decode(source["content"]).decode("utf-8").strip()
+        require(highlights, "The 0.10.0 release highlights are empty")
+        lines.extend(["", highlights.replace("\r\n", "\n")])
+    lines.extend(["", "### 빌드 검증", ""])
     for workflow, data in evidence["workflows"].items():
         lines.append(f"- [{workflow} 실행 {data['id']} · 시도 {data['attempt']}]({url}/actions/runs/{data['id']}/attempts/{data['attempt']})")
     for platform, data in evidence["packages"].items():
