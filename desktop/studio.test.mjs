@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { checkStudio, LocalStudio, localStudioOrigin, studioPage, validateRemotes } from './studio.mjs'
+import { checkStudio, LocalStudio, localStudioOrigin, studioCatalogLink, studioPage, validateRemotes } from './studio.mjs'
 
 const origin = 'http://127.0.0.1:8766'
 const journal = '1'.repeat(32)
@@ -20,6 +20,29 @@ test('Studio addresses stay on IPv4 loopback and page restoration stays within t
   assert.equal(studioPage(origin + '/api/runs', origin), null)
   assert.equal(studioPage('http://127.0.0.1:9080/', origin), null)
   assert.equal(studioPage('//example.org/', origin), null)
+})
+
+test('only exact catalog aliases from the attached Studio open externally', () => {
+  const path = '/bot-catalog/links/example-1/0123456789abcdef0123456789abcdef'
+  const alias = origin + path
+  const longest = alias.replace('example-1', 'a'.repeat(64))
+  assert.equal(studioCatalogLink(alias, origin), alias)
+  assert.equal(studioCatalogLink(longest, origin), longest)
+  assert.equal(studioPage(alias, origin), null)
+  assert.equal(studioCatalogLink(alias), null)
+  for (const url of [
+    path, 'https://127.0.0.1:8766' + path, 'http://127.0.0.1:8767' + path,
+    'http://localhost:8766' + path, 'http://example.org' + path,
+    'http://user:pw@127.0.0.1:8766' + path, 'http://@127.0.0.1:8766' + path,
+    origin + '/api/hosts', origin + '/prefix' + path, origin + '/x/..' + path,
+    alias + '?', alias + '?workspace=local', alias + '#', alias + '#run',
+    alias + '/', alias + '\n', alias.slice(0, -1), alias + 'f',
+    alias.replace('example-1', 'Example-1'), alias.replace('example-1', '%65xample-1'),
+    alias.replace('example-1', 'example--1'), alias.replace('example-1', 'example-'),
+    alias.replace('example-1', 'a'.repeat(65)), alias.replace('abcdef', 'ABCDEF'),
+  ]) {
+    assert.equal(studioCatalogLink(url, origin), null, url)
+  }
 })
 
 test('a stable Studio identity is checked against the saved journal and managed older Studio can reconnect', async () => {

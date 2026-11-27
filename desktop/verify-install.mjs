@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { LocalStudio } from './studio.mjs'
+import { verifyCatalogHandoff } from './verify-catalog-handoff.mjs'
 import { closeDesktop, finishVerification } from './verify-lifecycle.mjs'
 
 if (!process.argv[2]) throw new Error('Usage: node verify-install.mjs PATH_TO_PACKAGED_EXECUTABLE [--live]')
@@ -259,6 +260,7 @@ async function verifyPeerAndRecovery(local, runId) {
   window = await connected
   await window.locator('#empty-register').waitFor()
   assert.equal(new URL(window.url()).origin, peer.origin)
+  await verifyCatalogHandoff(app, window, peer.origin)
   await register(window, false)
   await close()
   assert.equal((await attached.running()).journalId, peer.journalId)

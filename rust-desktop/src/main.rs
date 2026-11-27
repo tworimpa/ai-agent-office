@@ -356,6 +356,7 @@ fn main() {
                 .open(directory.join("profile.lock"))?;
             profile_lock.try_lock()?;
             let allowed_origin = Arc::new(RwLock::new(None));
+            let popup_origin = allowed_origin.clone();
             let mut session = Session {
                 directory: directory.clone(),
                 _profile_lock: profile_lock,
@@ -391,7 +392,22 @@ fn main() {
                     },
                 ))
                 .on_download(|_, _| false)
-                .on_new_window(|_, _| NewWindowResponse::Deny)
+                .on_new_window(move |url, _| {
+                    let link = popup_origin
+                        .read()
+                        .unwrap()
+                        .as_deref()
+                        .and_then(|origin| studio::catalog_link(&url, origin))
+                        .map(str::to_owned);
+                    if let Some(link) = link {
+                        thread::spawn(move || {
+                            if open::that_detached(link).is_err() {
+                                eprintln!("기본 브라우저에서 카탈로그 링크를 열 수 없습니다.");
+                            }
+                        });
+                    }
+                    NewWindowResponse::Deny
+                })
                 .on_permission_request(|_, _| PermissionResponse::Deny)
                 .build()?;
             let handle = app.handle().clone();
