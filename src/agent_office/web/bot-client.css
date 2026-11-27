@@ -432,16 +432,47 @@ dialog::backdrop {
   font-size: 13px;
   overflow-wrap: anywhere;
 }
-#packageSource {
+#packageSource,
+#packageRollbackSource {
   white-space: pre-wrap;
 }
-#packagePreview ul {
+.package-previous,
+.package-actions {
+  margin-block-start: 8px;
+}
+.package-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+#packageChangeDialog {
+  width: min(620px, 94vw);
+}
+.package-comparison {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: 8px;
+  margin-block-end: 12px;
+}
+.package-comparison section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+#packageChangeDialog h3 {
+  margin: 0 0 4px;
+  font-size: inherit;
+}
+#packagePreview ul,
+#packageChangePreview ul,
+#packageChangeConflicts ul {
   margin: 6px 0 0;
   padding-inline-start: 22px;
   max-height: 8rem;
   overflow: auto;
 }
-#packageDialog .dialogActions {
+#packageDialog .dialogActions,
+#packageChangeDialog .dialogActions {
   display: flex;
   flex-wrap: wrap;
   justify-content: end;

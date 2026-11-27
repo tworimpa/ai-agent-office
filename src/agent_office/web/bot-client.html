@@ -84,6 +84,14 @@
           <details id="packageSourceDetails" class="package-info" hidden>
             <summary>Git 설치 출처</summary>
             <div id="packageSource"></div>
+            <div id="packagePrevious" class="package-previous" hidden>
+              <strong>롤백 가능한 직전 버전</strong>
+              <div id="packageRollbackSource"></div>
+            </div>
+            <div class="package-actions">
+              <button id="packageUpdate" type="button" hidden>업데이트 확인</button>
+              <button id="packageRollback" type="button" hidden>직전 버전으로 롤백</button>
+            </div>
           </details>
           <div class="thread" id="thread"></div>
           <form id="compose">
@@ -171,6 +179,22 @@
           <button id="packageCancel" type="button">닫기</button>
           <button id="packageCheck" type="submit">패키지 확인</button>
           <button id="packageInstall" type="button" class="accent" disabled>설치</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="packageChangeDialog" aria-labelledby="packageChangeTitle">
+      <div class="dlghead"><h2 id="packageChangeTitle"></h2></div>
+      <form class="dlgbody" id="packageChangeForm">
+        <label id="packageChangeTarget">Git 태그 또는 전체 커밋 SHA
+          <input id="packageChangeVersion" type="text" maxlength="180" />
+        </label>
+        <div id="packageChangePreview" class="package-info" hidden></div>
+        <div id="packageChangeConflicts" class="package-info" hidden></div>
+        <div id="packageChangeStatus" role="status"></div>
+        <div class="dialogActions">
+          <button id="packageChangeCancel" type="button">닫기</button>
+          <button id="packageChangeCheck" type="submit">변경 확인</button>
+          <button id="packageChangeApply" type="button" class="accent" disabled>적용</button>
         </div>
       </form>
     </dialog>

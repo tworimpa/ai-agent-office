@@ -2,7 +2,7 @@ import { requestJson, validId, visiblePoller } from './studio-shared.js';
 import { controls, mountCharacterPicker, pagedHistory } from './bot-client-ui.js';
 import { mountFiles } from './bot-client-files.js';
 import { mountOrders } from './bot-client-orders.js';
-import { mountBotPackages } from './bot-client-packages.js';
+import { mountBotPackageChange, mountBotPackages } from './bot-client-packages.js';
 
 export async function mountBotClient(win, makeScene) {
   const ui = controls(win),
@@ -99,6 +99,19 @@ export async function mountBotClient(win, makeScene) {
         goBot(bot);
         note(bot.name + ' 봇을 설치했습니다.');
       }
+    },
+  });
+  const packageChange = mountBotPackageChange(ui, {
+    api,
+    refresh: () => refresh(true),
+    changed: (receipt, action) => {
+      const bot = current();
+      if (
+        bot?.id === receipt.id &&
+        bot.package?.commit === receipt.source.commit &&
+        bot.package.digest === receipt.source.digest
+      )
+        note(bot.name + (action === 'update' ? ' 봇을 업데이트했습니다.' : ' 봇을 직전 버전으로 복원했습니다.'));
     },
   });
   const poller = visiblePoller(
@@ -344,6 +357,7 @@ export async function mountBotClient(win, makeScene) {
   function render() {
     const bot = current(),
       key = otherRun ? 'task:' + otherRun : bot ? view(bot).active : 'room';
+    packageChange.render(bot);
     const panel = key.startsWith('f:') ? 'editor' : key.startsWith('task:') ? 'task' : key;
     for (const id of ['room', 'chat', 'editor', 'task']) get(id).hidden = id !== panel;
     renderNav();
@@ -372,11 +386,6 @@ export async function mountBotClient(win, makeScene) {
     const packageDownload = get('packageExport');
     packageDownload.href = base() + '/bots/' + encodeURIComponent(bot.id) + '/package?office_journal=' + journal;
     packageDownload.download = bot.id + '.bot-package.zip';
-    const source = bot.package;
-    get('packageSourceDetails').hidden = !source;
-    get('packageSource').textContent = source
-      ? [source.url, source.path, source.version, '커밋 ' + source.commit, '정의 해시 ' + source.digest].filter(Boolean).join('\n')
-      : '';
     if (get('msg').value !== v.message) get('msg').value = v.message;
     get('edits').checked = !!v.edits;
     folderChoices('', room.workspace.folders, v.index ?? 0);
@@ -386,7 +395,9 @@ export async function mountBotClient(win, makeScene) {
   function setRoster(data) {
     const old = new Map(members.map((bot) => [bot.id, bot.digest]));
     const custom = data.bots.filter((bot) => !bot.builtin);
-    const signature = JSON.stringify(custom.map((bot) => [bot.id, bot.name, bot.role, bot.digest, bot.package]));
+    const signature = JSON.stringify(
+      custom.map((bot) => [bot.id, bot.name, bot.role, bot.digest, bot.package, bot.package_rollback]),
+    );
     if (signature === rosterStamp) return false;
     rosterStamp = signature;
     members = custom.map((bot) => ({
@@ -618,6 +629,7 @@ export async function mountBotClient(win, makeScene) {
       chatSequence++;
       poller.dispose();
       packages.dispose();
+      packageChange.dispose();
       if (scene.dispose) scene.dispose();
       else scene.pause();
     },

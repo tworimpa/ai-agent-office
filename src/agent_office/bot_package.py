@@ -30,16 +30,20 @@ def _encode(document):
     return (json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
-def _memory(path):
+def is_memory_path(path):
     return "memory.md" in path.casefold().split("/")
 
 
-def export_zip(document):
-    portable = bot_spec.validate({
+def without_memory(document):
+    return bot_spec.validate({
         **document,
-        "files": {path: text for path, text in document["files"].items() if not _memory(path)},
-        "folders": [path for path in document.get("folders", ()) if not _memory(path)],
+        "files": {path: text for path, text in document["files"].items() if not is_memory_path(path)},
+        "folders": [path for path in document.get("folders", ()) if not is_memory_path(path)],
     })
+
+
+def export_zip(document):
+    portable = without_memory(document)
     plugin = {"$schema": PLUGIN_SCHEMA, "name": portable["id"], "extensions": {NAMESPACE: OFFICE_VERSION}}
     data = _encode(portable)
     bot_spec.loads(data)
@@ -82,7 +86,7 @@ def read(plugin_bytes, definition_bytes, skills):
     except UnicodeError:
         raise ValueError("bot.json은 UTF-8로 저장하세요.") from None
     files = definition["files"]
-    if any(_memory(path) for path in (*files, *skills, *definition["folders"])):
+    if any(is_memory_path(path) for path in (*files, *skills, *definition["folders"])):
         raise ValueError("공유 패키지에서 MEMORY.md를 빼고 다시 설치하세요.")
     for path, data in skills.items():
         if path in files:
@@ -100,6 +104,12 @@ def installed_sources(db, workspace):
     return {bot_id: json.loads(source) for bot_id, source in db.execute(
         "SELECT bot_id, source FROM studio_bot_package_sources WHERE workspace_id=?", (workspace,),
     )}
+
+
+def replace_source(db, workspace, bot_id, source):
+    if db.execute("UPDATE studio_bot_package_sources SET source=? WHERE workspace_id=? AND bot_id=?",
+                  (json.dumps(source), workspace, bot_id)).rowcount != 1:
+        raise OfficeError("NOT_FOUND")
 
 
 def record_source(db, workspace, bot_id, source):

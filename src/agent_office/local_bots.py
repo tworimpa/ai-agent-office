@@ -224,6 +224,14 @@ def _update(db, workspace_id, bot_id, updated):
     return updated
 
 
+def replace_manifest(db, workspace_id, bot_id, manifest, digest):
+    _editable(db, workspace_id, bot_id, digest)
+    updated = _from_portable(manifest)
+    if updated["id"] != bot_id or updated["builtin"]:
+        raise ValueError("설치한 봇과 패키지의 봇 ID가 일치해야 합니다.")
+    return _update(db, workspace_id, bot_id, updated)
+
+
 def save_entry(db, workspace_id, bot_id, path, content, digest, *, kind="file", create=False):
     bot = _editable(db, workspace_id, bot_id, digest)
     bot_spec.check_path(path)

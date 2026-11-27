@@ -31,6 +31,10 @@ agent-office --db office.sqlite3 bots export --workspace-id WORKSPACE_ID --id ux
 | GET | `/api/rooms/W/bots/B/package` | 개인 메모를 제외한 Git 공유 패키지 ZIP 내려받기 |
 | POST | `/api/rooms/W/bots/package-preview` | 공개 HTTPS URL과 버전의 패키지 정보 및 커밋·정의 해시 확인 |
 | POST | `/api/rooms/W/bots/package-install` | 미리 확인한 커밋·정의 해시에 해당하는 봇 설치 |
+| POST | `/api/rooms/W/bots/B/package-update-preview` | `{version}`으로 같은 저장소의 변경과 로컬 편집 충돌 확인 |
+| POST | `/api/rooms/W/bots/B/package-update` | `{version,token}`으로 확인한 변경 적용 |
+| POST | `/api/rooms/W/bots/B/package-rollback-preview` | `{}`으로 로컬에 보관한 직전 상태와 충돌 확인 |
+| POST | `/api/rooms/W/bots/B/package-rollback` | `{token}`으로 확인한 직전 상태를 오프라인 복원 |
 | GET / POST | `/api/rooms/W/bots/B/assets` | 파일 트리 조회 및 버전 기반 생성·저장 |
 | POST | `/api/rooms/W/bots/B/appearance` | `{digest,appearance}`로 현재 외형 확장만 변경 |
 | GET | `/api/rooms/W/bots/B/portrait` | 직접 올린 정적 WebP. 원격 이미지 요청 없음 |
@@ -46,5 +50,7 @@ agent-office --db office.sqlite3 bots export --workspace-id WORKSPACE_ID --id ux
 채팅은 최근 30회 실행, 왕명은 최근 20건부터 제공한다. 이전 기록이 있으면 응답의 `next_cursor`를 같은 목록 경로 뒤에 `/before/{next_cursor}`로 붙인다. 후속 명령의 모델 입력에는 성공적으로 끝난 같은 봇의 최근 대화 최대 네 쌍이 포함된다. 각 발화는 UTF-8 1 KiB까지 제공한다. 진행 중이거나 실패한 실행은 상태와 실행 링크로 표시한다. 이 연속성은 독립 CLI 실행 사이에서 호스트가 제공한다.
 
 Git 패키지 미리보기 요청은 `{url,version,path?}`를 보낸다. 확정 요청에는 미리보기의 `source.commit`과 `digest`를 `commit`, `digest`로 추가한다. 설치 기록은 봇 목록의 `package`에 저장소 URL, 선택 하위 폴더, 입력 버전, 실제 커밋 SHA와 설치 당시 정의 해시로 표시된다. [패키지 작성과 설치](local-role-bots.md#공개-git-저장소에서-공유하기)
+
+업데이트·롤백 미리보기는 `current`, `target`, `changes`, `conflicts`, `token`, `unchanged`를 반환한다. `changes`의 항목은 `{path,action}` 형태이고 `action`은 `added`, `modified`, `deleted`, `kept` 중 하나다. 토큰이 있을 때 적용을 요청한다. 미리본 버전이나 로컬 정의가 달라지면 409를 반환한다. 마지막 적용 응답을 잃었으면 같은 본문으로 재시도할 수 있다. 봇 목록의 `package_rollback`은 복원할 직전 설치 출처다. [업데이트와 롤백](local-role-bots.md#공유-봇-업데이트와-롤백)
 
 공개 정의와 UI 파일은 별도로 버전을 관리한다. 엔진 인증, 실행 권한, 저널·검토 정책은 호스트의 책임이다. 스킬과 지침은 텍스트 자원으로 보관할 수 있으며 MCP·훅 구성 파일은 이 버전에서 자동으로 연결하거나 실행하지 않는다. 패키지 갱신 계획은 [이슈 #46](https://github.com/tworimpa/ai-agent-office/issues/46)에서 추적한다.
