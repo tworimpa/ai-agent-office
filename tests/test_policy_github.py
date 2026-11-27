@@ -1,11 +1,69 @@
 from copy import deepcopy
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from agent_office import policy_github as policy
 from agent_office.release_store import run_git
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CHECK_NAMES = {
+    policy.CI: {"ubuntu-latest / Python 3.11", "ubuntu-latest / Python 3.13",
+                "windows-latest / Python 3.11", "windows-latest / Python 3.13"},
+    policy.DESKTOP: {"ubuntu-latest desktop installer", "windows-latest desktop installer",
+                     "tested-merge / ubuntu-latest / Tested merge"},
+}
+# The fixture numbers each workflow's jobs from index * 100 in sorted name order.
+JOB_IDS = [index * 100 + j for index, names in enumerate(CHECK_NAMES.values(), start=1) for j in range(len(names))]
+OLD_RUST_CHECKS = [f"rust-comparison / {system} / Rust comparison" for system in policy.SYSTEMS]
+
+
+def test_required_checks_are_the_seven_reviewed_names():
+    assert {path: names for path, (_, names) in policy.WORKFLOWS.items()} == CHECK_NAMES
+    assert JOB_IDS == [100, 101, 102, 103, 200, 201, 202]
+    assert not any("rust" in name.lower() for names in CHECK_NAMES.values() for name in names)
+
+
+def test_repository_workflows_match_the_policy():
+    """The names GitHub reports come from these files, so they must not drift from the policy."""
+    sources = {path: (ROOT / path).read_text(encoding="utf-8")
+               for path in (policy.CI, policy.DESKTOP, policy.TESTED_MERGE)}
+    for source in sources.values():
+        policy._checkout_workflow(source)
+    desktop, anchor = (yaml.load(sources[path], Loader=yaml.BaseLoader)
+                       for path in (policy.DESKTOP, policy.TESTED_MERGE))
+    calls = {name: job["uses"] for name, job in desktop["jobs"].items() if "uses" in job}
+    assert calls == {"tested-merge": "./" + policy.TESTED_MERGE}
+    assert not any("uses" in job for job in yaml.load(sources[policy.CI], Loader=yaml.BaseLoader)["jobs"].values())
+    assert anchor["on"] == "workflow_call" and anchor["permissions"] == {"contents": "read"}
+    job, = anchor["jobs"].values()
+    # The anchor only checks out. The second step exists because the policy reads the
+    # checkout log up to the next step's "Run" group (see the test below).
+    assert job["runs-on"] == "ubuntu-latest" and job["steps"] == [
+        {"uses": "actions/checkout@v4"},
+        {"name": "Show the tested merge commit", "run": "git cat-file commit HEAD"}]
+    # GitHub names a called job "<calling job> / <called job name>".
+    assert f"tested-merge / {job['name']}" in CHECK_NAMES[policy.DESKTOP]
+    assert not (ROOT / ".github/workflows/rust-comparison.yml").exists()
+
+
+def test_checkout_evidence_needs_a_step_after_the_checkout():
+    oid = "a" * 40
+    checkout = (
+        f"2025-12-31T23:59:59Z Download action repository 'actions/checkout@v4' (SHA:{'1' * 40})\r\n"
+        "2026-01-01T00:00:00Z ##[group]Run actions/checkout@v4\r\n"
+        f"2026-01-01T00:00:01Z [command]/usr/bin/git fetch --depth=1 origin +{oid}:refs/remotes/pull/7/merge\r\n"
+        "2026-01-01T00:00:02Z [command]/usr/bin/git log -1 --format=%H\r\n"
+        f"2026-01-01T00:00:03Z {oid}\r\n")
+    following = ("2026-01-01T00:00:04Z ##[group]Run git cat-file commit HEAD\r\n"
+                 "2026-01-01T00:00:05Z tree " + "b" * 40 + "\r\n")
+    policy._checkout_evidence((checkout + following).encode(), 7, oid)
+    with pytest.raises(ValueError, match="checkout step log unavailable"):
+        policy._checkout_evidence((checkout + "2026-01-01T00:00:04Z Post job cleanup.\r\n").encode(), 7, oid)
 
 
 @pytest.fixture(scope="module")
@@ -26,7 +84,7 @@ def source(tmp_path_factory):
     def github_tree(test_command):
         source = f"jobs:\n  verify:\n    steps:\n      - uses: actions/checkout@v4\n      - run: {test_command}\n"
         wf = run_git(directory, "hash-object", "-w", "--stdin", data=source.encode()).decode().strip()
-        workflows = tree("".join(f"100644 blob {wf}\t{name}\n" for name in ("ci.yml", "desktop.yml", "rust-comparison.yml")))
+        workflows = tree("".join(f"100644 blob {wf}\t{name}\n" for name in ("ci.yml", "desktop.yml", "tested-merge.yml")))
         return tree(f"040000 tree {workflows}\tworkflows\n")
 
     base_tree = tree(f"040000 tree {github_tree('python -m pytest tests/unit')}\t.github\n")
@@ -50,7 +108,7 @@ def github(source, monkeypatch):
     started = {"status": "completed", "conclusion": "success"}
     for index, (path, (workflow, names)) in enumerate(policy.WORKFLOWS.items(), start=1):
         reference = {"sha": synthetic, "ref": "refs/pull/7/merge",
-                     "path": f"{policy.REPOSITORY}/{policy.RUST}@{synthetic}"}
+                     "path": f"{policy.REPOSITORY}/{policy.TESTED_MERGE}@{synthetic}"}
         runs.append({**started, "id": index, "check_suite_id": index * 10, "run_attempt": 2,
                      "head_branch": branch, "head_sha": source.head, "repository": repo, "head_repository": repo,
                      "event": "pull_request", "pull_requests": [], "workflow_id": workflow, "path": path,
@@ -82,7 +140,7 @@ def github(source, monkeypatch):
         f"2026-01-01T00:00:02Z [command]/usr/bin/git log -1 --format=%H\r\n"
         f"2026-01-01T00:00:03Z {synthetic}\r\n"
         "2026-01-01T00:00:04Z ##[group]Run actions/setup-python@v5\r\n").encode()
-    log_paths = {f"actions/jobs/{index * 100 + j}/logs" for index in (1, 2) for j in range(4)}
+    log_paths = {f"actions/jobs/{job_id}/logs" for job_id in JOB_IDS}
     for path in log_paths:
         payloads[path] = log_data
     calls = []
@@ -106,10 +164,12 @@ def attest(source, **args):
 def test_complete_latest_attempt_is_bound_to_the_pr_and_tree(source, github):
     proof = attest(source)
     assert (proof.pr, proof.head, proof.merge, proof.tree) == (7, source.head, source.merge, source.tree)
-    assert proof.run_ids == (1, 2) and proof.attempts == (2, 2) and len(proof.check_names) == 8
+    assert proof.run_ids == (1, 2) and proof.attempts == (2, 2)
+    assert proof.check_names == tuple(sorted(name for names in CHECK_NAMES.values() for name in names))
+    assert len(proof.check_names) == 7
     assert proof.tested_merge == "a" * 40
     assert github.calls.count(github.query) == github.calls.count("git/ref/heads/main") == 2
-    assert len({path for path in github.calls if path.endswith("/logs")}) == 8
+    assert len({path for path in github.calls if path.endswith("/logs")}) == 7
     with pytest.raises(FrozenInstanceError):
         proof.pr = 8
 
@@ -121,7 +181,7 @@ def test_workflow_changes_after_checkout_are_eligible(source, github):
     assert attest(source).merge == source.merge
 
 
-@pytest.mark.parametrize("job_id", [100, 101, 102, 103, 200, 201, 202, 203])
+@pytest.mark.parametrize("job_id", JOB_IDS)
 def test_every_job_must_have_checked_out_the_tested_merge(source, github, job_id):
     path = f"actions/jobs/{job_id}/logs"
     github.payloads[path] = github.payloads[path].replace(b"a" * 40, b"c" * 40)
@@ -162,7 +222,7 @@ def test_reject_missing_duplicate_wrong_head_and_previous_attempt_jobs(source, g
 
 @pytest.mark.parametrize("scenario", ["wrong app", "wrong suite head", "open PR", "other merge", "other PR",
                                        "wrong base branch", "wrong base SHA", "wrong source repo", "wrong source head", "wrong tree",
-                                       "intervening main", "other rust workflow", "other merge ref", "older CI ref",
+                                       "intervening main", "other reusable workflow", "other merge ref", "older CI ref",
                                        "later forged log", "extra run", "missing job", "duplicate workflow"])
 def test_refuse_ambiguous_or_unrelated_evidence(source, github, scenario):
     suite = github.payloads["check-suites/10"]
@@ -191,8 +251,8 @@ def test_refuse_ambiguous_or_unrelated_evidence(source, github, scenario):
             github.commit["tree"]["sha"] = source.head
         case "intervening main":
             github.commit["parents"][0]["sha"] = source.head
-        case "other rust workflow":
-            ref["path"] = ref["path"].replace("rust-comparison", "almost-rust")
+        case "other reusable workflow":
+            ref["path"] = ref["path"].replace("tested-merge", "almost-tested-merge")
         case "other merge ref":
             ref["ref"] = "refs/pull/9/merge"
         case "older CI ref":
@@ -208,6 +268,52 @@ def test_refuse_ambiguous_or_unrelated_evidence(source, github, scenario):
             github.runs[0].update(github.runs[1])
     with pytest.raises(ValueError):
         attest(source)
+
+
+@pytest.mark.parametrize(("scenario", "reason"), [
+    ("no reusable workflow", "unexpected reusable workflow"),
+    ("second reusable workflow", "unexpected reusable workflow"),
+    ("CI calls the anchor", "unexpected reusable workflow"),
+    ("retired Rust workflow", "different PR merge ref"),
+    ("Rust checks beside the anchor", "unexpected, stale or duplicate job"),
+    ("run from before the Rust checks were retired", "unexpected, stale or duplicate job"),
+    ("anchor check missing", "incomplete or ambiguous job matrix")])
+def test_the_tested_merge_anchor_is_the_only_accepted_reusable_workflow(source, github, scenario, reason):
+    desktop = github.runs[1]
+    ref, = desktop["referenced_workflows"]
+    listing = github.payloads["actions/runs/2/attempts/2/jobs?per_page=10"]
+    anchor = next(job for job in listing["jobs"] if job["name"].startswith("tested-merge / "))
+    rust = [{**anchor, "id": 250 + n, "name": name, "labels": [system]}
+            for n, (name, system) in enumerate(zip(OLD_RUST_CHECKS, policy.SYSTEMS))]
+    match scenario:
+        case "no reusable workflow":
+            desktop["referenced_workflows"] = []
+        case "second reusable workflow":
+            desktop["referenced_workflows"] = [ref, {**ref, "path": ref["path"].replace("tested-merge", "other")}]
+        case "CI calls the anchor":
+            github.runs[0]["referenced_workflows"] = [ref]
+        case "retired Rust workflow":
+            ref["path"] = ref["path"].replace("tested-merge", "rust-comparison")
+        case "Rust checks beside the anchor":
+            listing["jobs"] += rust
+        case "run from before the Rust checks were retired":
+            ref["path"] = ref["path"].replace("tested-merge", "rust-comparison")
+            listing["jobs"] = [job for job in listing["jobs"] if job is not anchor] + rust
+        case "anchor check missing":
+            listing["jobs"].remove(anchor)
+    listing["total_count"] = len(listing["jobs"])
+    with pytest.raises(ValueError, match=reason):
+        attest(source)
+
+
+@pytest.mark.parametrize("called", [
+    "./.github/workflows/rust-comparison.yml", "./.github/workflows/other.yml",
+    "tworimpa/ai-agent-office/.github/workflows/tested-merge.yml@main",
+    "other/project/.github/workflows/tested-merge.yml@v1"])
+def test_a_workflow_may_call_only_the_tested_merge_anchor(called):
+    with pytest.raises(ValueError, match="unknown reusable workflow"):
+        policy._checkout_workflow(f"jobs:\n  call:\n    uses: {called}\n")
+    policy._checkout_workflow(f"jobs:\n  call:\n    uses: ./{policy.TESTED_MERGE}\n")
 
 
 @pytest.mark.parametrize("scenario", ["main advanced", "newer rerun", "newer run failed"])

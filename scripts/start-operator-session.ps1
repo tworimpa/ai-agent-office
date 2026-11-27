@@ -19,7 +19,7 @@ $base = 'C:\Program Files\AI-Agent-Office\SplitSession'
 $utf8 = [Text.UTF8Encoding]::new($false,$true)
 # These digests bind exactly the text compiled/executed by the elevated process.
 # Canonical source is UTF-8, LF line endings. Recompute only after code review.
-$pins = @('674EBC76E62D89C20E358E8A3B6E6A390156A98E59215BD1B8C7FCD25E96A462','0DF27CDA3579E2024FD37E7B176298DCF5CEDCAA5196B1B02214834490891E9A')
+$pins = @('8ACFB9B697E324E389D7B1207A3FF711808B3A6CE1BC6C58423ED8DF414E6F89','0DF27CDA3579E2024FD37E7B176298DCF5CEDCAA5196B1B02214834490891E9A')
 $source = @()
 foreach ($name in @('split-session-bootstrap.ps1','SplitSessionAcl.cs')) {
     $bytes = $utf8.GetBytes([IO.File]::ReadAllText("$PSScriptRoot\$name",$utf8).Replace("`r`n","`n"))

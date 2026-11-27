@@ -16,12 +16,15 @@ REPOSITORY = "tworimpa/ai-agent-office"
 DEFAULT_GH = Path(r"C:\Program Files\GitHub CLI\gh.exe" if os.name == "nt" else "/usr/bin/gh")
 CI = ".github/workflows/ci.yml"
 DESKTOP = ".github/workflows/desktop.yml"
-RUST = ".github/workflows/rust-comparison.yml"
+# The Desktop workflow calls this one reusable workflow. GitHub records that call in the
+# run's `referenced_workflows` with the commit the pull request run tested
+# (refs/pull/N/merge); no other field of a run names that commit.
+TESTED_MERGE = ".github/workflows/tested-merge.yml"
 SYSTEMS = ("ubuntu-latest", "windows-latest")
 WORKFLOWS = {
     CI: (408869156, {f"{system} / Python {version}" for system in SYSTEMS for version in ("3.11", "3.13")}),
     DESKTOP: (424727684, {f"{system} desktop installer" for system in SYSTEMS}
-              | {f"rust-comparison / {system} / Rust comparison" for system in SYSTEMS}),
+              | {"tested-merge / ubuntu-latest / Tested merge"}),
 }
 SHA = re.compile(r"[0-9a-f]{40}")
 
@@ -154,7 +157,7 @@ def _checkout_workflow(source):
         for job in workflow["jobs"].values():
             _require(all(key.islower() and key != "<<" for key in job), "ambiguous job fields")
             if "uses" in job:
-                _require(job["uses"] == "./" + RUST, "unknown reusable workflow")
+                _require(job["uses"] == "./" + TESTED_MERGE, "unknown reusable workflow")
                 continue
             _require(job["steps"][0] == {"uses": "actions/checkout@v4"},
                      "the first workflow step must be the default official checkout")
@@ -243,12 +246,12 @@ def attest(repository, revision, base, git_dir, *, gh=DEFAULT_GH):
                  "unexpected reusable workflow")
         synthetic = _sha(references[0]["sha"])
         _require(references[0]["ref"] == f"refs/pull/{pr}/merge"
-                 and references[0]["path"] == f"{REPOSITORY}/{RUST}@{synthetic}",
+                 and references[0]["path"] == f"{REPOSITORY}/{TESTED_MERGE}@{synthetic}",
                  "installer run tested a different PR merge ref")
         commit = get(f"git/commits/{synthetic}")
         _require(commit["sha"] == synthetic and commit["tree"]["sha"] == tree
                  and [p["sha"] for p in commit["parents"]] == [base, head], "tested merge or parents differ")
-        for path in (CI, DESKTOP, RUST):
+        for path in (CI, DESKTOP, TESTED_MERGE):
             source = _git(git_dir, "cat-file", "blob", f"{revision}:{path}", limit=128 * 1024)
             _checkout_workflow(source)
         for group in jobs.values():

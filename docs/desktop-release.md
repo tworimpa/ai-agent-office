@@ -15,7 +15,7 @@ Windows에서는 PowerShell의 `Get-FileHash .\AI-Agent-Office-Setup-<버전>.ex
 ## 운영자 절차
 
 1. 버전 변경 PR에서 `desktop/package.json`과 잠금 파일의 앱 버전을 맞춘다. PR을 병합한 후 해당 **main push의 전체 커밋 SHA**를 확인한다.
-2. 그 커밋의 **CI (Windows + Linux)** 네 작업과 **Desktop installers** 네 작업의 성공을 기다린다. 설치 검사를 완료한 각 OS 작업이 남긴 영수증에는 커밋, 실행 ID, 시도, 설치 파일명 및 해시, Actions 아티팩트 ID와 digest가 들어간다.
+2. 그 커밋의 **CI (Windows + Linux)** 네 작업과 **Desktop installers** 세 작업(두 OS의 설치 검사와 `tested-merge / ubuntu-latest / Tested merge`)의 성공을 기다린다. 설치 검사를 완료한 각 OS 작업이 남긴 영수증에는 커밋, 실행 ID, 시도, 설치 파일명 및 해시, Actions 아티팩트 ID와 digest가 들어간다.
 3. Actions의 **Electron desktop release**를 기본 브랜치에서 수동 실행한다. `version`에는 예를 들어 `0.9.0`, `commit`에는 40자리 전체 SHA를 입력한다. `dry-run`은 패키지와 출처를 검증하고, `draft`는 태그·초안 생성과 설치 검사를, `publish`는 설치 검증 후 공개까지 수행한다. 동일한 버전의 공개 릴리스에는 새 파일을 덮어쓸 수 없다.
 4. 초안에 등록된 두 설치 파일을 다시 받아 해시를 확인하고, 일회용 Windows와 Ubuntu에서 새 설치와 기존 설치판 업그레이드를 검사한다. 새 설치 후 Workspace 등록, 업그레이드 후 기존 저널·Workspace·작업 이력 재열기가 완료 기준이다. 0.10.0부터는 공개 0.9.0을 기준으로 두 OS의 업그레이드도 검사한다.
 5. 검증 후 공개 모드에서는 두 OS 검사가 모두 통과한 다음 공개한다. 초안 모드는 검증 결과를 확인할 수 있도록 릴리스를 Draft 상태로 둔다.

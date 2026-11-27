@@ -30,7 +30,7 @@ function Assert-ReleaseArtifact([long]$artifactId, [string]$digest) {
     $number = [long]$Matches[1]
     $synthetic = $run.referenced_workflows[0].sha
     if ($synthetic -cnotmatch '^[0-9a-f]{40}$' -or $run.referenced_workflows[0].path -cne
-        "tworimpa/ai-agent-office/.github/workflows/rust-comparison.yml@$synthetic") { throw 'Unexpected tested ref.' }
+        "tworimpa/ai-agent-office/.github/workflows/tested-merge.yml@$synthetic") { throw 'Unexpected tested ref.' }
     $tip = (Read-ReleaseMetadata 'git/ref/heads/main').object.sha
     $pr = Read-ReleaseMetadata "pulls/$number"
     if ($tip -cnotmatch '^[0-9a-f]{40}$' -or $pr.merged -ne $true -or $pr.merge_commit_sha -cne $tip -or

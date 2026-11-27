@@ -26,7 +26,7 @@ PLATFORMS = {"Windows": "windows-latest", "Linux": "ubuntu-latest"}
 WORKFLOWS = {
     "ci.yml": {f"{os_name} / Python {version}" for os_name in PLATFORMS.values() for version in ("3.11", "3.13")},
     "desktop.yml": {f"{os_name} desktop installer" for os_name in PLATFORMS.values()}
-    | {f"rust-comparison / {os_name} / Rust comparison" for os_name in PLATFORMS.values()},
+    | {"tested-merge / ubuntu-latest / Tested merge"},
 }
 
 

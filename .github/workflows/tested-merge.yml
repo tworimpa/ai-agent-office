@@ -1,0 +1,21 @@
+# Called by desktop.yml and by nothing else. GitHub then records this call in the
+# Desktop run's `referenced_workflows` together with the commit the pull request
+# run tested (refs/pull/N/merge). The operator deployment policy
+# (src/agent_office/policy_github.py) and the split-session bootstrap
+# (scripts/split-session-bootstrap.ps1) read the tested merge commit from that
+# record. Renaming this file, the calling job or the job below changes that policy.
+name: Tested merge anchor
+on: workflow_call
+permissions:
+  contents: read
+jobs:
+  anchor:
+    name: 'ubuntu-latest / Tested merge'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # The policy reads the checkout log up to the start of the next step, so one
+      # step has to follow the checkout. It only prints the commit that was tested.
+      - name: Show the tested merge commit
+        run: git cat-file commit HEAD

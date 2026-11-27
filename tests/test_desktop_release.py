@@ -30,6 +30,19 @@ END = "2026-11-01T15:05:00Z"
 CREATED = "2026-11-01T15:04:00Z"
 
 
+def test_release_gate_requires_the_same_checks_as_the_deployment_policy():
+    from agent_office import policy_github
+
+    assert release.WORKFLOWS == {
+        "ci.yml": {"ubuntu-latest / Python 3.11", "ubuntu-latest / Python 3.13",
+                   "windows-latest / Python 3.11", "windows-latest / Python 3.13"},
+        "desktop.yml": {"ubuntu-latest desktop installer", "windows-latest desktop installer",
+                        "tested-merge / ubuntu-latest / Tested merge"},
+    }
+    assert {".github/workflows/" + name: checks for name, checks in release.WORKFLOWS.items()} == {
+        path: checks for path, (_, checks) in policy_github.WORKFLOWS.items()}
+
+
 def test_010_release_notes_read_highlights_from_the_pinned_commit():
     content = b"### Release highlights\r\n\r\n- Catalog and bot sharing\r\n"
 
