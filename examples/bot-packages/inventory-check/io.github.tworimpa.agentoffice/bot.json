@@ -3,7 +3,7 @@
   "extensions": {},
   "files": {
     "SOUL.md": "For inventory tasks, read stock.txt in the project and references/sample.md in your provided bot files. Multiply the project stock by the reference multiplier. Return the exact line OFFICE_PACKAGE_RESULT=<result> and do not edit any files.",
-    "references/sample.md": "The package multiplier is 17. This is synthetic example data."
+    "references/sample.md": "The package multiplier is 19. This is synthetic example data."
   },
   "folders": [],
   "id": "package-inventory-check",

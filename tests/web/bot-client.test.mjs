@@ -13,7 +13,7 @@ const first = { id: 'research', name: '다온', role: 'UX 리서처', digest: 'v
 const second = { id: 'tester', name: '솔', role: '접근성 테스터', digest: 'v1', appearance: { preset: 11 } };
 const turn = () => new Promise((resolve) => setTimeout(resolve, 15));
 
-async function fixture(t, { query = '', respond, saved, currentJournal = journal } = {}) {
+async function fixture(t, { query = '', respond, saved, currentJournal = journal, currentWorkspace = workspace } = {}) {
   const { window: win } = new JSDOM(html, { url: 'http://localhost/bots' + query, pretendToBeVisual: true });
   for (const [name, fn] of Object.entries({
     showModal() {
@@ -59,7 +59,7 @@ async function fixture(t, { query = '', respond, saved, currentJournal = journal
   const calls = [];
   win.fetch = async (raw, options) => {
     const url = new URL(raw, win.location),
-      path = url.pathname.replace('/api/rooms/' + workspace, '');
+      path = url.pathname.replace('/api/rooms/' + currentWorkspace, '');
     const body = typeof options.body === 'string' ? JSON.parse(options.body) : options.body;
     calls.push({ path, body, query: url.search });
     const reply = (data, status = 200) => ({
@@ -70,10 +70,10 @@ async function fixture(t, { query = '', respond, saved, currentJournal = journal
     const custom = await respond?.({ path, body, reply, models, calls, options });
     if (custom) return custom;
     if (body) throw new Error('unexpected write ' + path);
-    if (path === '/api/workspaces') return reply({ workspaces: [{ id: workspace, name: '테스트 작업실' }] });
+    if (path === '/api/workspaces') return reply({ workspaces: [{ id: currentWorkspace, name: '테스트 작업실' }] });
     if (path === '')
       return reply({
-        workspace: { id: workspace, name: '테스트 작업실', folders: ['one', 'two'] },
+        workspace: { id: currentWorkspace, name: '테스트 작업실', folders: ['one', 'two'] },
         journal_id: currentJournal,
         runs: models.runs,
       });
@@ -337,6 +337,232 @@ test('Git package requires a preview and installs only its pinned commit in the 
   assert.match(get('packageSource').textContent, new RegExp(source.commit));
   assert.equal(get('packageExport').download, 'shared.bot-package.zip');
   assert.equal(get('exportBot').download, 'shared.bot.json');
+});
+
+const originalPackage = {
+  url: 'https://example.org/bots.git',
+  path: 'sample',
+  version: 'v1',
+  commit: '7'.repeat(40),
+  digest: '8'.repeat(64),
+};
+const updatedPackage = { ...originalPackage, version: 'v2', commit: '9'.repeat(40), digest: 'a'.repeat(64) };
+
+test('Git package update and rollback require confirmation, refresh files and do not submit a job', async (t) => {
+  const publish = (models, source, rollback, text) => {
+    models.files = { ...models.files, digest: text, files: { ...models.files.files, 'SOUL.md': text } };
+    models.bots = [
+      { ...first, digest: models.files.digest, package: source, package_rollback: rollback },
+      second,
+    ];
+  };
+  const { get, handlers, input, submit, calls, models, win } = await fixture(t, {
+    currentJournal: 'd'.repeat(32),
+    respond: ({ path, body, reply, models }) => {
+      switch (path) {
+        case '/bots':
+          if (!models.bots.find((bot) => bot.package)) publish(models, originalPackage, null, '원래 정의');
+          break;
+        case '/bots/research/package-update-preview':
+          assert.deepEqual(body, { version: 'v2' });
+          return reply({
+            current: originalPackage,
+            target: updatedPackage,
+            changes: [
+              { path: 'new.md', action: 'added' },
+              { path: 'SOUL.md', action: 'modified' },
+              { path: 'old.md', action: 'deleted' },
+              { path: 'local.md', action: 'kept' },
+            ],
+            conflicts: [],
+            token: 'update-token',
+            unchanged: false,
+          });
+        case '/bots/research/package-update':
+          assert.deepEqual(body, { version: 'v2', token: 'update-token' });
+          publish(models, updatedPackage, originalPackage, '갱신된 정의');
+          return reply({ id: first.id, source: updatedPackage, rollback: originalPackage });
+        case '/bots/research/package-rollback-preview':
+          assert.deepEqual(body, {});
+          return reply({
+            current: updatedPackage,
+            target: originalPackage,
+            changes: [{ path: 'SOUL.md', action: 'modified' }],
+            conflicts: [],
+            token: 'rollback-token',
+            unchanged: false,
+          });
+        case '/bots/research/package-rollback':
+          assert.deepEqual(body, { token: 'rollback-token' });
+          publish(models, originalPackage, null, '복원된 정의');
+          return reply({ id: first.id, source: originalPackage, rollback: null });
+      }
+    },
+  });
+  handlers.choose(second);
+  assert.ok(get('packageSourceDetails').hidden);
+  assert.ok(get('packageUpdate').hidden);
+  handlers.choose(first);
+  await turn();
+  assert.equal(get('packageSourceDetails').hidden, false);
+  assert.match(get('packageSource').textContent, /v1/);
+  assert.ok(get('packageRollback').hidden);
+  get('packageUpdate').click();
+  assert.ok(get('packageChangeApply').disabled);
+  input('packageChangeVersion', 'v2');
+  await submit('packageChangeForm');
+  const comparison = get('packageChangePreview').textContent;
+  for (const source of [originalPackage, updatedPackage]) {
+    assert.ok(comparison.includes(source.commit));
+    assert.ok(comparison.includes(source.digest));
+  }
+  for (const change of [/추가.*new\.md/, /수정.*SOUL\.md/, /삭제.*old\.md/, /유지.*local\.md/])
+    assert.match(comparison, change);
+  input('packageChangeVersion', 'v3');
+  assert.ok(get('packageChangeApply').disabled);
+  input('packageChangeVersion', 'v2');
+  await submit('packageChangeForm');
+  models.files.files['MEMORY.md'] = '다른 창에서 남긴 메모';
+  models.files.digest = models.bots[0].digest = '메모 저장 후 해시';
+  win.document.dispatchEvent(new win.Event('visibilitychange'));
+  await turn();
+  assert.equal(get('packageChangeApply').disabled, false);
+  get('packageChangeApply').click();
+  get('packageChangeApply').click();
+  await turn();
+  assert.equal(get('packageChangeDialog').open, false);
+  assert.match(get('packageSource').textContent, new RegExp(updatedPackage.commit));
+  assert.match(get('packageRollbackSource').textContent, new RegExp(originalPackage.commit));
+  get('explorer').querySelector('[title="SOUL.md"]').click();
+  assert.equal(get('text').value, '갱신된 정의');
+  get('tabs').querySelector('.group button').click();
+  get('packageRollback').click();
+  await turn();
+  assert.match(get('packageChangePreview').textContent, new RegExp(originalPackage.digest));
+  get('packageChangeApply').click();
+  get('packageChangeApply').click();
+  await turn();
+  assert.equal(get('packageChangeDialog').open, false);
+  assert.match(get('packageSource').textContent, new RegExp(originalPackage.commit));
+  assert.ok(get('packageRollback').hidden);
+  get('explorer').querySelector('[title="SOUL.md"]').click();
+  assert.equal(get('text').value, '복원된 정의');
+  const writes = calls.filter((call) => call.body !== undefined);
+  assert.deepEqual(writes.map((call) => call.path), [
+    '/bots/research/package-update-preview',
+    '/bots/research/package-update-preview',
+    '/bots/research/package-update',
+    '/bots/research/package-rollback-preview',
+    '/bots/research/package-rollback',
+  ]);
+  assert.ok(writes.every((call) => new URLSearchParams(call.query).get('office_journal') === 'd'.repeat(32)));
+});
+
+test('Git package conflicts and stale approvals keep the entire update or rollback from applying', async (t) => {
+  const installed = { ...first, package: updatedPackage, package_rollback: originalPackage };
+  let conflict = true;
+  const { get, handlers, input, submit, calls } = await fixture(t, {
+    respond: ({ path, body, models, reply }) => {
+      if (path === '/bots') {
+        const observed = models.bots.find((bot) => bot.package) || installed;
+        models.bots = [observed, second];
+      }
+      if (path === '/bots/research/package-update') {
+        models.bots[0] = { ...installed, digest: '편집 후 해시' };
+        models.files = { ...models.files, digest: '편집 후 해시', files: { 'SOUL.md': '다른 창의 편집' } };
+        return reply({ error: { message: '편집이 먼저 저장되었습니다. 다시 확인하세요.' } }, 409);
+      }
+      if (!path.endsWith('-preview') || !body) return;
+      const rollback = path.endsWith('/package-rollback-preview');
+      return reply({
+        current: updatedPackage,
+        target: rollback ? originalPackage : { ...updatedPackage, version: body.version, commit: 'b'.repeat(40) },
+        changes: [{ path: 'readme.md', action: 'modified' }],
+        conflicts: conflict || rollback ? ['SOUL.md', 'notes/지침.md'] : [],
+        token: 'approval',
+        unchanged: body.version === 'v2',
+      });
+    },
+  });
+  handlers.choose(first);
+  await turn();
+  get('packageUpdate').click();
+  input('packageChangeVersion', 'v3');
+  await submit('packageChangeForm');
+  assert.match(get('packageChangeConflicts').textContent, /SOUL\.md/);
+  assert.match(get('packageChangeConflicts').textContent, /notes\/지침\.md/);
+  assert.ok(get('packageChangeApply').disabled);
+  get('packageChangeApply').click();
+  conflict = false;
+  input('packageChangeVersion', 'v2');
+  await submit('packageChangeForm');
+  assert.ok(get('packageChangeApply').disabled);
+  input('packageChangeVersion', 'v3');
+  await submit('packageChangeForm');
+  get('packageChangeApply').click();
+  await turn();
+  assert.ok(get('packageChangeApply').disabled);
+  assert.match(get('packageChangeStatus').textContent, /다시 확인/);
+  get('packageChangeApply').click();
+  assert.equal(calls.filter((call) => call.path === '/bots/research/package-update').length, 1);
+  get('packageChangeCancel').click();
+  get('explorer').querySelector('[title="SOUL.md"]').click();
+  assert.equal(get('text').value, '다른 창의 편집');
+  get('tabs').querySelector('.group button').click();
+  get('packageRollback').click();
+  await turn();
+  assert.match(get('packageChangeConflicts').textContent, /notes\/지침\.md/);
+  assert.ok(get('packageChangeApply').disabled);
+  get('packageChangeApply').click();
+  assert.equal(calls.filter((call) => call.path === '/bots/research/package-rollback').length, 0);
+});
+
+test('a late package preview is discarded when its Git source changes and stays isolated to its workspace', async (t) => {
+  const firstWorkspace = { ...first, package: originalPackage };
+  const secondWorkspace = 'e'.repeat(32);
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const one = await fixture(t, {
+    respond: async ({ path, reply, models }) => {
+      if (path === '/bots' && !models.bots[0].package) models.bots = [firstWorkspace];
+      if (path === '/bots/research/package-update-preview') {
+        await pending;
+        return reply({
+          current: originalPackage,
+          target: updatedPackage,
+          changes: [],
+          conflicts: [],
+          token: 'stale-preview',
+          unchanged: false,
+        });
+      }
+    },
+  });
+  const two = await fixture(t, {
+    query: '?workspace=' + secondWorkspace,
+    currentWorkspace: secondWorkspace,
+    respond: ({ path, reply }) => {
+      if (path === '/bots') return reply({ bots: [{ ...first, package: updatedPackage }] });
+    },
+  });
+  one.handlers.choose(first);
+  two.handlers.choose(first);
+  one.get('packageUpdate').click();
+  one.input('packageChangeVersion', 'v2');
+  await one.submit('packageChangeForm');
+  assert.equal(one.get('packageChangeCheck').disabled, true);
+  assert.equal(two.get('packageChangeDialog').open, false);
+  assert.match(two.get('packageSource').textContent, new RegExp(updatedPackage.commit));
+  one.models.bots[0] = { ...firstWorkspace, package: updatedPackage };
+  one.win.document.dispatchEvent(new one.win.Event('visibilitychange'));
+  await turn();
+  release();
+  await turn();
+  assert.equal(one.get('packageChangeCheck').disabled, false);
+  assert.ok(one.get('packageChangePreview').hidden);
+  assert.ok(one.get('packageChangeApply').disabled);
+  assert.match(one.get('packageChangeStatus').textContent, /다시 확인/);
+  assert.equal(two.calls.some((call) => call.body !== undefined), false);
 });
 
 test('import preserves original bytes for server validation and export downloads the journal-bound manifest', async (t) => {
