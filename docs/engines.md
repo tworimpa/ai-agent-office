@@ -38,6 +38,8 @@ The [official headless protocol](https://antigravity.google/docs/cli/headless/) 
 
 The observer collects known fixed version/help commands and Codex login status once at startup. GET /api/engines only serves that cached snapshot; opening or refreshing a page never performs model calls or repeats CLI probes. Timestamp/platform and 'startup diagnostic' labels make freshness explicit. Restart the observer to recollect, or run engines in a terminal for a fresh independent report.
 
+Claude Code headless discovery checks the help entries for `--print`, `--output-format` and `--permission-mode`. Some releases omit the documented `--max-turns` option from help. The adapter always passes `--max-turns 16` to Claude and uses `--permission-mode plan` for read-only runs. [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
+
 No credential file or environment inventory is read. Only extracted semantic versions and authentication enums are exposed, not raw output, account details, executable paths or tokens. Antigravity help provides no standalone authentication-status command in the inspected CLI, so its login state remains unknown. IDE login and an executable being installed are not evidence of CLI authentication or successful file/tool execution.
 
 Vendor executable resolution uses explicit absolute PATH entries and excludes the current directory, blank and relative entries. A same-name launcher placed in the viewed repository is not implicitly selected. The status snapshot is fetched independently of database metadata so it remains visible if the DB becomes unavailable after server startup.
