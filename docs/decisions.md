@@ -25,3 +25,19 @@ Studio persists typed questions and permission requests. For an explicitly deleg
 ## ADR-005 — Validate before reporting completion
 
 A reviewer model's approval is not sufficient. Require executable tests and independently reviewable artifacts; keep outcomes distinguishable from actual deployment.
+
+## ADR-007 — The host may publish a reviewed result with the operator's `gh` login
+
+Owner decision, 2026-11-27. Product workers still never commit, push, merge or deploy, and their environment keeps GitHub CLI and Git transport disabled. When the operator explicitly asks for it on a finished run, the Studio host process may commit that run's worktree changes with the operator's Git identity, push the branch and open a draft pull request using the `gh` login already present on that computer. The host records the commit, branch and pull request in the run journal. Merging stays with a person on the pull request. The GitHub App connection remains the route for unattended issue-driven publication. Design: [product analysis, chapter 12](product-analysis-2026-11-27.md).
+
+## ADR-008 — Prefer Codex; keep Antigravity as an implemented option
+
+Owner decision, 2026-11-27. The Antigravity (`agy`) adapter and its selection stay supported, but defaults and newly built features use Codex where possible. Google's published guidance says wrapping `agy` from third-party applications is not supported on consumer plans, so it should not sit on a default path. Changing the default reviewer is a separate implementation change because the current default pair also defines how records and requests without stored engines are interpreted. Until that change merges, the code default and the profile wording in AGENTS.md remain Codex + Antigravity. Details: [product analysis, revision 2](product-analysis-2026-11-27.md).
+
+## ADR-009 — Archive the Rust comparison build
+
+Owner decision, 2026-11-27. The comparison concluded that Electron remains the default app on both operating systems ([results](../desktop/comparison/RESULTS.md)). The Rust comparison build receives no new development and is no longer presented as an installation choice. Its checks are still part of the release gate and the operator deployment trust policy; removing them from those lists changes that policy and needs the owner's separate, explicit approval.
+
+## ADR-010 — Adopt the Orca bot model; development and personal use first
+
+Owner decision, 2026-11-27. Bots move toward the model reviewed in Orca: a home folder per bot, a continuing session, memory the bot maintains itself, delegation of code changes to workers, schedules and GitHub triggers. Two existing rules stay: a bot does not edit project code itself, and delegated work passes the test, independent review and human review gates (ADR-005). Distribution work such as code signing, automatic updates, localisation and additional platforms is deferred while the product serves its owner's own development. The owner authorised real Codex checks on disposable repositories for this work. Design and order of work: [product analysis, chapters 13 and 14](product-analysis-2026-11-27.md).
